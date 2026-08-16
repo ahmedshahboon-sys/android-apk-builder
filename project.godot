@@ -2,9 +2,6 @@
 config/name="تاكسي طرابلس"
 run/main_scene="res://main.tscn"
 
-[autoload]
-FeaturePack="*res://scripts/feature_pack.gd"
-
 [display]
 window/size/viewport_width=1280
 window/size/viewport_height=720
