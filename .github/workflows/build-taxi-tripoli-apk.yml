@@ -11,6 +11,7 @@ jobs:
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      GODOT_VERSION: 4.7.1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,16 +31,27 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "build-tools;35.0.1" "platforms;android-35" "cmake;3.10.2.4988404" "ndk;28.1.13356709"
 
-      - name: Download Godot 4.7.1 and export templates
+      - name: Download Godot and export templates
         run: |
-          wget -qO godot.zip "https://downloads.godotengine.org/?flavor=stable&platform=linux.64&slug=linux.x86_64.zip&version=4.7.1"
+          set -euxo pipefail
+          GODOT_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          TEMPLATES_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+
+          curl -fL --retry 5 --retry-delay 3 --retry-all-errors -o godot.zip "$GODOT_URL"
+          unzip -tq godot.zip
           unzip -q godot.zip -d godot-bin
-          mv godot-bin/Godot_v4.7.1-stable_linux.x86_64 godot
+          mv "godot-bin/Godot_v${GODOT_VERSION}-stable_linux.x86_64" godot
           chmod +x godot
-          wget -qO templates.tpz "https://downloads.godotengine.org/?flavor=stable&platform=templates&slug=export_templates.tpz&version=4.7.1"
-          mkdir -p "$HOME/.local/share/godot/export_templates/4.7.1.stable"
+          ./godot --version
+
+          curl -fL --retry 5 --retry-delay 3 --retry-all-errors -o templates.tpz "$TEMPLATES_URL"
+          unzip -tq templates.tpz
+          rm -rf templates-unpacked
           unzip -q templates.tpz -d templates-unpacked
-          cp -r templates-unpacked/templates/* "$HOME/.local/share/godot/export_templates/4.7.1.stable/"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          cp -r templates-unpacked/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_debug.apk"
+          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_release.apk"
 
       - name: Configure Godot Android paths
         run: |
