@@ -66,20 +66,34 @@ jobs:
           base64 -d android/fixed_debug_keystore.b64 > debug.keystore
           keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey >/dev/null
 
+      - name: Validate scripts
+        run: |
+          set -o pipefail
+          ./godot --headless --editor --path . --quit 2>&1 | tee godot-import.log
+          if grep -E "SCRIPT ERROR|Failed to load script|Parse Error" godot-import.log; then
+            echo "GDScript validation failed"
+            exit 1
+          fi
+
       - name: Import project and export APK
         env:
           GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ github.workspace }}/debug.keystore
           GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
           GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
+          set -o pipefail
           mkdir -p build
-          ./godot --headless --editor --path . --quit
-          ./godot --headless --path . --export-debug "Android" build/Taxi_Tripoli_v1.1.apk
+          ./godot --headless --path . --export-debug "Android" build/Taxi_Tripoli_v1.1.1.apk 2>&1 | tee godot-export.log
+          if grep -E "SCRIPT ERROR|Failed to load script|Parse Error" godot-export.log; then
+            echo "Export contained script errors"
+            exit 1
+          fi
+          test -s build/Taxi_Tripoli_v1.1.1.apk
           ls -lh build/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Taxi-Tripoli-v1.1-APK
-          path: build/Taxi_Tripoli_v1.1.apk
+          name: Taxi-Tripoli-v1.1.1-APK
+          path: build/Taxi_Tripoli_v1.1.1.apk
           if-no-files-found: error
