@@ -83,17 +83,17 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build
-          ./godot --headless --path . --export-debug "Android" build/Taxi_Tripoli_v1.4.0.apk 2>&1 | tee godot-export.log
+          ./godot --headless --path . --export-debug "Android" build/Taxi_Tripoli_v1.5.0.apk 2>&1 | tee godot-export.log
           if grep -E "SCRIPT ERROR|Failed to load script|Parse Error" godot-export.log; then
             echo "Export contained script errors"
             exit 1
           fi
-          test -s build/Taxi_Tripoli_v1.4.0.apk
+          test -s build/Taxi_Tripoli_v1.5.0.apk
           ls -lh build/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Taxi-Tripoli-v1.4.0-APK
-          path: build/Taxi_Tripoli_v1.4.0.apk
+          name: Taxi-Tripoli-v1.5.0-APK
+          path: build/Taxi_Tripoli_v1.5.0.apk
           if-no-files-found: error
