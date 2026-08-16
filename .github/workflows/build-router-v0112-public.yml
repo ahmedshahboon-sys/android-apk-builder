@@ -1,0 +1,37 @@
+name: Build Router v0.11.2 Public Builder
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'router-optimizer/**'
+      - '.github/workflows/build-router-v0112-public.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build unsigned release
+        working-directory: router-optimizer
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+      - name: Collect APK
+        run: |
+          mkdir -p output
+          cp router-optimizer/app/build/outputs/apk/release/app-release-unsigned.apk output/Shahboun_Router_Universal_0.11.2_UNSIGNED.apk || cp router-optimizer/app/build/outputs/apk/release/app-release.apk output/Shahboun_Router_Universal_0.11.2_UNSIGNED.apk
+          sha256sum output/Shahboun_Router_Universal_0.11.2_UNSIGNED.apk > output/Shahboun_Router_Universal_0.11.2_UNSIGNED.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shahboun-router-v0112-unsigned
+          path: output/*
+          if-no-files-found: error
+          retention-days: 7
