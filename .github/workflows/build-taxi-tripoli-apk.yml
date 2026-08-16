@@ -36,14 +36,12 @@ jobs:
           set -euxo pipefail
           GODOT_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
           TEMPLATES_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
-
           curl -fL --retry 5 --retry-delay 3 --retry-all-errors -o godot.zip "$GODOT_URL"
           unzip -tq godot.zip
           unzip -q godot.zip -d godot-bin
           mv "godot-bin/Godot_v${GODOT_VERSION}-stable_linux.x86_64" godot
           chmod +x godot
           ./godot --version
-
           curl -fL --retry 5 --retry-delay 3 --retry-all-errors -o templates.tpz "$TEMPLATES_URL"
           unzip -tq templates.tpz
           rm -rf templates-unpacked
@@ -51,7 +49,6 @@ jobs:
           mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
           cp -r templates-unpacked/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
           test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_debug.apk"
-          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_release.apk"
 
       - name: Configure Godot Android paths
         run: |
@@ -64,10 +61,10 @@ jobs:
           export/android/android_sdk_path = "$ANDROID_HOME"
           EOF
 
-      - name: Create debug keystore
+      - name: Restore fixed test signing key
         run: |
-          mkdir -p "$HOME/.android"
-          keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          base64 -d android/fixed_debug_keystore.b64 > debug.keystore
+          keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey >/dev/null
 
       - name: Import project and export APK
         env:
@@ -75,15 +72,14 @@ jobs:
           GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
           GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
-          cp "$HOME/.android/debug.keystore" ./debug.keystore
           mkdir -p build
           ./godot --headless --editor --path . --quit
-          ./godot --headless --path . --export-debug "Android" build/Taxi_Tripoli_v1.0.apk
+          ./godot --headless --path . --export-debug "Android" build/Taxi_Tripoli_v1.1.apk
           ls -lh build/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Taxi-Tripoli-v1.0-APK
-          path: build/Taxi_Tripoli_v1.0.apk
+          name: Taxi-Tripoli-v1.1-APK
+          path: build/Taxi_Tripoli_v1.1.apk
           if-no-files-found: error
