@@ -1,4 +1,4 @@
-name: Build Router v0.11.2 Public Builder
+name: Build Router v0.11.4 Signed
 on:
   push:
     branches: [main]
@@ -21,17 +21,27 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build unsigned release
+      - name: Build release
         working-directory: router-optimizer
         run: gradle :app:assembleRelease --no-daemon --stacktrace
-      - name: Collect APK
+      - name: Prepare signing key
+        run: |
+          base64 -d android/fixed_debug_keystore.b64 > android/fixed_debug.keystore
+          keytool -list -keystore android/fixed_debug.keystore -storepass android >/dev/null
+      - name: Sign APK
         run: |
           mkdir -p output
-          cp router-optimizer/app/build/outputs/apk/release/app-release-unsigned.apk output/Shahboun_Router_Universal_0.11.2_UNSIGNED.apk || cp router-optimizer/app/build/outputs/apk/release/app-release.apk output/Shahboun_Router_Universal_0.11.2_UNSIGNED.apk
-          sha256sum output/Shahboun_Router_Universal_0.11.2_UNSIGNED.apk > output/Shahboun_Router_Universal_0.11.2_UNSIGNED.apk.sha256
+          UNSIGNED=router-optimizer/app/build/outputs/apk/release/app-release-unsigned.apk
+          test -f "$UNSIGNED" || UNSIGNED=router-optimizer/app/build/outputs/apk/release/app-release.apk
+          BUILD_TOOLS=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
+          "$BUILD_TOOLS/zipalign" -f 4 "$UNSIGNED" output/Shahboun_Router_Universal_0.11.4_ALIGNED.apk
+          "$BUILD_TOOLS/apksigner" sign --ks android/fixed_debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out output/Shahboun_Router_Universal_0.11.4.apk output/Shahboun_Router_Universal_0.11.4_ALIGNED.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs output/Shahboun_Router_Universal_0.11.4.apk
+          rm output/Shahboun_Router_Universal_0.11.4_ALIGNED.apk
+          sha256sum output/Shahboun_Router_Universal_0.11.4.apk > output/Shahboun_Router_Universal_0.11.4.apk.sha256
       - uses: actions/upload-artifact@v4
         with:
-          name: shahboun-router-v0112-unsigned
+          name: shahboun-router-v0114-signed
           path: output/*
           if-no-files-found: error
           retention-days: 7
