@@ -5,7 +5,9 @@
         android:allowBackup="true"
         android:label="كاشف الأرقام الموحّد"
         android:theme="@style/Theme.NumberLookup"
+        android:supportsRtl="true"
         android:usesCleartextTraffic="false">
+        <activity android:name=".SourcesActivity" android:exported="false" />
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
