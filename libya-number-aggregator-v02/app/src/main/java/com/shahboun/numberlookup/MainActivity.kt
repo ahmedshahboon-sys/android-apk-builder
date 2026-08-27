@@ -9,6 +9,8 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.card.MaterialCardView
 import com.shahboun.numberlookup.databinding.ActivityMainBinding
@@ -18,7 +20,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
     private lateinit var b: ActivityMainBinding
-    private lateinit var repository: LookupRepository
+    private lateinit var repository: LookupRepositoryV2
     private var searchJob: Job? = null
     private var pendingSearch = false
 
@@ -33,7 +35,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
-        repository = LookupRepository(this)
+        repository = LookupRepositoryV2(this)
+        applySafeInsets()
+
         b.settings.setOnClickListener { startActivity(Intent(this, SourcesActivity::class.java)) }
         b.search.setOnClickListener { runSearch() }
         b.forceRefresh.setOnClickListener {
@@ -47,6 +51,18 @@ class MainActivity : AppCompatActivity() {
             b.query.hint = if (id == b.byPhone.id) "أدخل رقم الهاتف" else "أدخل الاسم"
             b.query.inputType = if (id == b.byPhone.id) android.text.InputType.TYPE_CLASS_PHONE else android.text.InputType.TYPE_CLASS_TEXT
             b.forceRefresh.visibility = if (id == b.byPhone.id) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun applySafeInsets() {
+        val initialLeft = b.root.paddingLeft
+        val initialTop = b.root.paddingTop
+        val initialRight = b.root.paddingRight
+        val initialBottom = b.root.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(b.root) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(initialLeft + bars.left, initialTop + bars.top, initialRight + bars.right, initialBottom + bars.bottom)
+            insets
         }
     }
 
@@ -83,27 +99,30 @@ class MainActivity : AppCompatActivity() {
                 val envelope = if (byPhone) repository.lookupByPhone(q, forceRefresh) else repository.searchByName(q)
                 setLoading(false)
                 if (byPhone && envelope.normalizedPhone?.isValidFormat == false) {
-                    b.sourceStatus.text = "الرقم غير صالح. استخدم رقمًا ليبيًا مثل 091xxxxxxx أو +21891xxxxxxx."
-                    addStateCard("رقم غير صالح", "راجع الرقم وحاول مرة أخرى.")
+                    b.sourceStatus.text = "الرقم غير صالح"
+                    addStateCard("راجع رقم الهاتف", "استخدم صيغة ليبية مثل 091xxxxxxx أو +21891xxxxxxx.")
                     return@launch
                 }
-                val status = envelope.providerHealth.joinToString("\n") { h ->
-                    val mark = when (h.state) {
-                        ProviderState.READY -> "✓"
-                        ProviderState.NEEDS_CONFIGURATION -> "⚙"
-                        ProviderState.DISABLED -> "○"
-                        ProviderState.RATE_LIMITED -> "⏱"
-                        ProviderState.ERROR -> "!"
-                    }
-                    "$mark ${h.displayName}: ${h.lastMessage.ifBlank { h.state.name }}${h.lastResponseTimeMs?.let { " • ${it}ms" } ?: ""}"
-                }
-                b.sourceStatus.text = if (envelope.fromCache) "✓ نتيجة من الذاكرة المحلية\n$status" else status.ifBlank { "لا توجد مصادر متاحة." }
-                b.summary.text = if (envelope.results.isEmpty()) "لا توجد نتيجة" else "${envelope.results.size} نتيجة موحّدة"
 
-                if (envelope.results.isEmpty()) {
-                    addStateCard("لا توجد نتيجة", "تم فحص المصادر المتاحة ولم يُعثر على نتيجة مطابقة.")
+                val attempted = envelope.providerHealth.count { it.enabled && it.state != ProviderState.NEEDS_CONFIGURATION }
+                val configuredExternal = envelope.providerHealth.any { it.id == "numbers_online" && it.state == ProviderState.READY }
+                val found = envelope.results.any { it.found && !it.primaryName.isNullOrBlank() }
+                b.sourceStatus.text = when {
+                    envelope.fromCache -> "تم العثور على نتيجة محفوظة محليًا"
+                    found -> "تم العثور على نتيجة"
+                    byPhone && !configuredExternal -> "لم يُعثر على اسم. يمكنك إعداد Numbers Online من «مصادر البحث»."
+                    attempted > 0 -> "اكتمل البحث في المصادر المتاحة"
+                    else -> "لا توجد مصادر بحث مهيأة"
+                }
+                b.summary.text = if (envelope.results.isEmpty() || !found && byPhone) "" else "${envelope.results.size} نتيجة"
+
+                if (envelope.results.isEmpty() || (byPhone && envelope.results.none { it.found })) {
+                    addStateCard(
+                        "لا توجد نتيجة",
+                        if (!configuredExternal && byPhone) "فعّل مصدر Numbers Online من شاشة «مصادر البحث» ثم أعد المحاولة." else "لم يُعثر على اسم مرتبط بهذا الرقم في المصادر التي استجابت."
+                    )
                 } else if (byPhone) {
-                    envelope.results.forEach(::addPhoneResult)
+                    envelope.results.filter { it.found }.forEach(::addPhoneResult)
                 } else {
                     envelope.results.forEach(::addNameResult)
                 }
@@ -111,8 +130,8 @@ class MainActivity : AppCompatActivity() {
                 setLoading(false)
             } catch (_: Exception) {
                 setLoading(false)
-                b.sourceStatus.text = "حدث خطأ مؤقت أثناء البحث. جرّب مرة أخرى."
-                addStateCard("تعذر إكمال البحث", "قد يكون الإنترنت غير متاح أو أحد المصادر لا يستجيب.")
+                b.sourceStatus.text = "حدث خطأ مؤقت"
+                addStateCard("تعذر إكمال البحث", "تحقق من الإنترنت وحاول مرة أخرى.")
             }
         }
     }
@@ -124,23 +143,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun addPhoneResult(r: UnifiedLookupResult) {
-        val name = r.primaryName ?: "لم يُعثر على اسم"
-        val confidenceText = r.confidence?.let { "${(it * 100).toInt().coerceIn(0, 100)}%" }
+        val name = r.primaryName ?: return
         val lines = buildList {
-            add("الرقم: ${r.phoneNumber.ifBlank { r.normalizedNumber }}")
+            add("رقم الهاتف: ${r.phoneNumber.ifBlank { r.normalizedNumber }}")
             r.carrier?.takeIf(String::isNotBlank)?.let { add("شركة الاتصالات: $it") }
             r.lineType?.takeIf(String::isNotBlank)?.let { add("نوع الخط: $it") }
-            r.isValid?.let { add("حالة الرقم: ${if (it) "صالح" else "غير صالح"}") }
-            confidenceText?.let { add("درجة الترجيح: $it") }
             if (r.aliases.isNotEmpty()) add("أسماء أخرى: ${r.aliases.joinToString("، ")}")
-            if (r.sourcesMatched.isNotEmpty()) add("المصادر المطابقة: ${r.sourcesMatched.joinToString("، ")}")
         }
         addResultCard(name, lines.joinToString("\n"))
     }
 
     private fun addNameResult(r: UnifiedLookupResult) {
         addResultCard(r.primaryName ?: "اسم غير متاح", buildString {
-            append("الرقم: ${r.phoneNumber.ifBlank { r.normalizedNumber }}")
+            append("رقم الهاتف: ${r.phoneNumber.ifBlank { r.normalizedNumber }}")
             if (r.aliases.isNotEmpty()) append("\nاسم بديل: ${r.aliases.first()}")
         })
     }
@@ -149,15 +164,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun addResultCard(title: String, body: String) {
         val card = MaterialCardView(this).apply {
-            radius = 22f
-            cardElevation = 3f
-            setContentPadding(24, 22, 24, 22)
+            radius = 26f
+            cardElevation = 1.5f
+            strokeWidth = 1
+            setContentPadding(28, 24, 28, 24)
             val content = TextView(this@MainActivity).apply {
                 textDirection = View.TEXT_DIRECTION_RTL
                 textAlignment = View.TEXT_ALIGNMENT_VIEW_START
-                text = "$title\n\n$body"
+                text = "$title\n$body"
                 textSize = 16f
-                setLineSpacing(4f, 1.05f)
+                setLineSpacing(6f, 1.05f)
             }
             addView(content)
             val lp = android.widget.LinearLayout.LayoutParams(
