@@ -8,6 +8,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.shahboun.numberlookup.databinding.ActivitySettingsBinding
 
 class SettingsActivity : AppCompatActivity() {
@@ -30,8 +32,21 @@ class SettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         b = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(b.root)
+        applyInsets()
         val store = ConfigStore(this)
-        store.load().forEach { addRow(it) }
+        store.load().forEach { original ->
+            val c = if (original.id == 4 && original.bearerToken.isBlank()) {
+                original.copy(
+                    name = "Numbers Online",
+                    baseUrl = "https://numbers.online",
+                    phonePath = "/api/v1/lookup/{e164}",
+                    namePath = "",
+                    method = "GET",
+                    queryParam = ""
+                )
+            } else original
+            addRow(c)
+        }
         b.save.setOnClickListener {
             rows.forEach { r ->
                 store.save(
@@ -53,14 +68,26 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyInsets() {
+        val l = b.root.paddingLeft
+        val t = b.root.paddingTop
+        val r = b.root.paddingRight
+        val bot = b.root.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(b.root) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(l + bars.left, t + bars.top, r + bars.right, bot + bars.bottom)
+            insets
+        }
+    }
+
     private fun addRow(c: SourceConfig) {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 20, 0, 20)
+            setPadding(0, 18, 0, 18)
         }
         val title = TextView(this).apply {
-            text = "المصدر ${c.id}"
-            textSize = 20f
+            text = if (c.id == 4) "المصدر 4 — Numbers Online" else "المصدر ${c.id}"
+            textSize = 19f
         }
         fun edit(h: String, v: String, secret: Boolean = false) = EditText(this).apply {
             hint = h
@@ -68,13 +95,16 @@ class SettingsActivity : AppCompatActivity() {
             if (secret) inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
         val name = edit("اسم المصدر", c.name)
-        val enabled = CheckBox(this).apply { text = "مفعّل"; isChecked = c.enabled }
+        val enabled = CheckBox(this).apply {
+            text = "مفعّل"
+            isChecked = if (c.id == 4 && c.bearerToken.isNotBlank()) true else c.enabled
+        }
         val url = edit("Base URL (HTTPS)", c.baseUrl)
         val phone = edit("مسار البحث بالرقم", c.phonePath)
         val namePath = edit("مسار البحث بالاسم", c.namePath)
         val method = edit("GET أو POST", c.method)
         val param = edit("اسم حقل البحث", c.queryParam)
-        val token = edit("Bearer Token اختياري", c.bearerToken, true)
+        val token = edit(if (c.id == 4) "مفتاح Numbers Online" else "Bearer Token اختياري", c.bearerToken, true)
         listOf(title, name, enabled, url, phone, namePath, method, param, token).forEach { box.addView(it) }
         b.container.addView(box, b.container.childCount - 1)
         rows += Row(c.id, name, enabled, url, phone, namePath, method, param, token)
