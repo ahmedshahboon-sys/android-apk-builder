@@ -75,10 +75,24 @@ jobs:
           keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey >/dev/null
 
       - name: Validate Marboua project
+        id: validate
+        continue-on-error: true
         run: |
           set -o pipefail
           ./godot --headless --editor --path Marboua --quit 2>&1 | tee marboua-import.log
-          if grep -E "SCRIPT ERROR|Failed to load script|Parse Error" marboua-import.log; then exit 1; fi
+          if grep -E "SCRIPT ERROR|Failed to load script|Parse Error|ERROR:" marboua-import.log; then exit 1; fi
+
+      - name: Publish validation diagnostics
+        if: steps.validate.outcome == 'failure'
+        run: |
+          mkdir -p dist
+          cp marboua-import.log dist/marboua-build-error.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/marboua-build-error.txt
+          git commit -m "Save Marboua build diagnostics [skip ci]" || true
+          git push || true
+          exit 1
 
       - name: Export APK
         env:
@@ -106,7 +120,8 @@ jobs:
           cp build/Marboua-dev.apk dist/Marboua.apk
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/Marboua.apk
+          rm -f dist/marboua-build-error.txt
+          git add dist/Marboua.apk dist/marboua-build-error.txt 2>/dev/null || git add dist/Marboua.apk
           if git diff --cached --quiet; then
             echo "APK unchanged"
           else
