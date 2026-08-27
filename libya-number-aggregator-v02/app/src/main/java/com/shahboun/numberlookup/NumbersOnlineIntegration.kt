@@ -4,31 +4,20 @@ import android.content.Context
 import org.json.JSONObject
 import java.net.URL
 
-class NumbersOnlineProvider(context: Context) : HttpLookupProvider(context) {
+class NumbersOnlineProvider(private val appContext: Context) : HttpLookupProvider(appContext) {
     override val id = "numbers_online"
     override val displayName = "Numbers Online"
     override val priority = 50
-    override val enabled: Boolean get() = prefs.getBoolean("NUMBERS_ONLINE_ENABLED", true)
+    override val enabled: Boolean get() = true
     override val supportsNameSearch = false
 
-    private val key: String get() = prefs.getString("NUMBERS_ONLINE_API_KEY", "").orEmpty().trim()
+    private val key: String
+        get() = ConfigStore(appContext).load().firstOrNull { it.id == 4 }?.bearerToken.orEmpty().trim()
 
     override fun isConfigured(): Boolean = key.isNotBlank()
 
-    fun saveKey(value: String) {
-        prefs.edit()
-            .putString("NUMBERS_ONLINE_API_KEY", value.trim())
-            .putBoolean("NUMBERS_ONLINE_ENABLED", value.isNotBlank())
-            .apply()
-    }
-
-    fun maskedKey(): String {
-        if (key.isBlank()) return ""
-        return if (key.length <= 8) "••••••••" else key.take(4) + "••••••••" + key.takeLast(4)
-    }
-
     override suspend fun lookupByPhone(phone: NormalizedPhone): List<UnifiedLookupResult> {
-        if (!enabled || !isConfigured()) return emptyList()
+        if (!isConfigured()) return emptyList()
         val started = System.currentTimeMillis()
         val url = URL("https://numbers.online/api/v1/lookup/${enc(phone.e164Number)}")
         val (code, body) = requestJson(url, mapOf("X-API-Key" to key))
@@ -72,18 +61,10 @@ class NumbersOnlineProvider(context: Context) : HttpLookupProvider(context) {
     override suspend fun healthCheck(): ProviderHealth = ProviderHealth(
         id = id,
         displayName = displayName,
-        enabled = enabled,
+        enabled = true,
         priority = priority,
-        state = when {
-            !enabled -> ProviderState.DISABLED
-            !isConfigured() -> ProviderState.NEEDS_CONFIGURATION
-            else -> ProviderState.READY
-        },
-        lastMessage = when {
-            !enabled -> "متوقف"
-            !isConfigured() -> "أدخل مفتاح الخدمة مرة واحدة"
-            else -> "مُعدّ للبحث"
-        }
+        state = if (isConfigured()) ProviderState.READY else ProviderState.NEEDS_CONFIGURATION,
+        lastMessage = if (isConfigured()) "مُعدّ للبحث" else "أدخل مفتاح Numbers Online في خانة Token للمصدر 4"
     )
 
     private fun firstNonBlank(o: JSONObject, vararg keys: String): String {
@@ -106,10 +87,6 @@ class LookupRepositoryV2(private val context: Context) {
 
         val alreadyHasName = base.results.any { it.found && !it.primaryName.isNullOrBlank() }
         val extraHealth = mutableListOf<ProviderHealth>()
-        if (!numbers.enabled) {
-            extraHealth += numbers.healthCheck()
-            return base.copy(providerHealth = mergeHealth(base.providerHealth, extraHealth))
-        }
         if (!numbers.isConfigured()) {
             extraHealth += numbers.healthCheck()
             return base.copy(providerHealth = mergeHealth(base.providerHealth, extraHealth))
@@ -144,10 +121,6 @@ class LookupRepositoryV2(private val context: Context) {
     suspend fun health(): List<ProviderHealth> = mergeHealth(legacy.health(), listOf(numbers.healthCheck()))
 
     fun forceRefresh(phone: String) = legacy.forceRefresh(phone)
-
-    fun saveNumbersOnlineKey(value: String) = numbers.saveKey(value)
-    fun numbersOnlineMaskedKey(): String = numbers.maskedKey()
-    fun numbersOnlineConfigured(): Boolean = numbers.isConfigured()
 
     private fun mergeHealth(a: List<ProviderHealth>, b: List<ProviderHealth>): List<ProviderHealth> =
         (a + b).associateBy { it.id }.values.sortedBy { it.priority }
