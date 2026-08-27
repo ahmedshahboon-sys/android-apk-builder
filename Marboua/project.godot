@@ -2,7 +2,7 @@
 config/name="مربوعة"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.3")
-config/icon="res://icon.png"
+config/icon="res://icon.jpg"
 
 [display]
 window/size/viewport_width=1080
