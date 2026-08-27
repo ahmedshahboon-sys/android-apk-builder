@@ -8,6 +8,9 @@ on:
       - '.github/workflows/build-marboua-apk.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
@@ -50,7 +53,7 @@ jobs:
           base64 -d Marboua/icon.b64 > Marboua/icon.png
           curl -fL --retry 5 -o Marboua/assets/Cairo-Regular.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf"
           sed -i 's|__SUPABASE_URL__|https://sxvmwbvieailheniiafk.supabase.co|g' Marboua/main.gd
-          sed -i 's|__SUPABASE_PUBLISHABLE_KEY__|sb_publishable_fT12BreigZpkMezzzg236Q_DcWg5HWr|g' Marboua/main.gd
+          sed -i 's|__SUPABASE_PUBLISHABLE_KEY__|eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN4dm13YnZpZWFpbGhlbmlpYWZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3ODU3NDYsImV4cCI6MjEwMzM2MTc0Nn0.b1J0--ZG3IDiDKTIEEyqUFkLzP7qtSQha1XwmqrKRHQ|g' Marboua/main.gd
           test -s Marboua/icon.png
           test -s Marboua/assets/Cairo-Regular.ttf
           ! grep -q '__SUPABASE_' Marboua/main.gd
@@ -96,3 +99,17 @@ jobs:
           name: Marboua-Development-APK
           path: build/Marboua-dev.apk
           if-no-files-found: error
+
+      - name: Publish APK to repository
+        run: |
+          mkdir -p dist
+          cp build/Marboua-dev.apk dist/Marboua.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/Marboua.apk
+          if git diff --cached --quiet; then
+            echo "APK unchanged"
+          else
+            git commit -m "Publish Marboua APK [skip ci]"
+            git push
+          fi
