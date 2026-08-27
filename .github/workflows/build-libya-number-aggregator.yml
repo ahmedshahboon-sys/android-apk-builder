@@ -26,6 +26,10 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Run lookup unit tests
+        working-directory: libya-number-aggregator-v02
+        run: gradle --no-daemon :app:testDebugUnitTest
+
       - name: Build debug APK
         working-directory: libya-number-aggregator-v02
         run: gradle --no-daemon :app:assembleDebug
@@ -33,12 +37,12 @@ jobs:
       - name: Copy APK
         run: |
           mkdir -p output
-          cp libya-number-aggregator-v02/app/build/outputs/apk/debug/app-debug.apk output/Libya-Number-Aggregator-v0.4-debug.apk
+          cp libya-number-aggregator-v02/app/build/outputs/apk/debug/app-debug.apk output/Libya-Number-Aggregator-v0.5-debug.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Libya-Number-Aggregator-v0.4-debug
-          path: output/Libya-Number-Aggregator-v0.4-debug.apk
+          name: Libya-Number-Aggregator-v0.5-debug
+          path: output/Libya-Number-Aggregator-v0.5-debug.apk
           if-no-files-found: error
           retention-days: 30
