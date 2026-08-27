@@ -56,14 +56,14 @@ func make_background() -> VBoxContainer:
 	margin.add_child(body)
 	return body
 
-func title(text: String, size := 52) -> Label:
+func title(text: String, size: int = 52) -> Label:
 	var l := Label.new()
 	l.text = text
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	l.add_theme_font_size_override("font_size", size)
 	return l
 
-func line(placeholder: String, secret := false) -> LineEdit:
+func line(placeholder: String, secret: bool = false) -> LineEdit:
 	var e := LineEdit.new()
 	e.placeholder_text = placeholder
 	e.secret = secret
