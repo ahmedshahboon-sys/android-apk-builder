@@ -83,8 +83,8 @@ func show_auth() -> void:
 	poll_timer.stop()
 	var root := make_background()
 	var logo := TextureRect.new()
-	if ResourceLoader.exists("res://icon.png"):
-		logo.texture = load("res://icon.png")
+	if ResourceLoader.exists("res://icon.jpg"):
+		logo.texture = load("res://icon.jpg")
 	logo.custom_minimum_size = Vector2(0, 330)
 	logo.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
 	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
