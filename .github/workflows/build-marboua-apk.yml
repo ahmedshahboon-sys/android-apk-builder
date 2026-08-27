@@ -107,11 +107,11 @@ jobs:
           GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
           set -o pipefail
-          mkdir -p build
+          mkdir -p Marboua/build
           ./godot --headless --path Marboua --export-debug "Android" build/Marboua-dev.apk 2>&1 | tee marboua-export.log
           if grep -E "SCRIPT ERROR|Failed to load script|Parse Error|ERROR:" marboua-export.log; then exit 1; fi
-          test -s build/Marboua-dev.apk
-          ls -lh build/Marboua-dev.apk
+          test -s Marboua/build/Marboua-dev.apk
+          ls -lh Marboua/build/Marboua-dev.apk
 
       - name: Publish export diagnostics
         if: steps.export_apk.outcome == 'failure'
@@ -129,13 +129,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Marboua-Development-APK
-          path: build/Marboua-dev.apk
+          path: Marboua/build/Marboua-dev.apk
           if-no-files-found: error
 
       - name: Publish APK to repository
         run: |
           mkdir -p dist
-          cp build/Marboua-dev.apk dist/Marboua.apk
+          cp Marboua/build/Marboua-dev.apk dist/Marboua.apk
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f dist/marboua-build-error.txt
