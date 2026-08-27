@@ -8,6 +8,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
@@ -18,21 +20,33 @@ class SourcesActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        supportActionBar?.title = "مصادر البحث"
-        supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
-        val root = ScrollView(this).apply { isFillViewport = true }
+        val root = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(0xFFF7F8FA.toInt())
+        }
         list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(20, 20, 20, 32)
+            setPadding(24, 18, 24, 36)
         }
         root.addView(list)
         setContentView(root)
+        applyInsets(root)
         render()
     }
 
-    override fun onSupportNavigateUp(): Boolean { finish(); return true }
+    private fun applyInsets(root: View) {
+        val l = root.paddingLeft
+        val t = root.paddingTop
+        val r = root.paddingRight
+        val b = root.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(l + bars.left, t + bars.top, r + bars.right, b + bars.bottom)
+            insets
+        }
+    }
 
     override fun onResume() {
         super.onResume()
@@ -41,71 +55,68 @@ class SourcesActivity : AppCompatActivity() {
 
     private fun render() {
         list.removeAllViews()
-        val title = TextView(this).apply {
+        list.addView(TextView(this).apply {
             text = "مصادر البحث"
             textSize = 27f
             gravity = Gravity.START
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        list.addView(title)
-        val subtitle = TextView(this).apply {
-            text = "كل مصدر مستقل ويمكن تعطيله أو إضافة مصدر جديد لاحقًا بدون تغيير شاشة البحث. مفاتيح API لا تُعرض هنا."
+        })
+        list.addView(TextView(this).apply {
+            text = "حالة مختصرة للمصادر. «مُعدّ» تعني أن إعداداته موجودة، وليس ضمانًا أن كل رقم له اسم."
             textSize = 14f
-            setPadding(0, 8, 0, 18)
-        }
-        list.addView(subtitle)
+            setTextColor(0xFF626871.toInt())
+            setPadding(0, 6, 0, 16)
+        })
 
         lifecycleScope.launch {
-            val health = LookupRepository(this@SourcesActivity).health()
-            health.forEach(::addProviderCard)
+            LookupRepositoryV2(this@SourcesActivity).health().forEach(::addProviderCard)
 
-            val legacy = MaterialButton(this@SourcesActivity).apply {
-                text = "إعداد المصادر الحالية 1–5"
+            list.addView(MaterialButton(this@SourcesActivity).apply {
+                text = "إعداد المصادر والمفتاح"
                 setOnClickListener { startActivity(Intent(this@SourcesActivity, SettingsActivity::class.java)) }
-            }
-            list.addView(legacy)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(0, 10, 0, 10)
+                }
+            })
 
-            val note = TextView(this@SourcesActivity).apply {
-                text = "CallerKit وTrestle وAbstract تبقى بحالة «يحتاج إعداد» حتى تُدخل بيانات الاعتماد الرسمية في secure configuration. لا توجد أي مفاتيح حقيقية داخل المستودع."
+            list.addView(TextView(this@SourcesActivity).apply {
+                text = "لتفعيل Numbers Online: افتح الإعدادات، ثم المصدر 4، والصق المفتاح في خانة Bearer Token. الـProvider يستخدم العنوان الرسمي تلقائيًا ولا يعرض المفتاح هنا."
                 textSize = 13f
-                setPadding(0, 18, 0, 0)
-            }
-            list.addView(note)
+                setTextColor(0xFF6B7179.toInt())
+                setPadding(4, 8, 4, 16)
+            })
         }
     }
 
     private fun addProviderCard(h: ProviderHealth) {
         val stateArabic = when (h.state) {
-            ProviderState.READY -> "متصل/جاهز"
+            ProviderState.READY -> "مُعدّ"
             ProviderState.NEEDS_CONFIGURATION -> "يحتاج إعداد"
             ProviderState.DISABLED -> "متوقف"
             ProviderState.RATE_LIMITED -> "حد الطلبات"
-            ProviderState.ERROR -> "خطأ مؤقت"
+            ProviderState.ERROR -> "غير متاح مؤقتًا"
         }
         val card = MaterialCardView(this).apply {
-            radius = 22f
-            cardElevation = 2f
-            setContentPadding(22, 20, 22, 20)
-            val textView = TextView(this@SourcesActivity).apply {
+            radius = 20f
+            cardElevation = 1f
+            strokeWidth = 1
+            setContentPadding(20, 16, 20, 16)
+            addView(TextView(this@SourcesActivity).apply {
                 textDirection = View.TEXT_DIRECTION_RTL
                 text = buildString {
                     append(h.displayName)
                     append("\n")
-                    append("الحالة: $stateArabic")
-                    append("\nالأولوية: ${h.priority}")
-                    append("\nمفعّل: ${if (h.enabled) "نعم" else "لا"}")
-                    h.lastResponseTimeMs?.let { append("\nآخر زمن استجابة: ${it}ms") }
-                    if (h.lastMessage.isNotBlank()) append("\n${h.lastMessage}")
-                    if (h.successCount > 0) append("\nنجاحات مسجلة: ${h.successCount}")
+                    append(stateArabic)
+                    if (h.lastMessage.isNotBlank() && h.lastMessage != h.state.name) append(" • ${h.lastMessage}")
+                    h.lastResponseTimeMs?.let { append(" • ${it}ms") }
                 }
-                textSize = 15f
-                setLineSpacing(3f, 1.05f)
-            }
-            addView(textView)
+                textSize = 14.5f
+                setLineSpacing(3f, 1.03f)
+            })
         }
-        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        lp.setMargins(0, 0, 0, 14)
-        card.layoutParams = lp
+        card.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, 0, 0, 10)
+        }
         list.addView(card)
     }
 }
