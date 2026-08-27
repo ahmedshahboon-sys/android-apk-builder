@@ -57,6 +57,7 @@ jobs:
           sed -i 's/var pass := line/var password_input := line/' Marboua/main.gd
           sed -i 's/root.add_child(pass)/root.add_child(password_input)/' Marboua/main.gd
           sed -i 's/user.text, pass.text/user.text, password_input.text/g' Marboua/main.gd
+          sed -i 's/rpc(/api_rpc(/g' Marboua/main.gd
           test -s Marboua/icon.jpg
           test -s Marboua/assets/Cairo-Regular.ttf
           ! grep -q '__SUPABASE_' Marboua/main.gd
