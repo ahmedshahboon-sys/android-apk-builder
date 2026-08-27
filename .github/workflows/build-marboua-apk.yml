@@ -21,20 +21,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Install Android SDK packages
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER=$(find "$ANDROID_HOME" -type f -name sdkmanager | head -1); fi
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
-
       - name: Download Godot and Android templates
         run: |
           set -euxo pipefail
@@ -46,61 +43,35 @@ jobs:
           unzip -q templates.tpz -d templates-unpacked
           mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
           cp -r templates-unpacked/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
-
-      - name: Prepare Marboua branding, Cairo font and server config
+      - name: Prepare Marboua assets and server config
         run: |
           mkdir -p Marboua/assets
           base64 -d Marboua/icon.b64 > Marboua/icon.jpg
           curl -fL --retry 5 -o Marboua/assets/Cairo-Regular.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf"
           sed -i 's|__SUPABASE_URL__|https://sxvmwbvieailheniiafk.supabase.co|g' Marboua/main.gd
           sed -i 's|__SUPABASE_PUBLISHABLE_KEY__|eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN4dm13YnZpZWFpbGhlbmlpYWZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3ODU3NDYsImV4cCI6MjEwMzM2MTc0Nn0.b1J0--ZG3IDiDKTIEEyqUFkLzP7qtSQha1XwmqrKRHQ|g' Marboua/main.gd
-          sed -i 's/var pass := line/var password_input := line/' Marboua/main.gd
-          sed -i 's/root.add_child(pass)/root.add_child(password_input)/' Marboua/main.gd
-          sed -i 's/user.text, pass.text/user.text, password_input.text/g' Marboua/main.gd
-          sed -i 's/rpc(/api_rpc(/g' Marboua/main.gd
           test -s Marboua/icon.jpg
           test -s Marboua/assets/Cairo-Regular.ttf
           ! grep -q '__SUPABASE_' Marboua/main.gd
-
       - name: Configure Android paths
         run: |
           mkdir -p "$HOME/.config/godot"
           cat > "$HOME/.config/godot/editor_settings-4.7.tres" <<EOF
           [gd_resource type="EditorSettings" format=3]
-
           [resource]
           export/android/java_sdk_path = "$JAVA_HOME"
           export/android/android_sdk_path = "$ANDROID_HOME"
           EOF
-
-      - name: Restore test signing key
+      - name: Restore signing key
         run: |
           base64 -d android/fixed_debug_keystore.b64 > debug.keystore
           keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey >/dev/null
-
       - name: Validate Marboua project
-        id: validate
-        continue-on-error: true
         run: |
           set -o pipefail
           ./godot --headless --editor --path Marboua --quit 2>&1 | tee marboua-import.log
           if grep -E "SCRIPT ERROR|Failed to load script|Parse Error|ERROR:" marboua-import.log; then exit 1; fi
-
-      - name: Publish validation diagnostics
-        if: steps.validate.outcome == 'failure'
-        run: |
-          mkdir -p dist
-          cp marboua-import.log dist/marboua-build-error.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/marboua-build-error.txt
-          git commit -m "Save Marboua build diagnostics [skip ci]" || true
-          git push || true
-          exit 1
-
       - name: Export APK
-        id: export_apk
-        continue-on-error: true
         env:
           GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ github.workspace }}/debug.keystore
           GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
@@ -111,27 +82,12 @@ jobs:
           ./godot --headless --path Marboua --export-debug "Android" build/Marboua-dev.apk 2>&1 | tee marboua-export.log
           if grep -E "SCRIPT ERROR|Failed to load script|Parse Error|ERROR:" marboua-export.log; then exit 1; fi
           test -s Marboua/build/Marboua-dev.apk
-          ls -lh Marboua/build/Marboua-dev.apk
-
-      - name: Publish export diagnostics
-        if: steps.export_apk.outcome == 'failure'
-        run: |
-          mkdir -p dist
-          cp marboua-export.log dist/marboua-build-error.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/marboua-build-error.txt
-          git commit -m "Save Marboua export diagnostics [skip ci]" || true
-          git push || true
-          exit 1
-
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Marboua-Development-APK
           path: Marboua/build/Marboua-dev.apk
           if-no-files-found: error
-
       - name: Publish APK to repository
         run: |
           mkdir -p dist
@@ -140,9 +96,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f dist/marboua-build-error.txt
           git add -A dist
-          if git diff --cached --quiet; then
-            echo "APK unchanged"
-          else
+          if ! git diff --cached --quiet; then
             git commit -m "Publish Marboua APK [skip ci]"
             git push
           fi
