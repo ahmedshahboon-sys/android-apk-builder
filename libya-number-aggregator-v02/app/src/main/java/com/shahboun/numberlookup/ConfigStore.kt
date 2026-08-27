@@ -5,13 +5,15 @@ import android.content.Context
 class ConfigStore(context: Context) {
     private val p = context.getSharedPreferences("sources", Context.MODE_PRIVATE)
 
+    // Presets come only from endpoints/strings observed in the uploaded reference APKs.
+    // They do not contain credentials and do not bypass authentication.
     private val defaults = listOf(
         SourceConfig(1, "Libya Mobile Lookup (مرجع)", false,
             "https://app.libyamobilelookup.com", "/api/lookup", "/api/lookupall", "GET", "q"),
-        SourceConfig(2, "Lookup 2.2.2 (المضيف غير محسوم)", false,
-            "", "/API/search3.php", "/API/search_all2.php", "GET", "q"),
+        SourceConfig(2, "Lookup 2.2.2 (مرجع)", false,
+            "https://appsn.website/lookup", "/API/search3.php", "/API/search_all2.php", "GET", "q"),
         SourceConfig(3, "WhoLY (مرجع)", false,
-            "https://filess.site", "/ly/api/index.php?action=lookup", "/ly/api/index.php?action=search_name", "GET", "q"),
+            "https://filess.site", "/ly/api/index.php?action=search", "/ly/api/index.php?action=search_name", "GET", "q"),
         SourceConfig(4, "المصدر 4", false, "", "/lookup", "/search-name"),
         SourceConfig(5, "المصدر 5", false, "", "/lookup", "/search-name")
     )
