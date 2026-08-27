@@ -1,0 +1,43 @@
+name: Build Libya Number Aggregator APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'libya-number-aggregator-v02/**'
+      - '.github/workflows/build-libya-number-aggregator.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        working-directory: libya-number-aggregator-v02
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Copy APK
+        run: |
+          mkdir -p output
+          cp libya-number-aggregator-v02/app/build/outputs/apk/debug/app-debug.apk output/Libya-Number-Aggregator-v0.2-debug.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Libya-Number-Aggregator-v0.2-debug
+          path: output/Libya-Number-Aggregator-v0.2-debug.apk
+          if-no-files-found: error
