@@ -10,25 +10,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.card.MaterialCardView
 import com.shahboun.numberlookup.databinding.ActivityMainBinding
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
     private lateinit var b: ActivityMainBinding
-    private val client = LookupClient()
+    private lateinit var repository: LookupRepository
+    private var searchJob: Job? = null
     private var pendingSearch = false
 
-    private val contactsPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    private val contactsPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         if (pendingSearch) {
             pendingSearch = false
-            if (granted) runSearchInternal() else {
-                b.sourceStatus.text = "صلاحية جهات الاتصال مرفوضة. سيستمر البحث فقط في المصادر الخارجية المفعلة."
-                runSearchInternal()
-            }
+            runSearchInternal()
         }
     }
 
@@ -36,17 +33,35 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
-        b.settings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+        repository = LookupRepository(this)
+        b.settings.setOnClickListener { startActivity(Intent(this, SourcesActivity::class.java)) }
         b.search.setOnClickListener { runSearch() }
+        b.forceRefresh.setOnClickListener {
+            val q = b.query.text.toString().trim()
+            if (b.byPhone.isChecked && q.isNotBlank()) {
+                repository.forceRefresh(q)
+                runSearchInternal(forceRefresh = true)
+            }
+        }
+        b.searchType.setOnCheckedChangeListener { _, id ->
+            b.query.hint = if (id == b.byPhone.id) "أدخل رقم الهاتف" else "أدخل الاسم"
+            b.query.inputType = if (id == b.byPhone.id) android.text.InputType.TYPE_CLASS_PHONE else android.text.InputType.TYPE_CLASS_TEXT
+            b.forceRefresh.visibility = if (id == b.byPhone.id) View.VISIBLE else View.GONE
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        searchJob?.cancel()
     }
 
     private fun runSearch() {
         val q = b.query.text.toString().trim()
         if (q.isBlank()) {
-            b.query.error = "اكتب رقمًا أو اسمًا"
+            b.query.error = if (b.byPhone.isChecked) "أدخل رقم الهاتف" else "أدخل الاسم"
             return
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+        if (b.byPhone.isChecked && ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
             pendingSearch = true
             contactsPermission.launch(Manifest.permission.READ_CONTACTS)
             return
@@ -54,66 +69,103 @@ class MainActivity : AppCompatActivity() {
         runSearchInternal()
     }
 
-    private fun runSearchInternal() {
+    private fun runSearchInternal(forceRefresh: Boolean = false) {
         val q = b.query.text.toString().trim()
         val byPhone = b.byPhone.isChecked
-        val configs = ConfigStore(this).load().filter { it.enabled && it.baseUrl.isNotBlank() }
-        val canReadContacts = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
-
-        b.progress.visibility = View.VISIBLE
-        b.search.isEnabled = false
+        searchJob?.cancel()
+        setLoading(true)
         b.results.removeAllViews()
-        val totalSources = configs.size + if (canReadContacts) 1 else 0
-        b.sourceStatus.text = if (totalSources > 0) "جارٍ البحث في $totalSources مصدر..." else "لا توجد مصادر متاحة."
+        b.summary.text = ""
+        b.sourceStatus.text = "جاري البحث في مصادر البيانات…"
 
-        lifecycleScope.launch {
-            val local = if (canReadContacts) {
-                withContext(Dispatchers.IO) { ContactLookup(this@MainActivity).search(q, byPhone) }
-            } else emptyList()
-
-            val outcomes = configs.map { c ->
-                async(Dispatchers.IO) { client.search(c, q, byPhone) }
-            }.awaitAll()
-
-            val all = local + outcomes.flatMap { it.results }
-            val merged = withContext(Dispatchers.Default) { ResultMerger.merge(all) }
-            b.progress.visibility = View.GONE
-            b.search.isEnabled = true
-
-            val statusLines = mutableListOf<String>()
-            if (canReadContacts) statusLines += "✓ جهات اتصال الهاتف: ${local.size} نتيجة — محلي فقط، بدون رفع"
-            statusLines += outcomes.map { o ->
-                val mark = if (o.ok) "✓" else "✗"
-                "$mark ${o.source}: ${o.message}${if (o.results.isNotEmpty()) " — ${o.results.size} نتيجة" else ""}"
-            }
-            if (statusLines.isEmpty()) statusLines += "لا توجد مصادر مفعلة."
-            b.sourceStatus.text = statusLines.joinToString("\n")
-
-            val responded = outcomes.count { it.ok } + if (canReadContacts) 1 else 0
-            b.summary.text = "${all.size} نتيجة خام • ${merged.size} بعد الدمج • $responded/$totalSources مصادر استجابت"
-
-            if (merged.isEmpty()) {
-                addResultText(if (canReadContacts) "لم يتم العثور على الاسم في جهات اتصال هاتفك أو المصادر المفعلة." else "لا توجد نتائج مطابقة من المصادر التي استجابت.")
-            } else {
-                merged.forEach { r ->
-                    addResultText(buildString {
-                        append("الرقم: ${r.number}\n")
-                        append("الاسم: ${r.names.ifEmpty { listOf("—") }.joinToString(" / ")}\n")
-                        append("المصادر: ${r.sources.joinToString("، ")}\n")
-                        append("درجة الاتفاق: ${r.confidence}%")
-                    })
+        searchJob = lifecycleScope.launch {
+            try {
+                val envelope = if (byPhone) repository.lookupByPhone(q, forceRefresh) else repository.searchByName(q)
+                setLoading(false)
+                if (byPhone && envelope.normalizedPhone?.isValidFormat == false) {
+                    b.sourceStatus.text = "الرقم غير صالح. استخدم رقمًا ليبيًا مثل 091xxxxxxx أو +21891xxxxxxx."
+                    addStateCard("رقم غير صالح", "راجع الرقم وحاول مرة أخرى.")
+                    return@launch
                 }
+                val status = envelope.providerHealth.joinToString("\n") { h ->
+                    val mark = when (h.state) {
+                        ProviderState.READY -> "✓"
+                        ProviderState.NEEDS_CONFIGURATION -> "⚙"
+                        ProviderState.DISABLED -> "○"
+                        ProviderState.RATE_LIMITED -> "⏱"
+                        ProviderState.ERROR -> "!"
+                    }
+                    "$mark ${h.displayName}: ${h.lastMessage.ifBlank { h.state.name }}${h.lastResponseTimeMs?.let { " • ${it}ms" } ?: ""}"
+                }
+                b.sourceStatus.text = if (envelope.fromCache) "✓ نتيجة من الذاكرة المحلية\n$status" else status.ifBlank { "لا توجد مصادر متاحة." }
+                b.summary.text = if (envelope.results.isEmpty()) "لا توجد نتيجة" else "${envelope.results.size} نتيجة موحّدة"
+
+                if (envelope.results.isEmpty()) {
+                    addStateCard("لا توجد نتيجة", "تم فحص المصادر المتاحة ولم يُعثر على نتيجة مطابقة.")
+                } else if (byPhone) {
+                    envelope.results.forEach(::addPhoneResult)
+                } else {
+                    envelope.results.forEach(::addNameResult)
+                }
+            } catch (_: CancellationException) {
+                setLoading(false)
+            } catch (_: Exception) {
+                setLoading(false)
+                b.sourceStatus.text = "حدث خطأ مؤقت أثناء البحث. جرّب مرة أخرى."
+                addStateCard("تعذر إكمال البحث", "قد يكون الإنترنت غير متاح أو أحد المصادر لا يستجيب.")
             }
         }
     }
 
-    private fun addResultText(value: String) {
-        val tv = TextView(this).apply {
-            textSize = 17f
-            setPadding(16, 20, 16, 20)
-            text = value
-            setBackgroundResource(android.R.drawable.dialog_holo_light_frame)
+    private fun setLoading(loading: Boolean) {
+        b.progress.visibility = if (loading) View.VISIBLE else View.GONE
+        b.search.isEnabled = !loading
+        b.query.isEnabled = !loading
+    }
+
+    private fun addPhoneResult(r: UnifiedLookupResult) {
+        val name = r.primaryName ?: "لم يُعثر على اسم"
+        val confidenceText = r.confidence?.let { "${(it * 100).toInt().coerceIn(0, 100)}%" }
+        val lines = buildList {
+            add("الرقم: ${r.phoneNumber.ifBlank { r.normalizedNumber }}")
+            r.carrier?.takeIf(String::isNotBlank)?.let { add("شركة الاتصالات: $it") }
+            r.lineType?.takeIf(String::isNotBlank)?.let { add("نوع الخط: $it") }
+            r.isValid?.let { add("حالة الرقم: ${if (it) "صالح" else "غير صالح"}") }
+            confidenceText?.let { add("درجة الترجيح: $it") }
+            if (r.aliases.isNotEmpty()) add("أسماء أخرى: ${r.aliases.joinToString("، ")}")
+            if (r.sourcesMatched.isNotEmpty()) add("المصادر المطابقة: ${r.sourcesMatched.joinToString("، ")}")
         }
-        b.results.addView(tv)
+        addResultCard(name, lines.joinToString("\n"))
+    }
+
+    private fun addNameResult(r: UnifiedLookupResult) {
+        addResultCard(r.primaryName ?: "اسم غير متاح", buildString {
+            append("الرقم: ${r.phoneNumber.ifBlank { r.normalizedNumber }}")
+            if (r.aliases.isNotEmpty()) append("\nاسم بديل: ${r.aliases.first()}")
+        })
+    }
+
+    private fun addStateCard(title: String, message: String) = addResultCard(title, message)
+
+    private fun addResultCard(title: String, body: String) {
+        val card = MaterialCardView(this).apply {
+            radius = 22f
+            cardElevation = 3f
+            setContentPadding(24, 22, 24, 22)
+            val content = TextView(this@MainActivity).apply {
+                textDirection = View.TEXT_DIRECTION_RTL
+                textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                text = "$title\n\n$body"
+                textSize = 16f
+                setLineSpacing(4f, 1.05f)
+            }
+            addView(content)
+            val lp = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, 16) }
+            layoutParams = lp
+        }
+        b.results.addView(card)
     }
 }
