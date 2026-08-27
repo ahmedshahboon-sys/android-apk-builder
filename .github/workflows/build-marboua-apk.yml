@@ -50,10 +50,14 @@ jobs:
       - name: Prepare Marboua branding, Cairo font and server config
         run: |
           mkdir -p Marboua/assets
-          base64 -d Marboua/icon.b64 > Marboua/icon.png
+          base64 -d Marboua/icon.b64 > Marboua/icon.jpg
+          convert Marboua/icon.jpg Marboua/icon.png
           curl -fL --retry 5 -o Marboua/assets/Cairo-Regular.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf"
           sed -i 's|__SUPABASE_URL__|https://sxvmwbvieailheniiafk.supabase.co|g' Marboua/main.gd
           sed -i 's|__SUPABASE_PUBLISHABLE_KEY__|eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN4dm13YnZpZWFpbGhlbmlpYWZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3ODU3NDYsImV4cCI6MjEwMzM2MTc0Nn0.b1J0--ZG3IDiDKTIEEyqUFkLzP7qtSQha1XwmqrKRHQ|g' Marboua/main.gd
+          sed -i 's/var pass := line/var password_input := line/' Marboua/main.gd
+          sed -i 's/root.add_child(pass)/root.add_child(password_input)/' Marboua/main.gd
+          sed -i 's/user.text, pass.text/user.text, password_input.text/g' Marboua/main.gd
           test -s Marboua/icon.png
           test -s Marboua/assets/Cairo-Regular.ttf
           ! grep -q '__SUPABASE_' Marboua/main.gd
@@ -121,7 +125,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f dist/marboua-build-error.txt
-          git add dist/Marboua.apk dist/marboua-build-error.txt 2>/dev/null || git add dist/Marboua.apk
+          git add -A dist
           if git diff --cached --quiet; then
             echo "APK unchanged"
           else
