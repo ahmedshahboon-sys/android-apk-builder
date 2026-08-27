@@ -1,87 +1,145 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:background="#F7F8FA">
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:padding="20dp"
-        android:layoutDirection="rtl">
+        android:layoutDirection="rtl"
+        android:textDirection="rtl">
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="كاشف الأرقام الموحّد"
-            android:textSize="28sp"
-            android:textStyle="bold" />
+            android:textSize="29sp"
+            android:textStyle="bold"
+            android:textColor="#15171A" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="بحث موحّد بالرقم أو الاسم ومقارنة النتائج بين عدة مصادر"
-            android:layout_marginTop="6dp" />
-        <EditText
-            android:id="@+id/query"
+            android:text="بحث موحّد وآمن عبر المصادر المتاحة"
+            android:textSize="15sp"
+            android:textColor="#666B73"
+            android:layout_marginTop="5dp" />
+
+        <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="رقم الهاتف أو الاسم"
-            android:singleLine="true"
-            android:layout_marginTop="20dp" />
-        <RadioGroup
-            android:id="@+id/searchType"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="10dp">
-            <RadioButton
-                android:id="@+id/byPhone"
-                android:layout_width="wrap_content"
+            android:layout_marginTop="20dp"
+            app:cardCornerRadius="24dp"
+            app:cardElevation="2dp"
+            app:strokeWidth="1dp"
+            app:strokeColor="#E4E7EB">
+
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="بالرقم"
-                android:checked="true" />
-            <RadioButton
-                android:id="@+id/byName"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="بالاسم"
-                android:layout_marginStart="20dp" />
-        </RadioGroup>
-        <Button
-            android:id="@+id/search"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="بحث في كل المصادر"
-            android:layout_marginTop="12dp" />
-        <Button
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <RadioGroup
+                    android:id="@+id/searchType"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <RadioButton
+                        android:id="@+id/byPhone"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="رقم"
+                        android:textStyle="bold"
+                        android:checked="true" />
+                    <RadioButton
+                        android:id="@+id/byName"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="اسم"
+                        android:textStyle="bold"
+                        android:layout_marginStart="28dp" />
+                </RadioGroup>
+
+                <EditText
+                    android:id="@+id/query"
+                    android:layout_width="match_parent"
+                    android:layout_height="58dp"
+                    android:hint="أدخل رقم الهاتف"
+                    android:singleLine="true"
+                    android:inputType="phone"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:layout_marginTop="14dp"
+                    android:background="@android:drawable/edit_text" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/search"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:text="بحث"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:layout_marginTop="14dp"
+                    app:cornerRadius="18dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/forceRefresh"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="تحديث النتيجة من المصادر الآن"
+                    android:layout_marginTop="4dp" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/settings"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="إعدادات المصادر 1–5" />
+            android:layout_height="52dp"
+            android:text="مصادر البحث"
+            android:layout_marginTop="14dp"
+            app:cornerRadius="16dp" />
+
         <ProgressBar
             android:id="@+id/progress"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
             android:visibility="gone"
             android:layout_gravity="center_horizontal"
-            android:layout_margin="12dp" />
+            android:layout_margin="14dp" />
+
         <TextView
             android:id="@+id/sourceStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="حالة المصادر ستظهر هنا"
-            android:layout_marginTop="8dp"
-            android:textSize="14sp" />
+            android:layout_marginTop="10dp"
+            android:textSize="13sp"
+            android:textColor="#5A6068"
+            android:lineSpacingExtra="3dp" />
+
         <TextView
             android:id="@+id/summary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textStyle="bold"
-            android:layout_marginTop="12dp" />
+            android:textSize="16sp"
+            android:textColor="#202327"
+            android:layout_marginTop="14dp" />
+
         <LinearLayout
             android:id="@+id/results"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:layout_marginTop="8dp" />
+            android:layout_marginTop="10dp" />
     </LinearLayout>
 </ScrollView>
