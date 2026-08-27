@@ -99,6 +99,8 @@ jobs:
           exit 1
 
       - name: Export APK
+        id: export_apk
+        continue-on-error: true
         env:
           GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ github.workspace }}/debug.keystore
           GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
@@ -107,9 +109,21 @@ jobs:
           set -o pipefail
           mkdir -p build
           ./godot --headless --path Marboua --export-debug "Android" build/Marboua-dev.apk 2>&1 | tee marboua-export.log
-          if grep -E "SCRIPT ERROR|Failed to load script|Parse Error" marboua-export.log; then exit 1; fi
+          if grep -E "SCRIPT ERROR|Failed to load script|Parse Error|ERROR:" marboua-export.log; then exit 1; fi
           test -s build/Marboua-dev.apk
           ls -lh build/Marboua-dev.apk
+
+      - name: Publish export diagnostics
+        if: steps.export_apk.outcome == 'failure'
+        run: |
+          mkdir -p dist
+          cp marboua-export.log dist/marboua-build-error.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/marboua-build-error.txt
+          git commit -m "Save Marboua export diagnostics [skip ci]" || true
+          git push || true
+          exit 1
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
