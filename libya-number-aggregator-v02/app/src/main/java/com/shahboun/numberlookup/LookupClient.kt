@@ -19,11 +19,11 @@ class LookupClient {
             val url = if (method == "GET") URL("$endpoint$separator${c.queryParam}=$encoded") else URL(endpoint)
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = method
-                connectTimeout = 6000
-                readTimeout = 9000
+                connectTimeout = 7000
+                readTimeout = 10000
                 instanceFollowRedirects = true
-                setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "LibyaNumberAggregator/0.2")
+                setRequestProperty("Accept", "application/json, text/plain, */*")
+                setRequestProperty("User-Agent", "LibyaNumberAggregator/0.3")
                 if (c.bearerToken.isNotBlank()) setRequestProperty("Authorization", "Bearer ${c.bearerToken}")
                 if (method == "POST") {
                     doOutput = true
@@ -36,16 +36,22 @@ class LookupClient {
                 val text = (if (status in 200..299) conn.inputStream else conn.errorStream)
                     ?.bufferedReader()?.use { it.readText() }.orEmpty()
                 if (status !in 200..299) {
-                    val msg = when (status) {
+                    val base = when (status) {
                         401, 403 -> "يتطلب مصادقة/صلاحية (HTTP $status)"
                         404 -> "المسار غير موجود (HTTP 404)"
                         429 -> "تم بلوغ حد الطلبات (HTTP 429)"
                         else -> "خطأ HTTP $status"
                     }
-                    SourceOutcome(c.name, false, message = msg)
+                    val detail = compact(text)
+                    SourceOutcome(c.name, false, message = if (detail.isBlank()) base else "$base • رد السيرفر: $detail")
                 } else {
                     val parsed = parse(text, c.name)
-                    SourceOutcome(c.name, true, parsed, if (parsed.isEmpty()) "اتصل بنجاح، لا نتائج" else "متصل")
+                    if (parsed.isEmpty()) {
+                        val detail = compact(text)
+                        SourceOutcome(c.name, true, emptyList(), if (detail.isBlank()) "اتصل بنجاح، لا نتائج" else "اتصل بنجاح • الرد: $detail")
+                    } else {
+                        SourceOutcome(c.name, true, parsed, "متصل")
+                    }
                 }
             } finally {
                 conn.disconnect()
@@ -55,13 +61,20 @@ class LookupClient {
         }
     }
 
+    private fun compact(text: String): String = text
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(220)
+
     private fun friendlyError(e: Exception): String {
         val n = e.javaClass.simpleName
         return when {
             n.contains("UnknownHost", true) -> "تعذر الوصول للمضيف"
             n.contains("Timeout", true) -> "انتهت مهلة الاتصال"
             n.contains("SSL", true) -> "خطأ اتصال آمن SSL"
-            else -> e.message?.take(100) ?: n
+            else -> e.message?.take(140) ?: n
         }
     }
 
@@ -77,7 +90,9 @@ class LookupClient {
                 root.optJSONArray("data") != null -> root.getJSONArray("data")
                 root.optJSONArray("contacts") != null -> root.getJSONArray("contacts")
                 root.optJSONArray("items") != null -> root.getJSONArray("items")
+                root.optJSONArray("result") != null -> root.getJSONArray("result")
                 root.optJSONObject("data") != null -> JSONArray().put(root.getJSONObject("data"))
+                root.optJSONObject("result") != null -> JSONArray().put(root.getJSONObject("result"))
                 else -> JSONArray().put(root)
             }
             else -> JSONArray()
@@ -85,7 +100,7 @@ class LookupClient {
         val out = mutableListOf<LookupResult>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val number = first(o, "number", "phone", "mobile", "msisdn", "telephone")
+            val number = first(o, "number", "phone", "mobile", "msisdn", "telephone", "contact_phone")
             val name = first(o, "name", "full_name", "fullname", "title", "contact_name", "display_name")
             if (number.isNotBlank() || name.isNotBlank()) out += LookupResult(number, name, source)
         }
