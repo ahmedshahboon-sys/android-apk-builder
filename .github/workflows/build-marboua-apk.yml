@@ -44,13 +44,16 @@ jobs:
           mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
           cp -r templates-unpacked/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
 
-      - name: Prepare Marboua branding and Cairo font
+      - name: Prepare Marboua branding, Cairo font and server config
         run: |
           mkdir -p Marboua/assets
           base64 -d Marboua/icon.b64 > Marboua/icon.png
           curl -fL --retry 5 -o Marboua/assets/Cairo-Regular.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf"
+          sed -i 's|__SUPABASE_URL__|https://sxvmwbvieailheniiafk.supabase.co|g' Marboua/main.gd
+          sed -i 's|__SUPABASE_PUBLISHABLE_KEY__|sb_publishable_fT12BreigZpkMezzzg236Q_DcWg5HWr|g' Marboua/main.gd
           test -s Marboua/icon.png
           test -s Marboua/assets/Cairo-Regular.ttf
+          ! grep -q '__SUPABASE_' Marboua/main.gd
 
       - name: Configure Android paths
         run: |
