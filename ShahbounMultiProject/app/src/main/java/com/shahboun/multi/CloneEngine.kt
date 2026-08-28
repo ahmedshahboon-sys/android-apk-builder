@@ -16,7 +16,7 @@ class ReflectiveBlackBoxEngine:CloneEngine{
     override val name="BlackBox / compatible virtual engine"
     private var core:Any?=null
     override fun isAvailable():Boolean=runCatching{Class.forName("top.niunaijun.blackbox.BlackBoxCore")}.isSuccess
-    override fun initialize(context:Context):Result<Unit>=runCatching{
+    override fun initialize(context:Context):Result<Unit> = runCatching<Unit>{
         val c=Class.forName("top.niunaijun.blackbox.BlackBoxCore")
         core=c.getMethod("get").invoke(null)
         Unit
