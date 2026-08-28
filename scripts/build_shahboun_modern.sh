@@ -16,6 +16,7 @@ chmod +x /tmp/ShahbounMultiEngine/gradlew
 mkdir -p /tmp/ShahbounMultiEngine/app/src/main/res/font
 curl -L --fail --retry 3 -o /tmp/ShahbounMultiEngine/app/src/main/res/font/cairo_regular.ttf https://github.com/google/fonts/raw/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf
 python3 "$GITHUB_WORKSPACE/scripts/patch_shahboun_modern.py"
+python3 "$GITHUB_WORKSPACE/scripts/add_shahboun_colors.py"
 
 cd /tmp/ShahbounMultiEngine
 ./gradlew --no-daemon :app:assembleDebug
