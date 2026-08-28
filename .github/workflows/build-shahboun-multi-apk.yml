@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-  issues:
-    types: [opened]
   workflow_dispatch:
 
 permissions:
@@ -13,50 +11,71 @@ permissions:
 
 jobs:
   build-android:
-    if: github.event_name != 'issues' || contains(github.event.issue.title, 'BUILD_SHAHBOUN_MULTI')
     runs-on: ubuntu-latest
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
-      - name: Checkout
+      - name: Checkout build repository
         uses: actions/checkout@v4
-      - name: Set up Java 17
+
+      - name: Set up Java 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.13'
-      - name: Install Android SDK 36
+          java-version: '21'
+
+      - name: Install Android SDK and NDK
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER=$(find "$ANDROID_HOME" -type f -name sdkmanager | head -1); fi
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "build-tools;36.0.0" "platforms;android-36"
-      - name: Verify source
-        run: test -f ShahbounMultiProject/settings.gradle.kts
-      - name: Build debug APK
+          "$SDKMANAGER" "platform-tools" "build-tools;35.0.0" "platforms;android-35" "ndk;29.0.13846066"
+
+      - name: Fetch Android 16 compatible virtualization engine
         run: |
-          gradle -p ShahbounMultiProject --no-daemon :app:assembleDebug
-          test -s ShahbounMultiProject/app/build/outputs/apk/debug/app-debug.apk
+          rm -rf /tmp/ShahbounMultiEngine
+          git clone --depth 1 https://github.com/Black00Z/Blacks-BlackBox.git /tmp/ShahbounMultiEngine
+          cd /tmp/ShahbounMultiEngine
+          chmod +x gradlew
+
+      - name: Apply Shahboun Multi visible identity
+        run: |
+          cd /tmp/ShahbounMultiEngine
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/res/values/strings.xml')
+          s=p.read_text(encoding='utf-8')
+          s=s.replace('<string name="app_name">Black\\\'s BlackBox</string>', '<string name="app_name">Shahboun Multi</string>')
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Build functional APK
+        run: |
+          cd /tmp/ShahbounMultiEngine
+          ./gradlew --no-daemon :app:assembleDebug
+          APK=$(find app/build/outputs/apk/debug -type f -name '*universal*.apk' | head -1)
+          if [ -z "$APK" ]; then APK=$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1); fi
+          test -n "$APK"
+          test -s "$APK"
+          cp "$APK" "$GITHUB_WORKSPACE/ShahbounMulti.apk"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShahbounMulti-Development-APK
-          path: ShahbounMultiProject/app/build/outputs/apk/debug/app-debug.apk
+          name: ShahbounMulti-Functional-APK
+          path: ShahbounMulti.apk
           if-no-files-found: error
+
       - name: Publish APK to repository
         run: |
           mkdir -p dist
-          cp ShahbounMultiProject/app/build/outputs/apk/debug/app-debug.apk dist/ShahbounMulti.apk
+          cp ShahbounMulti.apk dist/ShahbounMulti.apk
           sha256sum dist/ShahbounMulti.apk > dist/ShahbounMulti.apk.sha256
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/ShahbounMulti.apk dist/ShahbounMulti.apk.sha256
           if ! git diff --cached --quiet; then
-            git commit -m "Publish Shahboun Multi APK [skip ci]"
+            git commit -m "Publish functional Shahboun Multi APK [skip ci]"
             git push
           fi
