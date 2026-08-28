@@ -39,15 +39,45 @@ jobs:
           cd /tmp/ShahbounMultiEngine
           chmod +x gradlew
 
-      - name: Apply Shahboun Multi visible identity
+      - name: Apply Shahboun Multi build fixes and identity
         run: |
           cd /tmp/ShahbounMultiEngine
           python3 - <<'PY'
           from pathlib import Path
+
           p=Path('app/src/main/res/values/strings.xml')
           s=p.read_text(encoding='utf-8')
           s=s.replace('<string name="app_name">Black\\\'s BlackBox</string>', '<string name="app_name">Shahboun Multi</string>')
           p.write_text(s, encoding='utf-8')
+
+          Path('settings.gradle').write_text('''pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+                  maven { url "https://www.jitpack.io" }
+                  maven { url "https://maven.aliyun.com/repository/releases" }
+                  maven { url "https://maven.aliyun.com/repository/public" }
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url "https://www.jitpack.io" }
+                  maven { url "https://maven.aliyun.com/repository/releases" }
+                  maven { url "https://maven.aliyun.com/repository/public" }
+              }
+          }
+
+          rootProject.name = "NewBlackbox"
+          include ':app'
+          include ':blackbox-gallery-stub'
+          include ':black-reflection'
+          include ':compiler'
+          include ':Bcore'
+          ''', encoding='utf-8')
           PY
 
       - name: Build functional APK
