@@ -36,24 +36,22 @@ jobs:
           if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER=$(find "$ANDROID_HOME" -type f -name sdkmanager | head -1); fi
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "build-tools;36.0.0" "platforms;android-36"
-      - name: Restore source
-        run: |
-          unzip -q -o ShahbounMulti/source.zip -d "$GITHUB_WORKSPACE"
-          test -f ShahbounMulti/settings.gradle.kts
+      - name: Verify source
+        run: test -f ShahbounMultiProject/settings.gradle.kts
       - name: Build debug APK
         run: |
-          gradle -p ShahbounMulti --no-daemon :app:assembleDebug
-          test -s ShahbounMulti/app/build/outputs/apk/debug/app-debug.apk
+          gradle -p ShahbounMultiProject --no-daemon :app:assembleDebug
+          test -s ShahbounMultiProject/app/build/outputs/apk/debug/app-debug.apk
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ShahbounMulti-Development-APK
-          path: ShahbounMulti/app/build/outputs/apk/debug/app-debug.apk
+          path: ShahbounMultiProject/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Publish APK to repository
         run: |
           mkdir -p dist
-          cp ShahbounMulti/app/build/outputs/apk/debug/app-debug.apk dist/ShahbounMulti.apk
+          cp ShahbounMultiProject/app/build/outputs/apk/debug/app-debug.apk dist/ShahbounMulti.apk
           sha256sum dist/ShahbounMulti.apk > dist/ShahbounMulti.apk.sha256
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
