@@ -1,0 +1,30 @@
+name: Export Audited Sources
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout helper repository
+        uses: actions/checkout@v4
+
+      - name: Fetch approved reference sources
+        run: |
+          set -euo pipefail
+          rm -rf audit-src
+          mkdir -p audit-src
+          git clone --depth 1 https://github.com/Black00Z/Blacks-BlackBox.git audit-src/Blacks-BlackBox
+          git clone --depth 1 https://github.com/jmpews/Dobby.git audit-src/Dobby
+          rm -rf audit-src/Blacks-BlackBox/.git audit-src/Dobby/.git
+          find audit-src -type f -print0 | sort -z | xargs -0 sha256sum > audit-src/SOURCE_SHA256.txt
+
+      - name: Upload source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: shahboun-approved-reference-sources
+          path: audit-src
+          if-no-files-found: error
