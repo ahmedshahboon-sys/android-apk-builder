@@ -38,8 +38,7 @@ jobs:
           "$SDKMANAGER" "platform-tools" "build-tools;36.0.0" "platforms;android-36"
       - name: Restore source
         run: |
-          tr -dc 'A-Za-z0-9+/=' < ShahbounMulti/source.zip.b64 | base64 -d > /tmp/ShahbounMulti.zip
-          unzip -q -o /tmp/ShahbounMulti.zip -d "$GITHUB_WORKSPACE"
+          unzip -q -o ShahbounMulti/source.zip -d "$GITHUB_WORKSPACE"
           test -f ShahbounMulti/settings.gradle.kts
       - name: Build debug APK
         run: |
