@@ -39,16 +39,76 @@ jobs:
           cd /tmp/ShahbounMultiEngine
           chmod +x gradlew
 
-      - name: Apply Shahboun Multi build fixes and identity
+      - name: Apply Shahboun Multi Arabic identity
         run: |
           cd /tmp/ShahbounMultiEngine
           python3 - <<'PY'
           from pathlib import Path
 
+          # Keep the proven virtualization engine intact; localize user-facing resources only.
+          replacements = {
+            "Black's BlackBox":"Shahboun Multi",
+            "Setting":"الإعدادات",
+            "Settings":"الإعدادات",
+            "Installed App":"التطبيقات المثبتة",
+            "Installed Apps":"التطبيقات المثبتة",
+            "CHOOSE":"اختيار",
+            "Choose":"اختيار",
+            "Fake Location(Preview)":"الموقع الوهمي (تجريبي)",
+            "Fake Location":"الموقع الوهمي",
+            "Device Spoofing":"تغيير هوية الجهاز",
+            "Black's BlackBox Gallery":"معرض Shahboun Multi",
+            "GMS Manager":"إدارة خدمات Google",
+            "Go to Gms Manager":"فتح إدارة خدمات Google",
+            "Hide Root":"إخفاء الروت",
+            "Daemon":"خدمة الخلفية",
+            "Use VPN Network":"استخدام شبكة VPN",
+            "VPN mode is not supported on Android 14+":"وضع VPN غير مدعوم على Android 14 فما فوق",
+            "Disable Flag Secure":"السماح بلقطات الشاشة",
+            "Allow screenshots and screen recording in apps":"السماح بلقطات الشاشة وتسجيل الشاشة داخل التطبيقات",
+            "Dark mode":"الوضع الداكن",
+            "Use a dark theme for the host UI":"استخدام المظهر الداكن لواجهة التطبيق",
+            "Fallback for Some Apps":"وضع التوافق لبعض التطبيقات",
+            "Allows the host to communicate with Black's BlackBox":"يسمح للتطبيق الرئيسي بالتواصل مع بيئة Shahboun Multi",
+            "Freeze App instantly":"تجميد التطبيق فورًا",
+            "Adds a small freeze button to running apps.":"إضافة زر صغير لتجميد التطبيقات أثناء التشغيل.",
+            "Send Logs":"إرسال سجل الأخطاء",
+            "Create a debug log and share it with any app":"إنشاء سجل تشخيص ومشاركته مع أي تطبيق",
+            "About":"حول التطبيق",
+            "Author and maintainer":"المطور والمشرف",
+            "Tap to open source":"اضغط لفتح المصدر",
+            "Build Note":"ملاحظات البناء",
+            "Made with Legacy Code and AI.":"تم تطوير هذه النسخة اعتمادًا على الشفرة الأصلية مع تحسينات برمجية.",
+            "Others":"أخرى",
+            "Automatic freezing is turned off":"التجميد التلقائي متوقف",
+            "Activate auto-freeze?":"تفعيل التجميد التلقائي؟",
+            "ENABLE":"تفعيل",
+            "CANCEL":"إلغاء",
+            "Enable":"تفعيل",
+            "Cancel":"إلغاء",
+            "User ":"المستخدم ",
+          }
+
+          for p in Path('app/src/main/res').rglob('*.xml'):
+              try: s=p.read_text(encoding='utf-8')
+              except: continue
+              old=s
+              for a,b in replacements.items(): s=s.replace(a,b)
+              if s != old: p.write_text(s,encoding='utf-8')
+
+          # Force Arabic/RTL for the host UI without touching cloned applications.
+          manifest=Path('app/src/main/AndroidManifest.xml')
+          s=manifest.read_text(encoding='utf-8')
+          if 'android:supportsRtl=' not in s:
+              s=s.replace('<application', '<application android:supportsRtl="true"')
+          manifest.write_text(s,encoding='utf-8')
+
+          # Arabic app name, including any escaped variant in strings.xml.
           p=Path('app/src/main/res/values/strings.xml')
-          s=p.read_text(encoding='utf-8')
-          s=s.replace('<string name="app_name">Black\\\'s BlackBox</string>', '<string name="app_name">Shahboun Multi</string>')
-          p.write_text(s, encoding='utf-8')
+          if p.exists():
+              s=p.read_text(encoding='utf-8')
+              s=s.replace("Black\\'s BlackBox", "Shahboun Multi").replace("Black's BlackBox", "Shahboun Multi")
+              p.write_text(s,encoding='utf-8')
 
           Path('settings.gradle').write_text('''pluginManagement {
               repositories {
@@ -70,7 +130,6 @@ jobs:
                   maven { url "https://maven.aliyun.com/repository/public" }
               }
           }
-
           rootProject.name = "NewBlackbox"
           include ':app'
           include ':blackbox-gallery-stub'
@@ -93,7 +152,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShahbounMulti-Functional-APK
+          name: ShahbounMulti-Arabic-APK
           path: ShahbounMulti.apk
           if-no-files-found: error
 
@@ -106,6 +165,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/ShahbounMulti.apk dist/ShahbounMulti.apk.sha256
           if ! git diff --cached --quiet; then
-            git commit -m "Publish functional Shahboun Multi APK [skip ci]"
+            git commit -m "Publish Arabic Shahboun Multi APK [skip ci]"
             git push
           fi
