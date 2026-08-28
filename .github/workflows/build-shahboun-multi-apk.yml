@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+  issues:
+    types: [opened]
   workflow_dispatch:
 
 permissions:
@@ -11,6 +13,7 @@ permissions:
 
 jobs:
   build-android:
+    if: github.event_name != 'issues' || contains(github.event.issue.title, 'BUILD_SHAHBOUN_MULTI')
     runs-on: ubuntu-latest
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
