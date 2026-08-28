@@ -2,10 +2,8 @@ name: Build Shahboun Multi APK
 
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'ShahbounMulti/**'
-      - '.github/workflows/build-shahboun-multi-apk.yml'
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
