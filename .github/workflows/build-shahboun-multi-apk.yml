@@ -32,26 +32,29 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "build-tools;35.0.0" "platforms;android-35" "ndk;29.0.13846066"
 
-      - name: Fetch Android 16 compatible virtualization engine
+      - name: Fetch proven virtualization engine
         run: |
           rm -rf /tmp/ShahbounMultiEngine
           git clone --depth 1 https://github.com/Black00Z/Blacks-BlackBox.git /tmp/ShahbounMultiEngine
           cd /tmp/ShahbounMultiEngine
           chmod +x gradlew
 
-      - name: Apply Shahboun Multi Arabic identity
+      - name: Apply modern Arabic Shahboun Multi UI
         run: |
           cd /tmp/ShahbounMultiEngine
+          mkdir -p app/src/main/res/font
+          curl -L --fail --retry 3 -o app/src/main/res/font/cairo_regular.ttf https://github.com/google/fonts/raw/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf
+
           python3 - <<'PY'
           from pathlib import Path
 
-          # Keep the proven virtualization engine intact; localize user-facing resources only.
           replacements = {
             "Black's BlackBox":"Shahboun Multi",
             "Setting":"الإعدادات",
             "Settings":"الإعدادات",
             "Installed App":"التطبيقات المثبتة",
             "Installed Apps":"التطبيقات المثبتة",
+            "Choose App":"إضافة تطبيق",
             "CHOOSE":"اختيار",
             "Choose":"اختيار",
             "Fake Location(Preview)":"الموقع الوهمي (تجريبي)",
@@ -96,14 +99,176 @@ jobs:
               for a,b in replacements.items(): s=s.replace(a,b)
               if s != old: p.write_text(s,encoding='utf-8')
 
-          # Force Arabic/RTL for the host UI without touching cloned applications.
           manifest=Path('app/src/main/AndroidManifest.xml')
           s=manifest.read_text(encoding='utf-8')
           if 'android:supportsRtl=' not in s:
               s=s.replace('<application', '<application android:supportsRtl="true"')
           manifest.write_text(s,encoding='utf-8')
 
-          # Arabic app name, including any escaped variant in strings.xml.
+          # Modern toolbar while preserving required IDs.
+          Path('app/src/main/res/layout/view_toolbar.xml').write_text('''<?xml version="1.0" encoding="utf-8"?>
+          <com.google.android.material.appbar.MaterialToolbar xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:id="@+id/toolbar"
+              android:layout_width="match_parent"
+              android:layout_height="72dp"
+              android:background="@color/background"
+              android:elevation="0dp"
+              android:fontFamily="@font/cairo_regular"
+              android:paddingStart="20dp"
+              android:paddingEnd="12dp"
+              android:layoutDirection="rtl"
+              app:title="Shahboun Multi"
+              app:titleCentered="false"
+              app:titleTextColor="@color/on_background"
+              app:titleTextAppearance="@style/TextAppearance.MaterialComponents.Headline6" />
+          ''', encoding='utf-8')
+
+          # Cleaner home surface: larger spacing, softer card, existing engine IDs untouched.
+          Path('app/src/main/res/layout/activity_main.xml').write_text('''<?xml version="1.0" encoding="utf-8"?>
+          <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:layoutDirection="rtl"
+              android:background="@color/background">
+
+              <include
+                  android:id="@+id/toolbar_layout"
+                  layout="@layout/view_toolbar"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  app:layout_constraintTop_toTopOf="parent" />
+
+              <TextView
+                  android:id="@+id/shahboun_subtitle"
+                  android:layout_width="0dp"
+                  android:layout_height="wrap_content"
+                  android:layout_marginStart="22dp"
+                  android:layout_marginEnd="22dp"
+                  android:layout_marginTop="2dp"
+                  android:fontFamily="@font/cairo_regular"
+                  android:text="كل تطبيقاتك وحساباتك في مكان واحد"
+                  android:textSize="13sp"
+                  android:textColor="@color/on_surface_variant"
+                  android:gravity="start"
+                  app:layout_constraintTop_toBottomOf="@id/toolbar_layout"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:layout_constraintEnd_toEndOf="parent" />
+
+              <com.google.android.material.card.MaterialCardView
+                  android:id="@+id/content_card"
+                  android:layout_width="0dp"
+                  android:layout_height="0dp"
+                  android:layout_marginStart="16dp"
+                  android:layout_marginTop="14dp"
+                  android:layout_marginEnd="16dp"
+                  android:layout_marginBottom="16dp"
+                  app:cardBackgroundColor="@color/surface"
+                  app:cardCornerRadius="28dp"
+                  app:cardElevation="2dp"
+                  app:strokeWidth="0dp"
+                  app:layout_constraintTop_toBottomOf="@id/shahboun_subtitle"
+                  app:layout_constraintBottom_toBottomOf="parent"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:layout_constraintEnd_toEndOf="parent">
+
+                  <FrameLayout
+                      android:layout_width="match_parent"
+                      android:layout_height="match_parent">
+
+                      <com.github.nukc.stateview.StateView
+                          android:id="@+id/stateView"
+                          android:layout_width="match_parent"
+                          android:layout_height="match_parent" />
+
+                      <androidx.viewpager2.widget.ViewPager2
+                          android:id="@+id/viewPager"
+                          android:layout_width="match_parent"
+                          android:layout_height="match_parent"
+                          android:clipToPadding="false"
+                          android:paddingTop="12dp"
+                          android:paddingBottom="72dp" />
+
+                      <com.tbuonomo.viewpagerdotsindicator.WormDotsIndicator
+                          android:id="@+id/dots_indicator"
+                          android:layout_width="wrap_content"
+                          android:layout_height="wrap_content"
+                          android:layout_gravity="bottom|center_horizontal"
+                          android:layout_marginBottom="24dp"
+                          app:dotsCornerRadius="8dp"
+                          app:dotsSize="7dp"
+                          app:dotsSpacing="6dp"
+                          app:dotsWidthFactor="2.6"
+                          app:progressMode="true" />
+                  </FrameLayout>
+              </com.google.android.material.card.MaterialCardView>
+
+              <com.google.android.material.floatingactionbutton.FloatingActionButton
+                  android:id="@+id/freeze_fab"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_marginStart="12dp"
+                  android:layout_marginBottom="28dp"
+                  android:contentDescription="@string/auto_freeze_toggle_button"
+                  android:src="@drawable/ic_snowflake_off"
+                  app:backgroundTint="@color/surface_variant"
+                  app:fabSize="mini"
+                  app:tint="@color/on_surface"
+                  app:layout_constraintBottom_toBottomOf="parent"
+                  app:layout_constraintStart_toEndOf="@id/fab" />
+
+              <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
+                  android:id="@+id/fab"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_marginStart="28dp"
+                  android:layout_marginBottom="24dp"
+                  android:fontFamily="@font/cairo_regular"
+                  android:text="إضافة تطبيق"
+                  android:textSize="14sp"
+                  android:contentDescription="@string/choose_app"
+                  app:icon="@drawable/ic_add"
+                  app:backgroundTint="@color/primary"
+                  app:iconTint="@color/white"
+                  android:textColor="@color/white"
+                  app:layout_constraintBottom_toBottomOf="parent"
+                  app:layout_constraintStart_toStartOf="parent" />
+
+          </androidx.constraintlayout.widget.ConstraintLayout>
+          ''', encoding='utf-8')
+
+          Path('app/src/main/res/layout/fragment_apps.xml').write_text('''<?xml version="1.0" encoding="utf-8"?>
+          <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:layoutDirection="rtl"
+              android:background="@color/surface">
+              <com.github.nukc.stateview.StateView
+                  android:id="@+id/stateView"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent"/>
+              <androidx.recyclerview.widget.RecyclerView
+                  android:id="@+id/recyclerView"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent"
+                  android:clipToPadding="false"
+                  android:paddingStart="14dp"
+                  android:paddingTop="18dp"
+                  android:paddingEnd="14dp"
+                  android:paddingBottom="28dp"/>
+          </androidx.constraintlayout.widget.ConstraintLayout>
+          ''', encoding='utf-8')
+
+          # Apply Cairo broadly to existing TextViews and controls without changing IDs/logic.
+          for p in Path('app/src/main/res/layout').glob('*.xml'):
+              s=p.read_text(encoding='utf-8')
+              if '<TextView' in s or '<Button' in s or 'MaterialButton' in s:
+                  # safe global font on root where possible via theme is unavailable; inject only where no fontFamily exists
+                  s=s.replace('<TextView\n', '<TextView\n            android:fontFamily="@font/cairo_regular"\n')
+                  s=s.replace('<Button\n', '<Button\n            android:fontFamily="@font/cairo_regular"\n')
+                  p.write_text(s,encoding='utf-8')
+
           p=Path('app/src/main/res/values/strings.xml')
           if p.exists():
               s=p.read_text(encoding='utf-8')
@@ -139,7 +304,7 @@ jobs:
           ''', encoding='utf-8')
           PY
 
-      - name: Build functional APK
+      - name: Build redesigned APK
         run: |
           cd /tmp/ShahbounMultiEngine
           ./gradlew --no-daemon :app:assembleDebug
@@ -152,7 +317,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShahbounMulti-Arabic-APK
+          name: ShahbounMulti-Modern-Arabic-APK
           path: ShahbounMulti.apk
           if-no-files-found: error
 
@@ -165,6 +330,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/ShahbounMulti.apk dist/ShahbounMulti.apk.sha256
           if ! git diff --cached --quiet; then
-            git commit -m "Publish Arabic Shahboun Multi APK [skip ci]"
+            git commit -m "Publish redesigned Arabic Shahboun Multi APK [skip ci]"
             git push
           fi
