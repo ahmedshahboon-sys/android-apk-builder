@@ -1,0 +1,105 @@
+name: Build Shahboun Multi Private Bridge
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-shahboun-private-bridge.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout helper repo
+        uses: actions/checkout@v4
+
+      - name: Read private Shahboun payload
+        uses: actions/checkout@v4
+        with:
+          repository: ahmedshahboon-sys/shahboun-build
+          ref: shahboun-multi-apk-build
+          path: private-payload
+          token: ${{ github.token }}
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android 16 toolchain
+        run: |
+          set -euxo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "cmake;3.22.1" "ndk;29.0.13846066"
+
+      - name: Reconstruct audited overlay
+        run: |
+          set -euxo pipefail
+          cat private-payload/shahboun_min_payload/part*.b64 | base64 -d > /tmp/shah-overlay.tgz
+          echo "be7e7c2629b0c40b8ebd3671dbc1f96ed73754253ab26cefb0008f5058f440fa  /tmp/shah-overlay.tgz" | sha256sum -c -
+          tar -tzf /tmp/shah-overlay.tgz >/dev/null
+
+      - name: Fetch approved reference sources
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/Black00Z/Blacks-BlackBox.git /tmp/base
+          git clone --depth 1 https://github.com/jmpews/Dobby.git /tmp/dobby
+
+      - name: Assemble audited Shahboun source
+        run: |
+          set -euxo pipefail
+          cp -a /tmp/base /tmp/project
+          cd /tmp/project
+          rm -rf app virtualcore
+          mv Bcore virtualcore
+          rm -f virtualcore/src/main/cpp/Android.mk
+          rm -rf virtualcore/src/main/cpp/Dobby
+          rm -f virtualcore/src/main/cpp/Utils/AntiDetection.cpp virtualcore/src/main/cpp/Utils/VirtualSpoof.cpp virtualcore/src/main/cpp/Utils/VirtualSpoof.h
+          rm -f virtualcore/src/main/java/top/niunaijun/blackbox/closecode/Entry.java
+          rm -f virtualcore/src/main/java/top/niunaijun/blackbox/core/system/JarConfig.java virtualcore/src/main/java/top/niunaijun/blackbox/core/system/JarManager.java virtualcore/src/main/java/top/niunaijun/blackbox/core/system/JarManagerTest.java
+          rm -f virtualcore/src/main/java/top/niunaijun/blackbox/fake/service/AudioPermissionProxy.java virtualcore/src/main/java/top/niunaijun/blackbox/fake/service/ClassLoaderProxy.java virtualcore/src/main/java/top/niunaijun/blackbox/fake/service/IDnsResolverProxy.java virtualcore/src/main/java/top/niunaijun/blackbox/fake/service/IVpnManagerProxy.java virtualcore/src/main/java/top/niunaijun/blackbox/fake/service/VpnCommonProxy.java
+          rm -f virtualcore/src/main/java/top/niunaijun/blackbox/proxy/ProxyVpnService.java
+          rm -f virtualcore/src/main/java/top/niunaijun/blackbox/utils/CrashMonitor.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/DexCrashPrevention.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/DexFileRecovery.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/JarUtils.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/LogSender.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/NativeCrashPrevention.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/ShellUtils.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/SimpleCrashFix.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/SocialMediaAppCrashPrevention.java virtualcore/src/main/java/top/niunaijun/blackbox/utils/StackTraceFilter.java
+          tar -xzf /tmp/shah-overlay.tgz -C /tmp/project
+          rm -rf virtualcore/src/main/cpp/DobbySource
+          mkdir -p virtualcore/src/main/cpp/DobbySource
+          cp -a /tmp/dobby/. virtualcore/src/main/cpp/DobbySource/
+          rm -rf virtualcore/src/main/cpp/DobbySource/.git
+          chmod +x gradlew
+
+          if grep -R -n -E 'LogSender|vercel\.app|closecode\.Entry|AntiDetection|VirtualSpoof' app/src virtualcore/src --include='*.java' --include='*.kt' --include='*.cpp' --include='*.h'; then
+            echo 'Rejected source marker found'; exit 1
+          fi
+          if find app virtualcore -type f \( -name '*.so' -o -name '*.a' -o -name '*.aar' -o -name '*.jar' -o -name '*.dex' \) | grep -q .; then
+            echo 'Rejected prebuilt binary found'; exit 1
+          fi
+
+      - name: Build APK
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/29.0.13846066
+        run: |
+          set -euxo pipefail
+          cd /tmp/project
+          ./gradlew --no-daemon :app:assembleDebug --stacktrace
+
+      - name: Verify and package
+        run: |
+          set -euxo pipefail
+          APK=$(find /tmp/project/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
+          test -n "$APK" && test -s "$APK"
+          mkdir -p output
+          cp "$APK" output/ShahbounMulti.apk
+          sha256sum output/ShahbounMulti.apk > output/ShahbounMulti.apk.sha256
+          unzip -t output/ShahbounMulti.apk >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShahbounMulti-Private-APK
+          path: output/
+          if-no-files-found: error
