@@ -2,17 +2,16 @@ package com.shahboun.multi
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.IBinder
 
 internal const val EXTRA_RUNTIME_PACKAGE = "shahboun.runtime.package"
 internal const val EXTRA_RUNTIME_SLOT = "shahboun.runtime.slot"
 internal const val EXTRA_RUNTIME_ACTIVITY = "shahboun.runtime.activity"
 
-/**
- * Own bridge between Android's Activity launch path and a Shahboun RuntimeSession.
- * No third-party hook or binary is used.
- */
+/** Own bridge between Android's Activity launch path and a Shahboun RuntimeSession. */
 class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentation() {
     override fun newActivity(cl: ClassLoader?, className: String?, intent: Intent?): Activity {
         if (className == RuntimeStubActivity::class.java.name && intent != null) {
@@ -37,6 +36,28 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
     override fun callActivityOnPause(activity: Activity) = base.callActivityOnPause(activity)
     override fun callActivityOnStop(activity: Activity) = base.callActivityOnStop(activity)
     override fun callActivityOnDestroy(activity: Activity) = base.callActivityOnDestroy(activity)
+
+    override fun execStartActivity(
+        who: Context,
+        contextThread: IBinder,
+        token: IBinder,
+        target: Activity,
+        intent: Intent,
+        requestCode: Int,
+        options: Bundle?
+    ): ActivityResult? {
+        val routed = routeForGuest(target, intent)
+        return base.execStartActivity(who, contextThread, token, target, routed, requestCode, options)
+    }
+
+    private fun routeForGuest(activity: Activity, intent: Intent): Intent {
+        val current = activity.intent ?: return intent
+        val packageName = current.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return intent
+        val slot = current.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
+        if (slot < 0) return intent
+        val session = runCatching { RuntimeRegistry.get(packageName, slot) }.getOrNull() ?: return intent
+        return RuntimeIntentRouter.wrap(activity, session, intent)
+    }
 }
 
 object RuntimeInstrumentationInstaller {
