@@ -1,5 +1,6 @@
 name: Build Shahboun Multi Native
 
+# Trigger marker: 0.3.1 app-selection fix
 on:
   push:
     branches: [main]
