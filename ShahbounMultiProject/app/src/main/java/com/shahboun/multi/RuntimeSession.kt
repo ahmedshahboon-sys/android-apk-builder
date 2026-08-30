@@ -3,6 +3,7 @@ package com.shahboun.multi
 import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.res.AssetManager
 import android.content.res.Resources
 import android.content.res.loader.ResourcesLoader
 import android.content.res.loader.ResourcesProvider
@@ -104,10 +105,12 @@ class RuntimeSessionFactory(private val context: Context) {
 
         val closeables = mutableListOf<Closeable>()
         val resources = if (Build.VERSION.SDK_INT >= 30) {
-            // Build the resource table from the exact APK copies that the clone executes.
-            // PackageManager resources belong to the installed source package and can diverge
-            // from our copied base/splits after an app update, producing Resources.NotFound.
-            val guestResources = Resources(context.resources.assets, context.resources.displayMetrics, context.resources.configuration)
+            // IMPORTANT: start from a fresh AssetManager. Using the host AssetManager here
+            // puts two unrelated 0x7f package-id tables in one Resources object, which makes
+            // AppCompat/theme/layout IDs resolve to Shahboun host entries instead of the guest.
+            @Suppress("DEPRECATION")
+            val cleanAssets = AssetManager()
+            val guestResources = Resources(cleanAssets, context.resources.displayMetrics, context.resources.configuration)
             val resourceLoader = ResourcesLoader()
             allApks.forEach { apk ->
                 val pfd = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY)
@@ -117,15 +120,11 @@ class RuntimeSessionFactory(private val context: Context) {
                 closeables += pfd
             }
             guestResources.addLoaders(resourceLoader)
-            RuntimeDiagnostics.log("RES", "clone APK resource graph attached package=${pkg.packageName} apks=${allApks.size}")
+            RuntimeDiagnostics.log("RES", "isolated clone resource graph attached package=${pkg.packageName} apks=${allApks.size}")
             guestResources
         } else {
             context.packageManager.getResourcesForApplication(pkg.packageName)
         }
-
-        // Fail early with a useful diagnostic instead of crashing later inside LayoutInflater.
-        runCatching { resources.getResourceName(pkg.launchThemeProbeResourceId()) }
-            .onFailure { RuntimeDiagnostics.log("RES", "resource probe skipped package=${pkg.packageName}: ${it.javaClass.simpleName}") }
 
         val launcher = loader.loadClass(pkg.launchActivity)
         require(android.app.Activity::class.java.isAssignableFrom(launcher)) { "شاشة تشغيل التطبيق ليست Activity صالحة" }
@@ -133,8 +132,6 @@ class RuntimeSessionFactory(private val context: Context) {
         return RuntimeSession(pkg, loader, resources, closeables)
     }
 }
-
-private fun RuntimePackage.launchThemeProbeResourceId(): Int = 0
 
 private object RuntimeCodeSecurity {
     fun prepareApks(apks: List<File>) {
