@@ -13,6 +13,7 @@ data class RuntimePackage(
     val baseApk: File,
     val splitApks: List<File>,
     val launchActivity: String,
+    val applicationClass: String?,
     val versionCode: Long,
     val sha256: String
 ) {
@@ -28,6 +29,7 @@ class RuntimePackageInstaller(private val context: Context) {
             ?: error("التطبيق لا يملك شاشة تشغيل رئيسية")
         val launchActivity = launch.component?.className
             ?: error("تعذر تحديد شاشة تشغيل التطبيق")
+        val applicationClass = appInfo.className?.takeIf { it.isNotBlank() }
 
         val apkDir = File(slotDir, "apk").apply {
             if (exists()) deleteRecursively()
@@ -53,17 +55,18 @@ class RuntimePackageInstaller(private val context: Context) {
         val digest = sha256(base)
         File(slotDir, "runtime.meta").writeText(
             buildString {
-                appendLine("format=2")
+                appendLine("format=3")
                 appendLine("package=$packageName")
                 appendLine("slot=$slot")
                 appendLine("launchActivity=$launchActivity")
+                appendLine("applicationClass=${applicationClass.orEmpty()}")
                 appendLine("versionCode=$versionCode")
                 appendLine("sha256=$digest")
                 appendLine("splitCount=${splits.size}")
             }
         )
 
-        return RuntimePackage(packageName, slot, base, splits, launchActivity, versionCode, digest)
+        return RuntimePackage(packageName, slot, base, splits, launchActivity, applicationClass, versionCode, digest)
     }
 
     fun read(packageName: String, slot: Int, slotDir: File): RuntimePackage {
@@ -86,6 +89,7 @@ class RuntimePackageInstaller(private val context: Context) {
             baseApk = base,
             splitApks = splits,
             launchActivity = values["launchActivity"] ?: error("شاشة التشغيل غير مسجلة"),
+            applicationClass = values["applicationClass"]?.takeIf { it.isNotBlank() },
             versionCode = values["versionCode"]?.toLongOrNull() ?: 0L,
             sha256 = expected
         )
