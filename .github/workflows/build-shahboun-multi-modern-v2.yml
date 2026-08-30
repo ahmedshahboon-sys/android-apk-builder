@@ -17,8 +17,32 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Build APK
-        run: bash scripts/build_shahboun_modern.sh
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Install Android SDK 36
+        run: |
+          set -euxo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "build-tools;36.0.0" "platforms;android-36"
+      - name: Verify no external clone engine code
+        run: |
+          set -euxo pipefail
+          if grep -R -n -E 'BlackBox|Black00Z|Dobby|VirtualApp|VirtualXposed|niunaijun' ShahbounMultiProject --exclude-dir=build; then
+            echo 'External clone engine reference found'; exit 1
+          fi
+          if find ShahbounMultiProject/app -type f \( -name '*.so' -o -name '*.aar' -o -name '*.jar' -o -name '*.dex' \) | grep -q .; then
+            echo 'Prebuilt engine binary found in Shahboun project'; exit 1
+          fi
+      - name: Build Shahboun-owned APK
+        run: gradle -p ShahbounMultiProject :app:assembleDebug --stacktrace
+      - name: Package APK
+        run: |
+          set -euxo pipefail
+          APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
+          test -n "$APK" && test -s "$APK"
+          cp "$APK" ShahbounMulti-Modern.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
