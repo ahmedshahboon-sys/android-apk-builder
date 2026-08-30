@@ -1,6 +1,5 @@
 package com.shahboun.multi
 
-import android.app.Application
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.ComponentName
@@ -107,32 +106,79 @@ class RuntimeComponentHost(
 /** Declared host service that delegates lifecycle to a guest Service object. */
 class RuntimeStubService : Service() {
     private data class GuestService(val service: Service, val session: RuntimeSession)
+    private data class ServiceRequest(
+        val packageName: String,
+        val slot: Int,
+        val serviceName: String,
+        val session: RuntimeSession,
+        val original: Intent
+    )
+
     private val running = ConcurrentHashMap<String, GuestService>()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) return START_NOT_STICKY
-        val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return START_NOT_STICKY
-        val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
-        val serviceName = intent.getStringExtra(EXTRA_RUNTIME_SERVICE) ?: return START_NOT_STICKY
-        if (slot < 0) return START_NOT_STICKY
-        val session = runCatching { RuntimeRegistry.get(packageName, slot) }.getOrElse {
-            RuntimeDiagnostics.log("SERVICE", "session missing $packageName/$slot")
-            return START_NOT_STICKY
+        val request = parseRequest(intent) ?: return START_NOT_STICKY
+        val key = key(request.packageName, request.slot, request.serviceName)
+        val guest = running.getOrPut(key) {
+            createGuestService(request.session, request.serviceName, request.packageName, request.slot)
         }
-        val key = "$packageName#$slot#$serviceName"
-        val guest = running.getOrPut(key) { createGuestService(session, serviceName, packageName, slot) }
-        val original = readOriginalServiceIntent(intent) ?: Intent().setComponent(ComponentName(packageName, serviceName))
-        return runCatching { guest.service.onStartCommand(original, flags, startId) }
+        return runCatching { guest.service.onStartCommand(request.original, flags, startId) }
             .onFailure { RuntimeDiagnostics.log("SERVICE", "onStartCommand failed $key: ${it.stackTraceToString()}") }
             .getOrDefault(START_NOT_STICKY)
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder? {
+        val request = parseRequest(intent) ?: return null
+        val key = key(request.packageName, request.slot, request.serviceName)
+        val guest = running.getOrPut(key) {
+            createGuestService(request.session, request.serviceName, request.packageName, request.slot)
+        }
+        return runCatching {
+            guest.service.onBind(request.original).also {
+                RuntimeDiagnostics.log("SERVICE", "bound ${request.packageName}/${request.slot} ${request.serviceName} binder=${if (it == null) "null" else "present"}")
+            }
+        }.onFailure {
+            RuntimeDiagnostics.log("SERVICE", "onBind failed $key: ${it.stackTraceToString()}")
+        }.getOrNull()
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        val request = parseRequest(intent) ?: return super.onUnbind(intent)
+        val key = key(request.packageName, request.slot, request.serviceName)
+        val guest = running[key] ?: return false
+        return runCatching { guest.service.onUnbind(request.original) }
+            .onFailure { RuntimeDiagnostics.log("SERVICE", "onUnbind failed $key: ${it.stackTraceToString()}") }
+            .getOrDefault(false)
+    }
+
+    override fun onRebind(intent: Intent?) {
+        val request = parseRequest(intent) ?: return
+        val key = key(request.packageName, request.slot, request.serviceName)
+        running[key]?.let { guest ->
+            runCatching { guest.service.onRebind(request.original) }
+                .onFailure { RuntimeDiagnostics.log("SERVICE", "onRebind failed $key: ${it.stackTraceToString()}") }
+        }
+    }
 
     override fun onDestroy() {
         running.values.forEach { runCatching { it.service.onDestroy() } }
         running.clear()
         super.onDestroy()
+    }
+
+    private fun parseRequest(intent: Intent?): ServiceRequest? {
+        if (intent == null) return null
+        val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return null
+        val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
+        val serviceName = intent.getStringExtra(EXTRA_RUNTIME_SERVICE) ?: return null
+        if (slot < 0) return null
+        val session = runCatching { RuntimeRegistry.get(packageName, slot) }.getOrElse {
+            RuntimeDiagnostics.log("SERVICE", "session missing $packageName/$slot")
+            return null
+        }
+        val original = readOriginalServiceIntent(intent)
+            ?: Intent().setComponent(ComponentName(packageName, serviceName))
+        return ServiceRequest(packageName, slot, serviceName, session, original)
     }
 
     private fun createGuestService(session: RuntimeSession, serviceName: String, packageName: String, slot: Int): GuestService {
@@ -149,6 +195,8 @@ class RuntimeStubService : Service() {
         RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName")
         return GuestService(service, session)
     }
+
+    private fun key(packageName: String, slot: Int, serviceName: String) = "$packageName#$slot#$serviceName"
 
     @Suppress("DEPRECATION")
     private fun readOriginalServiceIntent(wrapper: Intent): Intent? = if (Build.VERSION.SDK_INT >= 33) {
