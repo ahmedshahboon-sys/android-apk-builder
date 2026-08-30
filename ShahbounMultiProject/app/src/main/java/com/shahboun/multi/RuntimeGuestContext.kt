@@ -7,12 +7,13 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ApplicationInfo
 import android.content.res.Resources
 import android.os.Build
 import android.view.LayoutInflater
 import java.io.File
 
-/** Context presented to guest components with clone-scoped storage and component routing. */
+/** Context presented to guest components with clone-scoped identity, storage and component routing. */
 class RuntimeGuestContext(
     base: Context,
     private val session: RuntimeSession,
@@ -23,6 +24,26 @@ class RuntimeGuestContext(
     override fun getResources(): Resources = session.resources
     override fun getAssets() = session.resources.assets
     override fun getApplicationContext(): Context = session.guestApplication ?: this
+    override fun getPackageCodePath(): String = session.runtimePackage.baseApk.absolutePath
+    override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
+
+    override fun getApplicationInfo(): ApplicationInfo {
+        val original = baseContext.packageManager.getApplicationInfo(session.runtimePackage.packageName, 0)
+        return ApplicationInfo(original).apply {
+            sourceDir = session.runtimePackage.baseApk.absolutePath
+            publicSourceDir = session.runtimePackage.baseApk.absolutePath
+            splitSourceDirs = session.runtimePackage.splitApks.map { it.absolutePath }.toTypedArray()
+            splitPublicSourceDirs = splitSourceDirs
+            dataDir = cloneDir("data").absolutePath
+            deviceProtectedDataDir = cloneDir("device_data").absolutePath
+            credentialProtectedDataDir = cloneDir("credential_data").absolutePath
+            nativeLibraryDir = cloneDir("native").absolutePath
+        }
+    }
+
+    override fun createPackageContext(packageName: String, flags: Int): Context {
+        return if (packageName == session.runtimePackage.packageName) this else super.createPackageContext(packageName, flags)
+    }
 
     override fun getFilesDir(): File = cloneDir("files")
     override fun getCacheDir(): File = cloneDir("cache")
