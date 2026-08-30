@@ -24,6 +24,8 @@ class RuntimeSession(
 ) : Closeable {
     @Volatile var guestApplication: Application? = null
         private set
+    @Volatile var componentHost: RuntimeComponentHost? = null
+        private set
 
     @Synchronized
     fun ensureGuestApplication(base: Context, slotDir: File): Application {
@@ -38,11 +40,22 @@ class RuntimeSession(
         val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
         baseField.set(app, guestContext)
         guestApplication = app
+
+        // Android initializes manifest providers before Application.onCreate.
+        // Heavy apps use this ordering to initialize process-wide singleton state.
+        val components = RuntimeComponentHost(base, this, slotDir)
+        componentHost = components
+        RuntimeDiagnostics.log("RUNTIME", "initializing guest providers ${runtimePackage.packageName}/${runtimePackage.slot}")
+        components.initializeProviders()
+        RuntimeDiagnostics.log("RUNTIME", "guest providers ready ${runtimePackage.packageName}/${runtimePackage.slot}")
+
         app.onCreate()
         return app
     }
 
     override fun close() {
+        runCatching { componentHost?.close() }
+        componentHost = null
         guestApplication = null
         closeables.asReversed().forEach { runCatching { it.close() } }
     }
