@@ -39,20 +39,25 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
 
     /**
      * Android keeps Instrumentation.execStartActivity out of the public SDK stubs.
-     * We intentionally declare the runtime-compatible method rather than importing
-     * any hook library. At runtime Activity dispatch can resolve this virtual method.
+     * The JVM signature is unchanged by Kotlin nullability. Android 16 can pass a
+     * null activity token here when ContextImpl starts the first runtime activity,
+     * so platform-owned arguments must remain nullable on our bridge boundary.
      */
     @Suppress("unused")
     fun execStartActivity(
-        who: Context,
-        contextThread: IBinder,
-        token: IBinder,
-        target: Activity,
+        who: Context?,
+        contextThread: IBinder?,
+        token: IBinder?,
+        target: Activity?,
         intent: Intent,
         requestCode: Int,
         options: Bundle?
     ): ActivityResult? {
-        val routed = routeForGuest(target, intent)
+        val routed = if (target != null) routeForGuest(target, intent) else intent
+        RuntimeDiagnostics.log(
+            "RUNTIME",
+            "execStartActivity target=${target?.javaClass?.name ?: "null"} token=${if (token == null) "null" else "present"}"
+        )
         return HiddenInstrumentationDispatch.execStartActivity(
             base, who, contextThread, token, target, routed, requestCode, options
         )
@@ -84,10 +89,10 @@ private object HiddenInstrumentationDispatch {
 
     fun execStartActivity(
         instrumentation: Instrumentation,
-        who: Context,
-        contextThread: IBinder,
-        token: IBinder,
-        target: Activity,
+        who: Context?,
+        contextThread: IBinder?,
+        token: IBinder?,
+        target: Activity?,
         intent: Intent,
         requestCode: Int,
         options: Bundle?
