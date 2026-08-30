@@ -47,10 +47,10 @@ class RuntimeGuestContext(
 
     companion object {
         fun attachIfNeeded(activity: Activity) {
-            val intent = activity.intent ?: return
-            val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return
-            val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
-            val guestActivity = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY) ?: return
+            val wrapperIntent = activity.intent ?: return
+            val packageName = wrapperIntent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return
+            val slot = wrapperIntent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
+            val guestActivity = wrapperIntent.getStringExtra(EXTRA_RUNTIME_ACTIVITY) ?: return
             if (slot < 0 || activity.javaClass.name != guestActivity) return
 
             val hostApp = activity.applicationContext as? MultiApplication ?: return
@@ -64,6 +64,8 @@ class RuntimeGuestContext(
 
             val guestApplication = session.ensureGuestApplication(originalBase, slotDir)
             setActivityApplication(activity, guestApplication)
+
+            RuntimeIntentRouter.originalIntent(wrapperIntent)?.let { activity.intent = it }
 
             runCatching {
                 val themeWrapper = Class.forName("android.view.ContextThemeWrapper")
