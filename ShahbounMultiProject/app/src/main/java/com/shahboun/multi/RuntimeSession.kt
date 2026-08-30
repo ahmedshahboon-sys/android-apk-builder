@@ -4,7 +4,10 @@ import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.res.Resources
+import android.content.res.loader.ResourcesLoader
+import android.content.res.loader.ResourcesProvider
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.system.Os
 import dalvik.system.DexClassLoader
 import java.io.Closeable
@@ -64,12 +67,6 @@ class RuntimeSession(
     }
 }
 
-/**
- * Guest-first loader whose parent is Android's platform/boot chain, never Shahboun Multi's
- * application PathClassLoader. This is critical: if the host loader is a parent, AndroidX
- * classes from the host (AppCompat/Material) become visible to the guest and Java can end up
- * with two classes having the same name but different defining loaders.
- */
 private class GuestDexClassLoader(
     dexPath: String,
     optimizedDirectory: String?,
@@ -103,27 +100,41 @@ class RuntimeSessionFactory(private val context: Context) {
         val hostLoader = context.classLoader
         val platformParent = hostLoader.parent ?: ClassLoader.getSystemClassLoader().parent ?: ClassLoader.getSystemClassLoader()
         val loader = GuestDexClassLoader(pkg.dexPath, codeCache.absolutePath, nativeDir.absolutePath, platformParent)
-        RuntimeDiagnostics.log(
-            "DEX",
-            "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}"
-        )
+        RuntimeDiagnostics.log("DEX", "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}")
 
-        // The source application is installed on the device. Android's PackageManager builds
-        // its Resources/AssetManager with the exact base + split APK asset paths and overlay
-        // handling expected by WebView/Cordova/AppCompat. Reusing that resource graph avoids
-        // missing file:///android_asset files and incomplete theme inheritance on Android 16.
-        val resources = context.packageManager.getResourcesForApplication(pkg.packageName)
-        RuntimeDiagnostics.log(
-            "RES",
-            "installed package resources attached package=${pkg.packageName} assets=${runCatching { resources.assets.locales.size }.getOrDefault(-1)}"
-        )
+        val closeables = mutableListOf<Closeable>()
+        val resources = if (Build.VERSION.SDK_INT >= 30) {
+            // Build the resource table from the exact APK copies that the clone executes.
+            // PackageManager resources belong to the installed source package and can diverge
+            // from our copied base/splits after an app update, producing Resources.NotFound.
+            val guestResources = Resources(context.resources.assets, context.resources.displayMetrics, context.resources.configuration)
+            val resourceLoader = ResourcesLoader()
+            allApks.forEach { apk ->
+                val pfd = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY)
+                val provider = ResourcesProvider.loadFromApk(pfd)
+                resourceLoader.addProvider(provider)
+                closeables += provider
+                closeables += pfd
+            }
+            guestResources.addLoaders(resourceLoader)
+            RuntimeDiagnostics.log("RES", "clone APK resource graph attached package=${pkg.packageName} apks=${allApks.size}")
+            guestResources
+        } else {
+            context.packageManager.getResourcesForApplication(pkg.packageName)
+        }
+
+        // Fail early with a useful diagnostic instead of crashing later inside LayoutInflater.
+        runCatching { resources.getResourceName(pkg.launchThemeProbeResourceId()) }
+            .onFailure { RuntimeDiagnostics.log("RES", "resource probe skipped package=${pkg.packageName}: ${it.javaClass.simpleName}") }
 
         val launcher = loader.loadClass(pkg.launchActivity)
         require(android.app.Activity::class.java.isAssignableFrom(launcher)) { "شاشة تشغيل التطبيق ليست Activity صالحة" }
         pkg.applicationClass?.let { name -> require(Application::class.java.isAssignableFrom(loader.loadClass(name))) { "Application class غير صالح" } }
-        return RuntimeSession(pkg, loader, resources, emptyList())
+        return RuntimeSession(pkg, loader, resources, closeables)
     }
 }
+
+private fun RuntimePackage.launchThemeProbeResourceId(): Int = 0
 
 private object RuntimeCodeSecurity {
     fun prepareApks(apks: List<File>) {
