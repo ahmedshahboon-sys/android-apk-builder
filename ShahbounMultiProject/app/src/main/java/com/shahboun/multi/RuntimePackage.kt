@@ -15,7 +15,8 @@ data class RuntimePackage(
     val launchActivity: String,
     val applicationClass: String?,
     val versionCode: Long,
-    val sha256: String
+    val sha256: String,
+    val splitSha256: List<String>
 ) {
     val dexPath: String get() = (listOf(baseApk) + splitApks).joinToString(File.pathSeparator) { it.absolutePath }
 }
@@ -53,9 +54,10 @@ class RuntimePackageInstaller(private val context: Context) {
         }
 
         val digest = sha256(base)
+        val splitDigests = splits.map(::sha256)
         File(slotDir, "runtime.meta").writeText(
             buildString {
-                appendLine("format=3")
+                appendLine("format=4")
                 appendLine("package=$packageName")
                 appendLine("slot=$slot")
                 appendLine("launchActivity=$launchActivity")
@@ -63,10 +65,11 @@ class RuntimePackageInstaller(private val context: Context) {
                 appendLine("versionCode=$versionCode")
                 appendLine("sha256=$digest")
                 appendLine("splitCount=${splits.size}")
+                splitDigests.forEachIndexed { index, hash -> appendLine("splitSha256.$index=$hash") }
             }
         )
 
-        return RuntimePackage(packageName, slot, base, splits, launchActivity, applicationClass, versionCode, digest)
+        return RuntimePackage(packageName, slot, base, splits, launchActivity, applicationClass, versionCode, digest, splitDigests)
     }
 
     fun read(packageName: String, slot: Int, slotDir: File): RuntimePackage {
@@ -83,6 +86,22 @@ class RuntimePackageInstaller(private val context: Context) {
         val splits = apkDir.listFiles().orEmpty().filter { it.name.startsWith("split-") && it.extension == "apk" }.sortedBy { it.name }
         val expected = values["sha256"] ?: error("بصمة APK مفقودة")
         require(sha256(base) == expected) { "فشل تحقق سلامة APK الخاص بالنسخة" }
+
+        val expectedSplitCount = values["splitCount"]?.toIntOrNull() ?: 0
+        require(splits.size == expectedSplitCount) { "عدد ملفات Split APK لا يطابق بيانات النسخة" }
+        val splitDigests = splits.mapIndexed { index, split ->
+            val expectedSplit = values["splitSha256.$index"]
+            if (expectedSplit == null) {
+                // Compatibility with clones created by format=3. Calculate now, but require all
+                // newly-created clones to persist and verify split hashes through format=4.
+                sha256(split)
+            } else {
+                val actual = sha256(split)
+                require(actual == expectedSplit) { "فشل تحقق سلامة Split APK رقم ${index + 1}" }
+                actual
+            }
+        }
+
         return RuntimePackage(
             packageName = packageName,
             slot = slot,
@@ -91,7 +110,8 @@ class RuntimePackageInstaller(private val context: Context) {
             launchActivity = values["launchActivity"] ?: error("شاشة التشغيل غير مسجلة"),
             applicationClass = values["applicationClass"]?.takeIf { it.isNotBlank() },
             versionCode = values["versionCode"]?.toLongOrNull() ?: 0L,
-            sha256 = expected
+            sha256 = expected,
+            splitSha256 = splitDigests
         )
     }
 
