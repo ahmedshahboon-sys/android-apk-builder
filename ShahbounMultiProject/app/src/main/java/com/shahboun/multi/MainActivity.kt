@@ -29,23 +29,23 @@ class MainActivity : AppCompatActivity() {
     private val items get() = store.list()
     private val app get() = application as MultiApplication
     private val engine get() = app.engine
-    private val bg = Color.rgb(13, 11, 18)
-    private val surface = Color.rgb(24, 21, 32)
-    private val surface2 = Color.rgb(31, 27, 42)
-    private val primary = Color.rgb(255, 122, 0)
-    private val textPrimary = Color.rgb(245, 242, 250)
-    private val textSecondary = Color.rgb(180, 174, 193)
-    private val success = Color.rgb(77, 210, 150)
-    private val danger = Color.rgb(255, 102, 122)
-    private val arabicTitle: Typeface get() = CairoFontManager.typeface(this, 700)
-    private val arabicMedium: Typeface get() = CairoFontManager.typeface(this, 500)
-    private val arabicBody: Typeface get() = CairoFontManager.typeface(this, 400)
+    private val bg = Color.rgb(13,11,18)
+    private val surface = Color.rgb(24,21,32)
+    private val surface2 = Color.rgb(31,27,42)
+    private val primary = Color.rgb(255,122,0)
+    private val textPrimary = Color.rgb(245,242,250)
+    private val textSecondary = Color.rgb(180,174,193)
+    private val success = Color.rgb(77,210,150)
+    private val danger = Color.rgb(255,102,122)
+    private val arabicTitle: Typeface get() = CairoFontManager.typeface(this,700)
+    private val arabicMedium: Typeface get() = CairoFontManager.typeface(this,500)
+    private val arabicBody: Typeface get() = CairoFontManager.typeface(this,400)
     private var pendingLaunch: CloneProfile? = null
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val clone = pendingLaunch; pendingLaunch = null
         val denied = result.filterValues { !it }.keys
-        RuntimeDiagnostics.log("PERMISSION", "result clone=${clone?.packageName}/${clone?.slot} denied=${denied.joinToString()}")
+        RuntimeDiagnostics.log("PERMISSION","result clone=${clone?.packageName}/${clone?.slot} denied=${denied.joinToString()}")
         if (denied.isNotEmpty()) toast("بعض الصلاحيات لم تُمنح؛ ممكن بعض وظائف النسخة ما تشتغلش")
         clone?.let { launchNow(it) }
     }
@@ -54,48 +54,42 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = bg; window.navigationBarColor = bg
         store = CloneStore(this)
-        RuntimeDiagnostics.log("UI", "MainActivity onCreate bridgeReady=${app.runtimeBridgeReady}")
+        RuntimeDiagnostics.log("UI","MainActivity onCreate bridgeReady=${app.runtimeBridgeReady}")
         buildUi()
-        CairoFontManager.prepare(this) { runOnUiThread { if (::root.isInitialized) CairoFontManager.applyTo(root, this) } }
+        CairoFontManager.prepare(this){ runOnUiThread { if(::root.isInitialized) CairoFontManager.applyTo(root,this) } }
         requestNotifications(); render()
     }
 
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-    private fun rounded(color: Int, radius: Int = 20, strokeColor: Int? = null) = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(color); cornerRadius = dp(radius).toFloat(); strokeColor?.let { setStroke(dp(1), it) } }
-    private fun tv(value: String, size: Float = 16f, weight: Int = 0, color: Int = textPrimary) = TextView(this).apply { text = value; textSize = size; setTextColor(color); typeface = when (weight) { 2 -> arabicTitle; 1 -> arabicMedium; else -> arabicBody }; gravity = Gravity.CENTER_VERTICAL or Gravity.END; includeFontPadding = false }
+    private fun dp(v:Int)=(v*resources.displayMetrics.density).toInt()
+    private fun rounded(color:Int,radius:Int=20,strokeColor:Int?=null)=GradientDrawable().apply{shape=GradientDrawable.RECTANGLE;setColor(color);cornerRadius=dp(radius).toFloat();strokeColor?.let{setStroke(dp(1),it)}}
+    private fun tv(value:String,size:Float=16f,weight:Int=0,color:Int=textPrimary)=TextView(this).apply{text=value;textSize=size;setTextColor(color);typeface=when(weight){2->arabicTitle;1->arabicMedium;else->arabicBody};gravity=Gravity.CENTER_VERTICAL or Gravity.END;includeFontPadding=false}
 
-    private fun buildUi() {
-        val scroll = ScrollView(this).apply { isFillViewport = true; setBackgroundColor(bg) }
-        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(dp(18), dp(20), dp(18), dp(40)); setBackgroundColor(bg) }
-        scroll.addView(root, ViewGroup.LayoutParams(-1, -2)); setContentView(scroll)
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(18)) }
-        val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.END }
-        brand.addView(tv("مكرّر التطبيقات", 27f, 2)); brand.addView(tv("مساحتك الخاصة لتكرار التطبيقات", 13f, 0, textSecondary).apply { setPadding(0, dp(5), 0, 0) })
-        header.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
-        header.addView(tv("م", 22f, 2, Color.WHITE).apply { gravity = Gravity.CENTER; background = rounded(primary, 18) }, LinearLayout.LayoutParams(dp(52), dp(52)).apply { marginStart = dp(14) })
-        root.addView(header)
-        val engineCard = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; background = rounded(surface, 18, Color.rgb(48,43,62)); setPadding(dp(14),dp(12),dp(14),dp(12)) }
-        val engineTexts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        engineTexts.addView(tv(engine.name,14f,1)); engineTexts.addView(tv("محرك النسخ",11f,0,textSecondary).apply { setPadding(0,dp(3),0,0) })
-        engineCard.addView(engineTexts, LinearLayout.LayoutParams(0,-2,1f)); engineCard.addView(tv(if(app.runtimeBridgeReady) "●  جاهز" else "●  يحتاج فحص",12f,1,if(app.runtimeBridgeReady) success else danger).apply { gravity=Gravity.CENTER }, LinearLayout.LayoutParams(-2,dp(36)))
-        root.addView(engineCard, LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(16) })
-        root.addView(primaryButton("＋  إضافة نسخة جديدة") { pickApp() }, LinearLayout.LayoutParams(-1,dp(54)).apply { bottomMargin=dp(12) })
-        val tools=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
-        if(BuildConfig.DEBUG) tools.addView(secondaryButton("التشخيص") { startActivity(Intent(this,DebugActivity::class.java)) },LinearLayout.LayoutParams(0,dp(48),1f).apply{marginEnd=dp(6)})
-        tools.addView(secondaryButton("الإعدادات") { settingsDialog() },LinearLayout.LayoutParams(0,dp(48),1f).apply{marginStart=if(BuildConfig.DEBUG)dp(6)else 0;marginEnd=dp(6)})
-        tools.addView(secondaryButton("قفل") { lockNow() },LinearLayout.LayoutParams(0,dp(48),1f).apply{marginStart=dp(6)})
+    private fun buildUi(){
+        val scroll=ScrollView(this).apply{isFillViewport=true;setBackgroundColor(bg)}
+        root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setPadding(dp(18),dp(20),dp(18),dp(40));setBackgroundColor(bg)}
+        scroll.addView(root,ViewGroup.LayoutParams(-1,-2));setContentView(scroll)
+        val header=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;setPadding(0,dp(4),0,dp(18))}
+        val brand=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.END}
+        brand.addView(tv("مكرّر التطبيقات",27f,2));brand.addView(tv("مساحتك الخاصة لتكرار التطبيقات",13f,0,textSecondary).apply{setPadding(0,dp(5),0,0)})
+        header.addView(brand,LinearLayout.LayoutParams(0,-2,1f));header.addView(tv("م",22f,2,Color.WHITE).apply{gravity=Gravity.CENTER;background=rounded(primary,18)},LinearLayout.LayoutParams(dp(52),dp(52)).apply{marginStart=dp(14)});root.addView(header)
+        val engineCard=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;background=rounded(surface,18,Color.rgb(48,43,62));setPadding(dp(14),dp(12),dp(14),dp(12))}
+        val engineTexts=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};engineTexts.addView(tv(engine.name,14f,1));engineTexts.addView(tv("محرك النسخ",11f,0,textSecondary).apply{setPadding(0,dp(3),0,0)})
+        engineCard.addView(engineTexts,LinearLayout.LayoutParams(0,-2,1f));engineCard.addView(tv(if(app.runtimeBridgeReady)"●  جاهز" else "●  يحتاج فحص",12f,1,if(app.runtimeBridgeReady)success else danger).apply{gravity=Gravity.CENTER},LinearLayout.LayoutParams(-2,dp(36)))
+        root.addView(engineCard,LinearLayout.LayoutParams(-1,-2).apply{bottomMargin=dp(16)})
+        root.addView(primaryButton("＋  إضافة نسخة جديدة"){pickApp()},LinearLayout.LayoutParams(-1,dp(54)).apply{bottomMargin=dp(12)})
+        val tools=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        if(BuildConfig.DEBUG)tools.addView(secondaryButton("التشخيص"){startActivity(Intent(this,DebugActivity::class.java))},LinearLayout.LayoutParams(0,dp(48),1f).apply{marginEnd=dp(6)})
+        tools.addView(secondaryButton("الإعدادات"){settingsDialog()},LinearLayout.LayoutParams(0,dp(48),1f).apply{marginStart=if(BuildConfig.DEBUG)dp(6)else 0;marginEnd=dp(6)});tools.addView(secondaryButton("قفل"){lockNow()},LinearLayout.LayoutParams(0,dp(48),1f).apply{marginStart=dp(6)})
         root.addView(tools,LinearLayout.LayoutParams(-1,-2).apply{bottomMargin=dp(24)})
-        val section=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
-        section.addView(tv("نسخ التطبيقات",19f,2),LinearLayout.LayoutParams(0,-2,1f)); section.addView(tv("${items.count{!it.hidden}} نسخة",12f,1,textSecondary).apply{gravity=Gravity.CENTER;setPadding(dp(12),0,dp(12),0);background=rounded(surface2,14)},LinearLayout.LayoutParams(-2,dp(32)))
-        root.addView(section,LinearLayout.LayoutParams(-1,-2).apply{bottomMargin=dp(10)}); listBox=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};root.addView(listBox)
+        val section=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL};section.addView(tv("نسخ التطبيقات",19f,2),LinearLayout.LayoutParams(0,-2,1f));section.addView(tv("${items.count{!it.hidden}} نسخة",12f,1,textSecondary).apply{gravity=Gravity.CENTER;setPadding(dp(12),0,dp(12),0);background=rounded(surface2,14)},LinearLayout.LayoutParams(-2,dp(32)));root.addView(section,LinearLayout.LayoutParams(-1,-2).apply{bottomMargin=dp(10)});listBox=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};root.addView(listBox)
     }
 
-    private fun primaryButton(label:String, action:()->Unit)=MaterialButton(this).apply{text=label;textSize=15f;typeface=arabicMedium;setTextColor(Color.WHITE);backgroundTintList=ColorStateList.valueOf(primary);cornerRadius=dp(18);insetTop=0;insetBottom=0;setOnClickListener{action()}}
-    private fun secondaryButton(label:String, action:()->Unit)=MaterialButton(this).apply{text=label;textSize=13f;typeface=arabicMedium;setTextColor(textPrimary);backgroundTintList=ColorStateList.valueOf(surface2);cornerRadius=dp(16);insetTop=0;insetBottom=0;setOnClickListener{action()}}
-    private fun compactButton(label:String, p:Boolean, action:()->Unit)=MaterialButton(this).apply{text=label;textSize=13f;typeface=arabicMedium;setTextColor(if(p)Color.WHITE else textPrimary);backgroundTintList=ColorStateList.valueOf(if(p)primary else surface2);cornerRadius=dp(14);insetTop=0;insetBottom=0;minHeight=0;setOnClickListener{action()}}
+    private fun primaryButton(label:String,action:()->Unit)=MaterialButton(this).apply{text=label;textSize=15f;typeface=arabicMedium;setTextColor(Color.WHITE);backgroundTintList=ColorStateList.valueOf(primary);cornerRadius=dp(18);insetTop=0;insetBottom=0;setOnClickListener{action()}}
+    private fun secondaryButton(label:String,action:()->Unit)=MaterialButton(this).apply{text=label;textSize=13f;typeface=arabicMedium;setTextColor(textPrimary);backgroundTintList=ColorStateList.valueOf(surface2);cornerRadius=dp(16);insetTop=0;insetBottom=0;setOnClickListener{action()}}
+    private fun compactButton(label:String,p:Boolean,action:()->Unit)=MaterialButton(this).apply{text=label;textSize=13f;typeface=arabicMedium;setTextColor(if(p)Color.WHITE else textPrimary);backgroundTintList=ColorStateList.valueOf(if(p)primary else surface2);cornerRadius=dp(14);insetTop=0;insetBottom=0;minHeight=0;setOnClickListener{action()}}
 
     private fun render(){
-        listBox.removeAllViews(); val visible=items.filter{!it.hidden}.sortedWith(compareByDescending<CloneProfile>{it.favorite}.thenBy{it.customName})
+        listBox.removeAllViews();val visible=items.filter{!it.hidden}.sortedWith(compareByDescending<CloneProfile>{it.favorite}.thenBy{it.customName})
         if(visible.isEmpty()){val empty=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.CENTER;background=rounded(surface,22,Color.rgb(45,40,57));setPadding(dp(20),dp(32),dp(20),dp(32))};empty.addView(tv("ما عندكش نسخ لحد الآن",17f,2).apply{gravity=Gravity.CENTER});empty.addView(tv("اضغط «إضافة نسخة جديدة» واختار التطبيق اللي تبي تكرره",13f,0,textSecondary).apply{gravity=Gravity.CENTER;setPadding(0,dp(9),0,0)});listBox.addView(empty);return}
         visible.forEach{c->val card=MaterialCardView(this).apply{radius=dp(22).toFloat();cardElevation=0f;setCardBackgroundColor(surface);strokeColor=Color.rgb(48,43,62);strokeWidth=dp(1);setContentPadding(dp(16),dp(16),dp(16),dp(14))};val body=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};val top=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL};val info=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL};info.addView(tv((if(c.favorite)"★  "else"")+c.customName,18f,2));info.addView(tv("نسخة ${c.slot+1}  •  ${c.packageName}",11.5f,0,textSecondary).apply{setPadding(0,dp(5),0,0)});top.addView(info,LinearLayout.LayoutParams(0,-2,1f));val icon=ImageView(this).apply{scaleType=ImageView.ScaleType.CENTER_INSIDE;setPadding(dp(5),dp(5),dp(5),dp(5));background=rounded(surface2,16);setImageDrawable(runCatching{packageManager.getApplicationIcon(c.packageName)}.getOrNull())};top.addView(icon,LinearLayout.LayoutParams(dp(54),dp(54)).apply{marginStart=dp(12)});body.addView(top);body.addView(tv("●  ${if(c.frozen)"مجمّدة"else"جاهزة"}",11.5f,1,if(c.frozen)danger else success).apply{setPadding(0,dp(10),0,0)});val actions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;setPadding(0,dp(14),0,0)};actions.addView(compactButton("فتح النسخة",true){launchClone(c)},LinearLayout.LayoutParams(0,dp(46),1.5f).apply{marginEnd=dp(6)});actions.addView(compactButton("إدارة",false){manage(c)},LinearLayout.LayoutParams(0,dp(46),1f).apply{marginStart=dp(6)});body.addView(actions);card.addView(body);listBox.addView(card,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(6),0,dp(8))})}
         if(CairoFontManager.isReady(this))CairoFontManager.applyTo(listBox,this)
@@ -109,14 +103,21 @@ class MainActivity : AppCompatActivity() {
     private fun pickApp(){
         val apps=installed();if(apps.isEmpty())return toast("ما لقيناش تطبيقات قابلة للتكرار")
         val container=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setPadding(dp(8),dp(6),dp(8),dp(6))}
-        val rows=mutableListOf<View>()
-        apps.forEach{a->val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setPadding(dp(10),dp(9),dp(10),dp(9));background=rounded(surface2,14);isClickable=true;isFocusable=true};val icon=ImageView(this).apply{scaleType=ImageView.ScaleType.CENTER_INSIDE;setImageDrawable(runCatching{packageManager.getApplicationIcon(a.packageName)}.getOrNull());setPadding(dp(3),dp(3),dp(3),dp(3))};row.addView(icon,LinearLayout.LayoutParams(dp(48),dp(48)).apply{marginEnd=dp(10)});val labels=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.END};labels.addView(tv(a.label,15f,1).apply{gravity=Gravity.END});labels.addView(tv(a.packageName,10.5f,0,textSecondary).apply{gravity=Gravity.END;setPadding(0,dp(3),0,0)});row.addView(labels,LinearLayout.LayoutParams(0,-2,1f));container.addView(row,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(3),0,dp(3))});rows+=row}
+        val rows=mutableListOf<Pair<View,InstalledApp>>()
+        apps.forEach{a->
+            val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setPadding(dp(10),dp(9),dp(10),dp(9));background=rounded(surface2,14);isClickable=true;isFocusable=true}
+            val icon=ImageView(this).apply{scaleType=ImageView.ScaleType.CENTER_INSIDE;setImageDrawable(runCatching{packageManager.getApplicationIcon(a.packageName)}.getOrNull());setPadding(dp(3),dp(3),dp(3),dp(3))}
+            row.addView(icon,LinearLayout.LayoutParams(dp(48),dp(48)).apply{marginEnd=dp(10)})
+            val labels=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.END};labels.addView(tv(a.label,15f,1).apply{gravity=Gravity.END});labels.addView(tv(a.packageName,10.5f,0,textSecondary).apply{gravity=Gravity.END;setPadding(0,dp(3),0,0)});row.addView(labels,LinearLayout.LayoutParams(0,-2,1f));container.addView(row,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(3),0,dp(3))});rows+=row to a
+        }
         val scroll=ScrollView(this).apply{isFillViewport=false;addView(container,ViewGroup.LayoutParams(-1,-2))}
         val dialog=showStyled(MaterialAlertDialogBuilder(this).setTitle("اختر تطبيقًا مثبتًا").setView(scroll).setNegativeButton("إلغاء",null))
-        dialog.setOnShowListener{scroll.layoutParams=scroll.layoutParams.apply{height=(resources.displayMetrics.heightPixels*.68f).toInt()};rows.forEachIndexed{i,row->row.setOnClickListener{dialog.dismiss();createDialog(apps[i])}};dialog.window?.decorView?.let{CairoFontManager.applyTo(it,this)}}
+        scroll.layoutParams=scroll.layoutParams.apply{height=(resources.displayMetrics.heightPixels*.68f).toInt()}
+        rows.forEach{(row,a)->row.setOnClickListener{RuntimeDiagnostics.log("UI","app selected ${a.packageName}");dialog.dismiss();createDialog(a)}}
+        dialog.window?.decorView?.let{CairoFontManager.applyTo(it,this)}
     }
 
-    private fun createDialog(a:InstalledApp){val input=TextInputEditText(this).apply{hint="اسم النسخة";setText("${a.label} ${nextSlot(a.packageName)+1}");typeface=arabicBody};showStyled(MaterialAlertDialogBuilder(this).setTitle("إنشاء نسخة").setView(input).setPositiveButton("إنشاء"){_,_->val slot=nextSlot(a.packageName);val name=input.text?.toString()?.trim().orEmpty().ifBlank{"${a.label} ${slot+1}"};RuntimeDiagnostics.log("CLONE","create ${a.packageName}/$slot");engine.createClone(a.packageName,slot).onSuccess{val x=items;x+=CloneProfile(System.currentTimeMillis(),a.packageName,a.label,name,slot);store.save(x);render();toast("تم إنشاء النسخة")}.onFailure{toast("تعذر إنشاء النسخة: ${it.message}")}}.setNegativeButton("إلغاء",null))}
+    private fun createDialog(a:InstalledApp){val input=TextInputEditText(this).apply{hint="اسم النسخة";setText("${a.label} ${nextSlot(a.packageName)+1}");typeface=arabicBody};showStyled(MaterialAlertDialogBuilder(this).setTitle("إنشاء نسخة").setView(input).setPositiveButton("إنشاء"){_,_->val slot=nextSlot(a.packageName);val name=input.text?.toString()?.trim().orEmpty().ifBlank{"${a.label} ${slot+1}"};RuntimeDiagnostics.log("CLONE","create ${a.packageName}/$slot");engine.createClone(a.packageName,slot).onSuccess{val x=items;x+=CloneProfile(System.currentTimeMillis(),a.packageName,a.label,name,slot);store.save(x);render();toast("تم إنشاء النسخة")}.onFailure{RuntimeDiagnostics.log("CLONE","create failed ${a.packageName}/$slot: ${it.stackTraceToString()}");toast("تعذر إنشاء النسخة: ${it.message}")}}.setNegativeButton("إلغاء",null))}
     private fun nextSlot(pkg:String)=(items.filter{it.packageName==pkg}.maxOfOrNull{it.slot}?:-1)+1
     private fun manage(c:CloneProfile){val opts=arrayOf("إعادة تسمية",if(c.favorite)"إلغاء المفضلة"else"إضافة للمفضلة",if(c.frozen)"إلغاء التجميد"else"تجميد",if(c.hidden)"إظهار"else"إخفاء","مسح البيانات","حذف النسخة");showStyled(MaterialAlertDialogBuilder(this).setTitle(c.customName).setItems(opts){_,w->when(w){0->rename(c);1->update(c){it.copy(favorite=!it.favorite)};2->update(c){it.copy(frozen=!it.frozen)};3->update(c){it.copy(hidden=!it.hidden)};4->engine.clearData(c.packageName,c.slot).onSuccess{toast("تم مسح بيانات النسخة")};5->confirmDelete(c)}})}
     private fun rename(c:CloneProfile){val input=TextInputEditText(this).apply{setText(c.customName);typeface=arabicBody};showStyled(MaterialAlertDialogBuilder(this).setTitle("إعادة تسمية").setView(input).setPositiveButton("حفظ"){_,_->update(c){it.copy(customName=input.text.toString())}}.setNegativeButton("إلغاء",null))}
