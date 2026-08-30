@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
@@ -137,6 +138,19 @@ class RuntimeGuestContext(
         return if (wrapper != null) baseContext.stopService(wrapper) else super.stopService(name)
     }
 
+    override fun bindService(service: Intent, conn: ServiceConnection, flags: Int): Boolean {
+        val wrapper = session.componentHost?.wrapServiceIntent(service)
+        if (wrapper != null) {
+            RuntimeDiagnostics.log("SERVICE", "route bindService ${session.runtimePackage.packageName}/${session.runtimePackage.slot} target=${service.component?.className ?: service.action}")
+            return baseContext.bindService(wrapper, conn, flags)
+        }
+        return super.bindService(service, conn, flags)
+    }
+
+    override fun unbindService(conn: ServiceConnection) {
+        baseContext.unbindService(conn)
+    }
+
     override fun sendBroadcast(intent: Intent) {
         if (session.componentHost?.dispatchExplicitReceiver(intent) == true) return
         super.sendBroadcast(intent)
@@ -176,8 +190,6 @@ class RuntimeGuestContext(
             val guestApplication = session.ensureGuestApplication(originalBase, slotDir)
             setActivityApplication(activity, guestApplication)
 
-            // Keep runtime ownership outside the guest-visible Intent so every internal
-            // Activity launch can be routed back through RuntimeStubActivity.
             RuntimeActivityBindings.bind(activity, packageName, slot)
             RuntimeIntentRouter.originalIntent(wrapperIntent)?.let { activity.intent = it }
 
