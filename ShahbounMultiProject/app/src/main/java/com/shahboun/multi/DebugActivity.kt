@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -24,7 +25,7 @@ class DebugActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = Color.rgb(13, 11, 18)
         window.navigationBarColor = Color.rgb(13, 11, 18)
-        title = "تشخيص Shahboun Multi"
+        title = "تشخيص مكرّر التطبيقات"
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -68,11 +69,11 @@ class DebugActivity : Activity() {
 
         val horizontal = HorizontalScrollView(this).apply {
             isFillViewport = true
-            addView(output, HorizontalScrollView.LayoutParams(-1, -2))
+            addView(output, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         val vertical = ScrollView(this).apply {
             isFillViewport = true
-            addView(horizontal, ScrollView.LayoutParams(-1, -2))
+            addView(horizontal, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         root.addView(vertical, LinearLayout.LayoutParams(-1, 0, 1f))
 
@@ -94,17 +95,15 @@ class DebugActivity : Activity() {
     }
 
     private fun refresh() { output.text = RuntimeDiagnostics.snapshot() }
-
     private fun copy() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Shahboun Multi Debug", RuntimeDiagnostics.snapshot()))
+        clipboard.setPrimaryClip(ClipData.newPlainText("مكرّر التطبيقات Debug", RuntimeDiagnostics.snapshot()))
         Toast.makeText(this, "تم نسخ سجل التشخيص", Toast.LENGTH_SHORT).show()
     }
-
     private fun share() {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "Shahboun Multi Debug")
+            putExtra(Intent.EXTRA_SUBJECT, "مكرّر التطبيقات Debug")
             putExtra(Intent.EXTRA_TEXT, RuntimeDiagnostics.snapshot())
         }
         startActivity(Intent.createChooser(intent, "مشاركة سجل التشخيص"))
