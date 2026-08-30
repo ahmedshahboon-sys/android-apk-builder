@@ -14,6 +14,7 @@ class MultiApplication : Application() {
         RuntimeDiagnostics.initialize(this)
         RuntimeDiagnostics.installCrashHandler()
         RuntimeDiagnostics.log("APP", "MultiApplication onCreate")
+        SystemBarsFitter.install(this)
 
         engine = ShahbounCloneEngine()
         engine.initialize(this)
