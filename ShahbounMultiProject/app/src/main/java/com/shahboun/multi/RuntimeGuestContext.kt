@@ -17,6 +17,7 @@ import android.view.LayoutInflater
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.lang.reflect.Constructor
 
 /** Context presented to guest components with clone-scoped identity, storage and component routing. */
 class RuntimeGuestContext(
@@ -168,8 +169,15 @@ class RuntimeGuestContext(
             val session = RuntimeRegistry.get(packageName, slot)
             val slotDir = hostApp.engine.runtimeSlotDir(packageName, slot)
             val originalBase = activity.baseContext
-            val guest = RuntimeGuestContext(originalBase, session, slotDir)
 
+            // LayoutInflater keeps one process-wide constructor cache keyed only by class name.
+            // The host UI loads AppCompat/Material before a guest starts, so without cleaning
+            // that cache Android can instantiate a host ContentFrameLayout inside the guest.
+            // Same class name + different ClassLoader is a different Java type and causes the
+            // "ContentFrameLayout cannot be cast to ContentFrameLayout" crash.
+            RuntimeInflaterCache.prepareFor(session.classLoader, packageName, slot)
+
+            val guest = RuntimeGuestContext(originalBase, session, slotDir)
             val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
             baseField.set(activity, guest)
 
@@ -182,13 +190,6 @@ class RuntimeGuestContext(
             RuntimeDiagnostics.log("RUNTIME", "attached guest context $packageName/$slot activity=$guestActivity")
         }
 
-        /**
-         * Android 16 no longer exposes the old ContextThemeWrapper.mTheme layout used by
-         * earlier releases. The guest base context already owns the guest Resources/Theme,
-         * so rebuilding framework-private theme fields is unnecessary and crashes on SDK 36.
-         * Resolve the guest activity theme through PackageManager and apply it only through
-         * the public Activity.setTheme API.
-         */
         private fun applyGuestTheme(activity: Activity, hostBase: Context, packageName: String, activityName: String) {
             val themeId = runCatching {
                 val component = ComponentName(packageName, activityName)
@@ -214,6 +215,28 @@ class RuntimeGuestContext(
         private fun setActivityApplication(activity: Activity, application: Application) {
             val field = Activity::class.java.getDeclaredField("mApplication").apply { isAccessible = true }
             field.set(activity, application)
+        }
+    }
+}
+
+/** Keeps LayoutInflater's process-global constructor cache ClassLoader-safe for virtual guests. */
+internal object RuntimeInflaterCache {
+    fun prepareFor(expected: ClassLoader, packageName: String, slot: Int) {
+        runCatching {
+            val field = LayoutInflater::class.java.getDeclaredField("sConstructorMap").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val cache = field.get(null) as? MutableMap<String, Constructor<*>> ?: return@runCatching
+            var removed = 0
+            synchronized(cache) {
+                val stale = cache.entries.filter { (_, constructor) ->
+                    val ownerLoader = constructor.declaringClass.classLoader
+                    ownerLoader != null && ownerLoader !== expected
+                }.map { it.key }
+                stale.forEach { if (cache.remove(it) != null) removed++ }
+            }
+            RuntimeDiagnostics.log("INFLATER", "classloader cache sanitized $packageName/$slot removed=$removed remaining=${cache.size}")
+        }.onFailure {
+            RuntimeDiagnostics.log("INFLATER", "cache sanitize failed $packageName/$slot: ${it.javaClass.simpleName}: ${it.message}")
         }
     }
 }
