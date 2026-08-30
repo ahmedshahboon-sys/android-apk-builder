@@ -72,8 +72,16 @@ class ShahbounCloneEngine : CloneEngine {
         val session = sessionFactory.create(pkg, dir)
         RuntimeRegistry.put(session)
 
-        val intent = RuntimeIntentRouter.launchIntent(appContext, session)
         try {
+            // Heavy apps such as WhatsApp initialize process-wide state from their
+            // Application before the launcher Activity constructor runs. Android
+            // normally guarantees this ordering for installed packages, so the
+            // Shahboun runtime must reproduce the same lifecycle explicitly.
+            RuntimeDiagnostics.log("RUNTIME", "initializing guest Application $packageName/$slot")
+            session.ensureGuestApplication(appContext, dir)
+            RuntimeDiagnostics.log("RUNTIME", "guest Application ready $packageName/$slot")
+
+            val intent = RuntimeIntentRouter.launchIntent(appContext, session)
             appContext.startActivity(intent)
         } catch (t: Throwable) {
             RuntimeRegistry.remove(packageName, slot)
