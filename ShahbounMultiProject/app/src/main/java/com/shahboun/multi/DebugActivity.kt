@@ -1,5 +1,6 @@
 package com.shahboun.multi
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -12,9 +13,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
 
-class DebugActivity : AppCompatActivity() {
+class DebugActivity : Activity() {
     private val arabic by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
     private lateinit var output: TextView
 
