@@ -37,19 +37,42 @@ class RuntimeSession(
         } else Application()
 
         val guestContext = RuntimeGuestContext(base, this, slotDir)
-        val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
-        baseField.set(app, guestContext)
-        guestApplication = app
 
-        // Android initializes manifest providers before Application.onCreate.
-        // Heavy apps use this ordering to initialize process-wide singleton state.
+        // Match Android's real Application lifecycle as closely as possible.
+        // Application.attach(Context) invokes attachBaseContext(), which many heavy
+        // apps use to install process-wide context/singletons before providers and onCreate.
+        val attached = runCatching {
+            val attach = Application::class.java.getDeclaredMethod("attach", Context::class.java).apply {
+                isAccessible = true
+            }
+            attach.invoke(app, guestContext)
+            true
+        }.onFailure {
+            RuntimeDiagnostics.log("RUNTIME", "guest Application.attach fallback ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}")
+        }.getOrDefault(false)
+
+        if (!attached) {
+            // Conservative fallback for devices that block reflective access.
+            val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
+            baseField.set(app, guestContext)
+        }
+
+        guestApplication = app
+        RuntimeDiagnostics.log(
+            "RUNTIME",
+            "guest Application attached ${runtimePackage.packageName}/${runtimePackage.slot} attached=$attached class=${app.javaClass.name}"
+        )
+
+        // Android installs manifest providers after Application.attach() and before onCreate().
         val components = RuntimeComponentHost(base, this, slotDir)
         componentHost = components
         RuntimeDiagnostics.log("RUNTIME", "initializing guest providers ${runtimePackage.packageName}/${runtimePackage.slot}")
         components.initializeProviders()
         RuntimeDiagnostics.log("RUNTIME", "guest providers ready ${runtimePackage.packageName}/${runtimePackage.slot}")
 
+        RuntimeDiagnostics.log("RUNTIME", "calling guest Application.onCreate ${runtimePackage.packageName}/${runtimePackage.slot}")
         app.onCreate()
+        RuntimeDiagnostics.log("RUNTIME", "guest Application ready ${runtimePackage.packageName}/${runtimePackage.slot}")
         return app
     }
 
