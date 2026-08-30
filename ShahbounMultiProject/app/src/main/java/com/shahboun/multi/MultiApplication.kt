@@ -6,24 +6,29 @@ class MultiApplication : Application() {
     lateinit var engine: ShahbounCloneEngine
         private set
 
-    @Volatile
-    var runtimeBridgeError: Throwable? = null
+    var runtimeBridgeReady: Boolean = false
         private set
 
     override fun onCreate() {
         super.onCreate()
-        engine = ShahbounCloneEngine()
-        engine.initialize(this).getOrThrow()
-        runtimeBridgeError = RuntimeInstrumentationInstaller.install().exceptionOrNull()
-    }
+        RuntimeDiagnostics.initialize(this)
+        RuntimeDiagnostics.installCrashHandler()
+        RuntimeDiagnostics.log("APP", "MultiApplication onCreate")
 
-    fun requireRuntimeBridge() {
-        val retry = RuntimeInstrumentationInstaller.install()
-        if (retry.isSuccess) {
-            runtimeBridgeError = null
-            return
-        }
-        runtimeBridgeError = retry.exceptionOrNull()
-        throw IllegalStateException("تعذر تهيئة طبقة تشغيل Shahboun على هذا الجهاز", runtimeBridgeError)
+        engine = ShahbounCloneEngine()
+        engine.initialize(this)
+            .onSuccess { RuntimeDiagnostics.log("ENGINE", "initialized: ${engine.name}") }
+            .onFailure { RuntimeDiagnostics.log("ENGINE", "initialize failed: ${it.stackTraceToString()}") }
+            .getOrThrow()
+
+        RuntimeInstrumentationInstaller.install()
+            .onSuccess {
+                runtimeBridgeReady = true
+                RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge installed")
+            }
+            .onFailure {
+                runtimeBridgeReady = false
+                RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge unavailable: ${it.stackTraceToString()}")
+            }
     }
 }
