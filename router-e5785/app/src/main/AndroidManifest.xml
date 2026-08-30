@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-    <application android:theme="@style/AppTheme" android:usesCleartextTraffic="true" android:label="Shahboun Router E5785">
+    <application android:theme="@style/AppTheme" android:usesCleartextTraffic="true" android:label="Shahboun Router E5785" android:icon="@drawable/router_icon" android:roundIcon="@drawable/router_icon">
         <activity android:name=".MainActivityV18" android:screenOrientation="portrait" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
