@@ -2,7 +2,10 @@ package com.shahboun.multi
 
 import android.app.*
 import android.content.*
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.provider.Settings
 import android.view.*
@@ -25,8 +28,19 @@ class MainActivity : AppCompatActivity() {
     private val app get() = application as MultiApplication
     private val engine get() = app.engine
 
-    // Android's native Arabic shaping keeps the APK free from bundled third-party font files.
-    private val arabicTitle by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
+    private val bg = Color.rgb(13, 11, 18)
+    private val surface = Color.rgb(24, 21, 32)
+    private val surface2 = Color.rgb(31, 27, 42)
+    private val primary = Color.rgb(132, 94, 247)
+    private val primarySoft = Color.rgb(57, 43, 91)
+    private val textPrimary = Color.rgb(245, 242, 250)
+    private val textSecondary = Color.rgb(180, 174, 193)
+    private val success = Color.rgb(77, 210, 150)
+    private val danger = Color.rgb(255, 102, 122)
+
+    // Uses Android/Samsung system fonts only. No bundled third-party font files.
+    private val arabicTitle by lazy { Typeface.create("sans-serif", Typeface.BOLD) }
+    private val arabicMedium by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
     private val arabicBody by lazy { Typeface.create("sans-serif", Typeface.NORMAL) }
     private var pendingLaunch: CloneProfile? = null
 
@@ -41,6 +55,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = bg
+        window.navigationBarColor = bg
         store = CloneStore(this)
         RuntimeDiagnostics.log("UI", "MainActivity onCreate bridgeReady=${app.runtimeBridgeReady}")
         buildUi()
@@ -48,61 +64,232 @@ class MainActivity : AppCompatActivity() {
         render()
     }
 
-    private fun tv(textValue: String, size: Float = 16f, title: Boolean = false) = TextView(this).apply {
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun rounded(color: Int, radius: Int = 20, strokeColor: Int? = null, strokeWidth: Int = 1) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        setColor(color)
+        cornerRadius = dp(radius).toFloat()
+        if (strokeColor != null) setStroke(dp(strokeWidth), strokeColor)
+    }
+
+    private fun tv(
+        textValue: String,
+        size: Float = 16f,
+        weight: Int = 0,
+        color: Int = textPrimary
+    ) = TextView(this).apply {
         text = textValue
         textSize = size
-        typeface = if (title) arabicTitle else arabicBody
-        setPadding(8, 8, 8, 8)
+        setTextColor(color)
+        typeface = when (weight) {
+            2 -> arabicTitle
+            1 -> arabicMedium
+            else -> arabicBody
+        }
+        gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        includeFontPadding = false
     }
 
     private fun buildUi() {
-        val scroll = ScrollView(this)
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(bg)
+        }
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_RTL
-            setPadding(24, 28, 24, 40)
+            setPadding(dp(18), dp(20), dp(18), dp(40))
+            setBackgroundColor(bg)
         }
-        scroll.addView(root)
+        scroll.addView(root, ScrollView.LayoutParams(-1, -2))
         setContentView(scroll)
 
-        root.addView(tv("Shahboun Multi", 28f, true))
-        root.addView(tv("محرك: ${engine.name} • الجسر: ${if (app.runtimeBridgeReady) "جاهز" else "يحتاج فحص"}", 13f))
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, dp(18))
+        }
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+        }
+        brand.addView(tv("Shahboun Multi", 27f, 2), LinearLayout.LayoutParams(-1, -2))
+        brand.addView(tv("مساحتك الخاصة لتكرار التطبيقات", 13f, 0, textSecondary).apply {
+            setPadding(0, dp(5), 0, 0)
+        }, LinearLayout.LayoutParams(-1, -2))
+        header.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
 
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(actionButton("+ إضافة نسخة") { pickApp() }, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(actionButton("قفل") { lockNow() }, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(row)
+        val logo = TextView(this).apply {
+            text = "S"
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            typeface = arabicTitle
+            gravity = Gravity.CENTER
+            background = rounded(primary, 18)
+        }
+        header.addView(logo, LinearLayout.LayoutParams(dp(52), dp(52)).apply { marginStart = dp(14) })
+        root.addView(header)
+
+        val engineCard = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(surface, 18, Color.rgb(48, 43, 62))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        val engineTexts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        engineTexts.addView(tv("${engine.name}", 14f, 1))
+        engineTexts.addView(tv("محرك النسخ", 11f, 0, textSecondary).apply { setPadding(0, dp(3), 0, 0) })
+        engineCard.addView(engineTexts, LinearLayout.LayoutParams(0, -2, 1f))
+        val bridgeText = tv(if (app.runtimeBridgeReady) "●  جاهز" else "●  يحتاج فحص", 12f, 1,
+            if (app.runtimeBridgeReady) success else danger).apply { gravity = Gravity.CENTER }
+        engineCard.addView(bridgeText, LinearLayout.LayoutParams(-2, dp(36)))
+        root.addView(engineCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
+
+        root.addView(primaryButton("＋  إضافة نسخة جديدة") { pickApp() }, LinearLayout.LayoutParams(-1, dp(54)).apply {
+            bottomMargin = dp(12)
+        })
 
         val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        tools.addView(actionButton("التشخيص") { startActivity(Intent(this, DebugActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
-        tools.addView(actionButton("الإعدادات") { settingsDialog() }, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(tools)
+        tools.addView(secondaryButton("التشخيص") { startActivity(Intent(this, DebugActivity::class.java)) }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
+        tools.addView(secondaryButton("الإعدادات") { settingsDialog() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6); marginEnd = dp(6) })
+        tools.addView(secondaryButton("قفل") { lockNow() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6) })
+        root.addView(tools, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(24) })
+
+        val section = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        section.addView(tv("نسخ التطبيقات", 19f, 2), LinearLayout.LayoutParams(0, -2, 1f))
+        val countText = tv("${items.count { !it.hidden }} نسخة", 12f, 1, textSecondary).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), 0, dp(12), 0)
+            background = rounded(surface2, 14)
+        }
+        section.addView(countText, LinearLayout.LayoutParams(-2, dp(32)))
+        root.addView(section, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
 
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(listBox)
     }
 
-    private fun actionButton(label: String, action: () -> Unit) = MaterialButton(this).apply {
+    private fun primaryButton(label: String, action: () -> Unit) = MaterialButton(this).apply {
         text = label
-        typeface = arabicTitle
+        textSize = 15f
+        typeface = arabicMedium
+        setTextColor(Color.WHITE)
+        backgroundTintList = ColorStateList.valueOf(primary)
+        cornerRadius = dp(18)
+        insetTop = 0
+        insetBottom = 0
+        setOnClickListener { action() }
+    }
+
+    private fun secondaryButton(label: String, action: () -> Unit) = MaterialButton(this).apply {
+        text = label
+        textSize = 13f
+        typeface = arabicMedium
+        setTextColor(textPrimary)
+        backgroundTintList = ColorStateList.valueOf(surface2)
+        cornerRadius = dp(16)
+        insetTop = 0
+        insetBottom = 0
+        setOnClickListener { action() }
+    }
+
+    private fun compactButton(label: String, primaryAction: Boolean, action: () -> Unit) = MaterialButton(this).apply {
+        text = label
+        textSize = 13f
+        typeface = arabicMedium
+        setTextColor(if (primaryAction) Color.WHITE else textPrimary)
+        backgroundTintList = ColorStateList.valueOf(if (primaryAction) primary else surface2)
+        cornerRadius = dp(14)
+        insetTop = 0
+        insetBottom = 0
+        minHeight = 0
         setOnClickListener { action() }
     }
 
     private fun render() {
         listBox.removeAllViews()
         val visible = items.filter { !it.hidden }.sortedWith(compareByDescending<CloneProfile> { it.favorite }.thenBy { it.customName })
-        if (visible.isEmpty()) listBox.addView(tv("لا توجد نسخ بعد. اضغط «إضافة نسخة»."))
+        if (visible.isEmpty()) {
+            val empty = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                background = rounded(surface, 22, Color.rgb(45, 40, 57))
+                setPadding(dp(20), dp(32), dp(20), dp(32))
+            }
+            empty.addView(tv("ما عندكش نسخ لحد الآن", 17f, 2).apply { gravity = Gravity.CENTER })
+            empty.addView(tv("اضغط «إضافة نسخة جديدة» واختار التطبيق اللي تبي تكرره", 13f, 0, textSecondary).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(9), 0, 0)
+            })
+            listBox.addView(empty, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+            return
+        }
+
         visible.forEach { c ->
-            val card = MaterialCardView(this).apply { radius = 22f; setContentPadding(18, 14, 18, 14) }
+            val card = MaterialCardView(this).apply {
+                radius = dp(22).toFloat()
+                cardElevation = 0f
+                setCardBackgroundColor(surface)
+                strokeColor = Color.rgb(48, 43, 62)
+                strokeWidth = dp(1)
+                setContentPadding(dp(16), dp(16), dp(16), dp(14))
+            }
             val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            body.addView(tv("${if (c.favorite) "★ " else ""}${c.customName}", 19f, true))
-            body.addView(tv("${c.packageName}  •  نسخة ${c.slot}${if (c.frozen) "  •  مجمّدة" else ""}", 12f))
-            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            actions.addView(actionButton("فتح") { launchClone(c) }, LinearLayout.LayoutParams(0, -2, 1f))
-            actions.addView(actionButton("إدارة") { manage(c) }, LinearLayout.LayoutParams(0, -2, 1f))
+
+            val top = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val nameLine = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            }
+            if (c.favorite) {
+                nameLine.addView(tv("★", 16f, 1, Color.rgb(255, 205, 86)), LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
+            }
+            nameLine.addView(tv(c.customName, 18f, 2), LinearLayout.LayoutParams(-2, -2))
+            info.addView(nameLine)
+            info.addView(tv("نسخة ${c.slot + 1}  •  ${c.packageName}", 11.5f, 0, textSecondary).apply { setPadding(0, dp(5), 0, 0) })
+            top.addView(info, LinearLayout.LayoutParams(0, -2, 1f))
+
+            val icon = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(dp(5), dp(5), dp(5), dp(5))
+                background = rounded(surface2, 16)
+                setImageDrawable(runCatching { packageManager.getApplicationIcon(c.packageName) }.getOrNull())
+            }
+            top.addView(icon, LinearLayout.LayoutParams(dp(54), dp(54)).apply { marginStart = dp(12) })
+            body.addView(top)
+
+            val statusRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL or Gravity.END
+                setPadding(0, dp(12), 0, 0)
+            }
+            val status = if (c.frozen) "مجمّدة" else "جاهزة"
+            val statusColor = if (c.frozen) danger else success
+            statusRow.addView(tv("●  $status", 11.5f, 1, statusColor).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(10), 0, dp(10), 0)
+                background = rounded(if (c.frozen) Color.rgb(56, 31, 39) else Color.rgb(25, 50, 42), 12)
+            }, LinearLayout.LayoutParams(-2, dp(30)))
+            body.addView(statusRow)
+
+            val actions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(14), 0, 0)
+            }
+            actions.addView(compactButton("فتح النسخة", true) { launchClone(c) }, LinearLayout.LayoutParams(0, dp(46), 1.5f).apply { marginEnd = dp(6) })
+            actions.addView(compactButton("إدارة", false) { manage(c) }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(6) })
             body.addView(actions)
             card.addView(body)
-            listBox.addView(card, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 10, 0, 10) })
+            listBox.addView(card, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(6), 0, dp(8)) })
         }
     }
 
@@ -149,7 +336,7 @@ class MainActivity : AppCompatActivity() {
     private fun createDialog(appInfo: InstalledApp) {
         val input = TextInputEditText(this).apply {
             hint = "اسم النسخة"
-            setText("${appInfo.label} ${nextSlot(appInfo.packageName)}")
+            setText("${appInfo.label} ${nextSlot(appInfo.packageName) + 1}")
             typeface = arabicBody
         }
         MaterialAlertDialogBuilder(this)
@@ -157,7 +344,7 @@ class MainActivity : AppCompatActivity() {
             .setView(input)
             .setPositiveButton("إنشاء") { _, _ ->
                 val slot = nextSlot(appInfo.packageName)
-                val name = input.text?.toString()?.trim().orEmpty().ifBlank { "${appInfo.label} $slot" }
+                val name = input.text?.toString()?.trim().orEmpty().ifBlank { "${appInfo.label} ${slot + 1}" }
                 RuntimeDiagnostics.log("CLONE", "create ${appInfo.packageName}/$slot")
                 engine.createClone(appInfo.packageName, slot)
                     .onSuccess {
