@@ -194,7 +194,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun installed(): List<InstalledApp> {
         val pm = packageManager
-        return pm.getInstalledApplications(0).filter { it.packageName != packageName && pm.getLaunchIntentForPackage(it.packageName) != null }.map { InstalledApp(it.packageName, pm.getApplicationLabel(it).toString()) }.sortedBy { it.label.lowercase() }
+        return pm.getInstalledApplications(0)
+            .filter { it.packageName != packageName && pm.getLaunchIntentForPackage(it.packageName) != null }
+            .map { InstalledApp(it.packageName, pm.getApplicationLabel(it).toString()) }
+            .sortedBy { it.label.lowercase() }
     }
 
     private fun showStyled(builder: MaterialAlertDialogBuilder): AlertDialog {
@@ -207,8 +210,64 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun pickApp() {
-        val apps = installed(); val names = apps.map { "${it.label}\n${it.packageName}" }.toTypedArray()
-        showStyled(MaterialAlertDialogBuilder(this).setTitle("اختر تطبيقًا مثبتًا").setItems(names) { _, i -> createDialog(apps[i]) }.setNegativeButton("إلغاء", null))
+        val apps = installed()
+        if (apps.isEmpty()) return toast("ما لقيناش تطبيقات قابلة للتكرار")
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+        }
+        apps.forEach { appInfo ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                setPadding(dp(10), dp(9), dp(10), dp(9))
+                background = rounded(surface2, 14)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    (parent?.parent?.parent as? View)?.let { }
+                    createDialog(appInfo)
+                }
+            }
+            val icon = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setImageDrawable(runCatching { packageManager.getApplicationIcon(appInfo.packageName) }.getOrNull())
+                setPadding(dp(3), dp(3), dp(3), dp(3))
+            }
+            row.addView(icon, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(10) })
+            val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.END }
+            labels.addView(tv(appInfo.label, 15f, 1).apply { gravity = Gravity.END })
+            labels.addView(tv(appInfo.packageName, 10.5f, 0, textSecondary).apply { gravity = Gravity.END; setPadding(0, dp(3), 0, 0) })
+            row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
+            container.addView(row, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(3), 0, dp(3)) })
+        }
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = false
+            addView(container, ScrollView.LayoutParams(-1, -2))
+        }
+        val dialog = showStyled(
+            MaterialAlertDialogBuilder(this)
+                .setTitle("اختر تطبيقًا مثبتًا")
+                .setView(scroll)
+                .setNegativeButton("إلغاء", null)
+        )
+        dialog.setOnShowListener {
+            val maxHeight = (resources.displayMetrics.heightPixels * 0.68f).toInt()
+            scroll.layoutParams = scroll.layoutParams.apply { height = maxHeight }
+            CairoFontManager.applyTo(dialog.window!!.decorView, this)
+            // Rebind click handlers now that dialog exists so selecting an app closes the picker.
+            for (i in 0 until container.childCount) {
+                val row = container.getChildAt(i)
+                row.setOnClickListener {
+                    dialog.dismiss()
+                    createDialog(apps[i])
+                }
+            }
+        }
     }
 
     private fun createDialog(appInfo: InstalledApp) {
