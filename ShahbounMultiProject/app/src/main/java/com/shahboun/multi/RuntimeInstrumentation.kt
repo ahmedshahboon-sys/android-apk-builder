@@ -6,10 +6,32 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.IBinder
+import java.util.Collections
+import java.util.WeakHashMap
 
 internal const val EXTRA_RUNTIME_PACKAGE = "shahboun.runtime.package"
 internal const val EXTRA_RUNTIME_SLOT = "shahboun.runtime.slot"
 internal const val EXTRA_RUNTIME_ACTIVITY = "shahboun.runtime.activity"
+
+/** Keeps runtime ownership without leaking Shahboun extras into the guest's original Intent. */
+internal object RuntimeActivityBindings {
+    private data class Key(val packageName: String, val slot: Int)
+    private val bindings = Collections.synchronizedMap(WeakHashMap<Activity, Key>())
+
+    fun bind(activity: Activity, packageName: String, slot: Int) {
+        bindings[activity] = Key(packageName, slot)
+        RuntimeDiagnostics.log("RUNTIME", "activity bound $packageName/$slot activity=${activity.javaClass.name}")
+    }
+
+    fun sessionFor(activity: Activity): RuntimeSession? {
+        val key = bindings[activity] ?: return null
+        return runCatching { RuntimeRegistry.get(key.packageName, key.slot) }.getOrNull()
+    }
+
+    fun unbind(activity: Activity) {
+        bindings.remove(activity)
+    }
+}
 
 /** Own bridge between Android's Activity launch path and a Shahboun RuntimeSession. */
 class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentation() {
@@ -35,13 +57,15 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
     override fun callActivityOnResume(activity: Activity) = base.callActivityOnResume(activity)
     override fun callActivityOnPause(activity: Activity) = base.callActivityOnPause(activity)
     override fun callActivityOnStop(activity: Activity) = base.callActivityOnStop(activity)
-    override fun callActivityOnDestroy(activity: Activity) = base.callActivityOnDestroy(activity)
+    override fun callActivityOnDestroy(activity: Activity) {
+        RuntimeActivityBindings.unbind(activity)
+        base.callActivityOnDestroy(activity)
+    }
 
     /**
      * Android keeps Instrumentation.execStartActivity out of the public SDK stubs.
-     * The JVM signature is unchanged by Kotlin nullability. Android 16 can pass a
-     * null activity token here when ContextImpl starts the first runtime activity,
-     * so platform-owned arguments must remain nullable on our bridge boundary.
+     * Android 16 can pass a null activity token here when ContextImpl starts the first
+     * runtime activity, so platform-owned arguments stay nullable at this bridge.
      */
     @Suppress("unused")
     fun execStartActivity(
@@ -56,7 +80,7 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
         val routed = if (target != null) routeForGuest(target, intent) else intent
         RuntimeDiagnostics.log(
             "RUNTIME",
-            "execStartActivity target=${target?.javaClass?.name ?: "null"} token=${if (token == null) "null" else "present"}"
+            "execStartActivity target=${target?.javaClass?.name ?: "null"} token=${if (token == null) "null" else "present"} routed=${routed.component?.flattenToShortString() ?: routed.action}"
         )
         return HiddenInstrumentationDispatch.execStartActivity(
             base, who, contextThread, token, target, routed, requestCode, options
@@ -64,11 +88,9 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
     }
 
     private fun routeForGuest(activity: Activity, intent: Intent): Intent {
-        val current = activity.intent ?: return intent
-        val packageName = current.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return intent
-        val slot = current.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
-        if (slot < 0) return intent
-        val session = runCatching { RuntimeRegistry.get(packageName, slot) }.getOrNull() ?: return intent
+        // Do not depend on activity.intent here. attachIfNeeded intentionally restores the
+        // guest's original Intent, so runtime metadata is held out-of-band in a weak binding.
+        val session = RuntimeActivityBindings.sessionFor(activity) ?: return intent
         return RuntimeIntentRouter.wrap(activity, session, intent)
     }
 }
