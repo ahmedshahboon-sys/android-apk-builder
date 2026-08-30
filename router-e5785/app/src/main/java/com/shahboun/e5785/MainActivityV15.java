@@ -10,7 +10,7 @@ import android.widget.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-/** v1.5.0: always-on diagnostic recorder for real E5785 API troubleshooting. */
+/** Always-on diagnostic recorder for real E5785 API troubleshooting. */
 public class MainActivityV15 extends MainActivityV14 {
     private static final int MAX_LOG_CHARS=250000;
     private final Object logLock=new Object();
@@ -20,8 +20,8 @@ public class MainActivityV15 extends MainActivityV14 {
     private int seq=0;
 
     @Override public void onCreate(Bundle b){
-        super.onCreate(b); addDiagnosticChip(); log("APP","START","Shahboun Router E5785 v1.5.0");
-        try{View head=root.getChildAt(0);if(head instanceof ViewGroup){View names=((ViewGroup)head).getChildAt(0);if(names instanceof ViewGroup&&((ViewGroup)names).getChildCount()>1){View sub=((ViewGroup)names).getChildAt(1);if(sub instanceof TextView)((TextView)sub).setText("Huawei E5785Lh-22c Edition  •  v1.5.0");}}}catch(Exception ignored){}
+        super.onCreate(b); addDiagnosticChip(); log("APP","START","Shahboun Router E5785 v"+BuildConfig.VERSION_NAME);
+        try{View head=root.getChildAt(0);if(head instanceof ViewGroup){View names=((ViewGroup)head).getChildAt(0);if(names instanceof ViewGroup&&((ViewGroup)names).getChildCount()>1){View sub=((ViewGroup)names).getChildAt(1);if(sub instanceof TextView)((TextView)sub).setText("Huawei E5785Lh-22c Edition  •  v"+BuildConfig.VERSION_NAME);}}}catch(Exception ignored){}
     }
 
     private void addDiagnosticChip(){diagChip=btn("التشخيص • 0",v->showDiagnostic());diagChip.setTextSize(11);diagChip.setPadding(dp(10),0,dp(10),0);try{root.addView(diagChip,1,new LinearLayout.LayoutParams(-1,dp(42)));}catch(Exception e){root.addView(diagChip,new LinearLayout.LayoutParams(-1,dp(42)));}}
@@ -40,7 +40,7 @@ public class MainActivityV15 extends MainActivityV14 {
     }
     private void showDiagnostic(){String body=snapshotLog();if(body.isEmpty())body="لا توجد عمليات مسجلة بعد.";final String out=body;diagDialog("سجل التشخيص",out,"نسخ السجل",()->copyReport(out));}
     private void copyReport(String s){ClipboardManager cm=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);cm.setPrimaryClip(ClipData.newPlainText("Shahboun E5785 diagnostics",s));toast("تم نسخ سجل التشخيص");}
-    private void copyFullReport(){StringBuilder s=new StringBuilder();s.append("SHAHBOUN ROUTER E5785 DIAGNOSTIC REPORT\nVersion: 1.5.0\n");s.append("Model: ").append(pick(values.get("model"),"—")).append("\nFirmware: ").append(pick(values.get("firmware"),"—")).append("\nOperator: ").append(pick(values.get("operator"),"—")).append("\nNetwork: ").append(pick(values.get("network"),"—")).append("\nBand: ").append(pick(values.get("band"),"—")).append("\nRSRP: ").append(pick(values.get("rsrp"),"—")).append("  RSRQ: ").append(pick(values.get("rsrq"),"—")).append("  SINR: ").append(pick(values.get("sinr"),"—")).append("\n\n--- LOG ---\n").append(snapshotLog());copyReport(s.toString());}
+    private void copyFullReport(){StringBuilder s=new StringBuilder();s.append("SHAHBOUN ROUTER E5785 DIAGNOSTIC REPORT\nVersion: ").append(BuildConfig.VERSION_NAME).append("\n");s.append("Model: ").append(pick(values.get("model"),"—")).append("\nFirmware: ").append(pick(values.get("firmware"),"—")).append("\nOperator: ").append(pick(values.get("operator"),"—")).append("\nNetwork: ").append(pick(values.get("network"),"—")).append("\nBand: ").append(pick(values.get("band"),"—")).append("\nRSRP: ").append(pick(values.get("rsrp"),"—")).append("  RSRQ: ").append(pick(values.get("rsrq"),"—")).append("  SINR: ").append(pick(values.get("sinr"),"—")).append("\n\n--- LOG ---\n").append(snapshotLog());copyReport(s.toString());}
     private void clearLog(){synchronized(logLock){diag.setLength(0);seq=0;}if(diagChip!=null)diagChip.setText("التشخيص • 0");toast("تم مسح السجل");}
 
     @Override String getSync(String path){long t=System.currentTimeMillis();String r=super.getSync(path);long ms=System.currentTimeMillis()-t;log("GET",path,"duration_ms="+ms+"\nstate="+stateOf(r)+"\nhuawei_code="+pick(tagAny(r,"code"),"none")+"\nresponse=\n"+r);return r;}
