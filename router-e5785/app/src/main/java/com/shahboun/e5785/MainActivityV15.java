@@ -12,6 +12,7 @@ import java.util.*;
 
 /** v1.5.0: always-on diagnostic recorder for real E5785 API troubleshooting. */
 public class MainActivityV15 extends MainActivityV14 {
+    private static final int MAX_LOG_CHARS=250000;
     private final Object logLock=new Object();
     private final StringBuilder diag=new StringBuilder();
     private boolean diagEnabled=true;
@@ -25,8 +26,8 @@ public class MainActivityV15 extends MainActivityV14 {
 
     private void addDiagnosticChip(){diagChip=btn("التشخيص • 0",v->showDiagnostic());diagChip.setTextSize(11);diagChip.setPadding(dp(10),0,dp(10),0);try{root.addView(diagChip,1,new LinearLayout.LayoutParams(-1,dp(42)));}catch(Exception e){root.addView(diagChip,new LinearLayout.LayoutParams(-1,dp(42)));}}
     private String now(){return new SimpleDateFormat("HH:mm:ss.SSS",Locale.US).format(new Date());}
-    private void log(String kind,String name,String details){if(!diagEnabled)return;synchronized(logLock){seq++;diag.append('#').append(String.format(Locale.US,"%03d",seq)).append("  ").append(now()).append("  [").append(kind).append("] ").append(name).append('\n').append(details==null?"":redact(details)).append("\n\n");}runOnUiThread(()->{if(diagChip!=null)diagChip.setText("التشخيص • "+seq);});}
-    private String redact(String s){if(s==null)return "";s=s.replaceAll("(?is)<Password>.*?</Password>","<Password>***</Password>");s=s.replaceAll("(?i)(__RequestVerificationToken[:=]\\s*)[^\\s]+","$1***");s=s.replaceAll("(?i)(SessionID=)[^;\\s]+","$1***");return s.length()>12000?s.substring(0,12000)+"\n…[truncated]":s;}
+    protected void log(String kind,String name,String details){if(!diagEnabled)return;synchronized(logLock){seq++;diag.append('#').append(String.format(Locale.US,"%03d",seq)).append("  ").append(now()).append("  [").append(kind).append("] ").append(name).append('\n').append(details==null?"":redact(details)).append("\n\n");if(diag.length()>MAX_LOG_CHARS){int cut=diag.indexOf("\n\n#",diag.length()-MAX_LOG_CHARS);diag.delete(0,cut>=0?cut+2:diag.length()-MAX_LOG_CHARS);}}runOnUiThread(()->{if(diagChip!=null)diagChip.setText("التشخيص • "+seq);});}
+    private String redact(String s){if(s==null)return "";s=s.replaceAll("(?is)<Password>.*?</Password>","<Password>***</Password>");s=s.replaceAll("(?i)(__RequestVerificationToken[:=]\\s*)[^\\s]+","$1***");s=s.replaceAll("(?i)(SessionID=)[^;\\s]+","$1***");String[] tags={"SerialNumber","Imei","Imsi","Iccid","Msisdn","MacAddress","MacAddress1","MacAddress2","WanIPAddress","IpAddress","WifiSsid","AssociatedSsid","HostName"};for(String tag:tags)s=s.replaceAll("(?is)<"+tag+">.*?</"+tag+">","<"+tag+">***</"+tag+">");return s.length()>12000?s.substring(0,12000)+"\n…[truncated]":s;}
     private String snapshotLog(){synchronized(logLock){return diag.toString();}}
 
     private Dialog diagDialog(String title,String message,String extraLabel,Runnable extra){
@@ -44,6 +45,7 @@ public class MainActivityV15 extends MainActivityV14 {
 
     @Override String getSync(String path){long t=System.currentTimeMillis();String r=super.getSync(path);long ms=System.currentTimeMillis()-t;log("GET",path,"duration_ms="+ms+"\nstate="+stateOf(r)+"\nhuawei_code="+pick(tagAny(r,"code"),"none")+"\nresponse=\n"+r);return r;}
     @Override String postSync(String path,String xml){long t=System.currentTimeMillis();log("POST-REQUEST",path,"request=\n"+xml);String r=super.postSync(path,xml);long ms=System.currentTimeMillis()-t;log("POST-RESPONSE",path,"duration_ms="+ms+"\nstate="+stateOf(r)+"\nhuawei_code="+pick(tagAny(r,"code"),"none")+"\nresponse=\n"+r);return r;}
+    @Override void sessionTrace(String event,String detail){log("AUTH",event,detail);}
     @Override void benchmark(){log("ACTION","اختبار جميع الترددات","requested=true");super.benchmark();}
     @Override void snapshot(){log("ACTION","حفظ Snapshot","requested=true");super.snapshot();}
     @Override void restoreBand(){log("ACTION","استرجاع Snapshot","requested=true");super.restoreBand();}
@@ -55,6 +57,6 @@ public class MainActivityV15 extends MainActivityV14 {
     @Override void ussdDialog(){log("ACTION","USSD","requested=true");super.ussdDialog();}
 
     @Override void apiExplorer(){
-        diagDialog("أدوات التشخيص","التسجيل يبدأ تلقائيًا عند فتح التطبيق. جرّب الأزرار التي فيها مشاكل، وبعدها افتح «التشخيص» وانسخ السجل.\n\nكلمات المرور وSessionID وVerification Token يتم إخفاؤها من التقرير.","نسخ تقرير كامل",this::copyFullReport);
+        diagDialog("أدوات التشخيص","التسجيل يبدأ تلقائيًا عند فتح التطبيق. جرّب الأزرار التي فيها مشاكل، وبعدها افتح «التشخيص» وانسخ السجل.\n\nكلمات المرور ورموز الجلسة وأرقام تعريف الجهاز والشريحة وبيانات أجهزة Wi-Fi تُخفى من التقرير.","نسخ تقرير كامل",this::copyFullReport);
     }
 }
