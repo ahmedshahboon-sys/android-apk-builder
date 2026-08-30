@@ -9,5 +9,6 @@ android {
         versionCode = 8
         versionName = "1.6.1"
     }
+    buildFeatures { buildConfig = true }
     buildTypes { release { isMinifyEnabled = false } }
 }
