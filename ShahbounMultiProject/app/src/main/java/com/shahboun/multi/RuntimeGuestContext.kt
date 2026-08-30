@@ -10,9 +10,13 @@ import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.Resources
+import android.database.DatabaseErrorHandler
+import android.database.sqlite.SQLiteDatabase
 import android.os.Build
 import android.view.LayoutInflater
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
 /** Context presented to guest components with clone-scoped identity, storage and component routing. */
 class RuntimeGuestContext(
@@ -56,21 +60,53 @@ class RuntimeGuestContext(
         return if (packageName == session.runtimePackage.packageName) this else super.createPackageContext(packageName, flags)
     }
 
+    override fun getDataDir(): File = cloneDir("data")
     override fun getFilesDir(): File = cloneDir("files")
     override fun getCacheDir(): File = cloneDir("cache")
     override fun getCodeCacheDir(): File = cloneDir("code_cache")
     override fun getNoBackupFilesDir(): File = cloneDir("no_backup")
-
     override fun getDir(name: String, mode: Int): File = cloneDir("app_${safeName(name)}")
+
+    override fun openFileInput(name: String): FileInputStream = FileInputStream(File(filesDir, safeName(name)))
+
+    override fun openFileOutput(name: String, mode: Int): FileOutputStream {
+        val target = File(filesDir, safeName(name))
+        target.parentFile?.mkdirs()
+        return FileOutputStream(target, mode and Context.MODE_APPEND != 0)
+    }
+
+    override fun deleteFile(name: String): Boolean = File(filesDir, safeName(name)).delete()
+    override fun fileList(): Array<String> = filesDir.list().orEmpty()
 
     override fun getExternalFilesDir(type: String?): File {
         val base = cloneDir("external/files")
         return if (type.isNullOrBlank()) base else File(base, safeName(type)).apply { mkdirs() }
     }
 
+    override fun getExternalFilesDirs(type: String?): Array<File> = arrayOf(getExternalFilesDir(type))
     override fun getExternalCacheDir(): File = cloneDir("external/cache")
+    override fun getExternalCacheDirs(): Array<File> = arrayOf(externalCacheDir)
+    override fun getExternalMediaDirs(): Array<File> = arrayOf(cloneDir("external/media"))
+    override fun getObbDir(): File = cloneDir("external/obb")
+    override fun getObbDirs(): Array<File> = arrayOf(obbDir)
 
     override fun getDatabasePath(name: String): File = File(cloneDir("databases"), safeName(name))
+
+    override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?): SQLiteDatabase {
+        val path = getDatabasePath(name)
+        path.parentFile?.mkdirs()
+        return SQLiteDatabase.openOrCreateDatabase(path, factory)
+    }
+
+    override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?, errorHandler: DatabaseErrorHandler?): SQLiteDatabase {
+        val path = getDatabasePath(name)
+        path.parentFile?.mkdirs()
+        return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path, factory, errorHandler)
+        else SQLiteDatabase.openOrCreateDatabase(path, factory)
+    }
+
+    override fun deleteDatabase(name: String): Boolean = SQLiteDatabase.deleteDatabase(getDatabasePath(name))
+    override fun databaseList(): Array<String> = cloneDir("databases").list().orEmpty()
 
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
         val safe = safeName(name)
