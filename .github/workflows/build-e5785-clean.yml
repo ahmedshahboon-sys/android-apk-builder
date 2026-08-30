@@ -1,0 +1,47 @@
+name: Build Shahboun E5785 Clean APK
+on:
+  push:
+    branches: [e5785-clean-rebuild]
+    paths:
+      - 'router-e5785/**'
+      - '.github/workflows/build-e5785-clean.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build release
+        working-directory: router-e5785
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+      - name: Prepare signing key
+        run: |
+          base64 -d android/fixed_debug_keystore.b64 > android/fixed_debug.keystore
+          keytool -list -keystore android/fixed_debug.keystore -storepass android >/dev/null
+      - name: Sign APK
+        run: |
+          mkdir -p output
+          UNSIGNED=router-e5785/app/build/outputs/apk/release/app-release-unsigned.apk
+          test -f "$UNSIGNED" || UNSIGNED=router-e5785/app/build/outputs/apk/release/app-release.apk
+          BUILD_TOOLS=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
+          "$BUILD_TOOLS/zipalign" -f 4 "$UNSIGNED" output/e5785-aligned.apk
+          "$BUILD_TOOLS/apksigner" sign --ks android/fixed_debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out output/Shahboun_Router_E5785_1.0.0.apk output/e5785-aligned.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs output/Shahboun_Router_E5785_1.0.0.apk
+          rm output/e5785-aligned.apk
+          sha256sum output/Shahboun_Router_E5785_1.0.0.apk > output/Shahboun_Router_E5785_1.0.0.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shahboun-router-e5785-1.0.0-signed
+          path: output/*
+          if-no-files-found: error
+          retention-days: 7
