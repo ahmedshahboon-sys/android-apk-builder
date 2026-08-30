@@ -1,7 +1,6 @@
 package com.shahboun.multi
 
 import android.content.Context
-import android.content.Intent
 import java.io.File
 import java.security.MessageDigest
 
@@ -64,18 +63,16 @@ class ShahbounCloneEngine : CloneEngine {
 
     override fun launch(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized()
+        (appContext as? MultiApplication)?.requireRuntimeBridge()
+            ?: error("Shahboun application context غير صالح")
+
         val dir = runtimeSlotDir(packageName, slot)
         require(dir.isDirectory) { "Clone does not exist" }
         val pkg = installer.read(packageName, slot, dir)
         val session = sessionFactory.create(pkg, dir)
         RuntimeRegistry.put(session)
 
-        val intent = Intent(appContext, RuntimeStubActivity::class.java).apply {
-            putExtra(EXTRA_RUNTIME_PACKAGE, packageName)
-            putExtra(EXTRA_RUNTIME_SLOT, slot)
-            putExtra(EXTRA_RUNTIME_ACTIVITY, pkg.launchActivity)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        val intent = RuntimeIntentRouter.launchIntent(appContext, session)
         try {
             appContext.startActivity(intent)
         } catch (t: Throwable) {
