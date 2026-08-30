@@ -37,7 +37,13 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
     override fun callActivityOnStop(activity: Activity) = base.callActivityOnStop(activity)
     override fun callActivityOnDestroy(activity: Activity) = base.callActivityOnDestroy(activity)
 
-    override fun execStartActivity(
+    /**
+     * Android keeps Instrumentation.execStartActivity out of the public SDK stubs.
+     * We intentionally declare the runtime-compatible method rather than importing
+     * any hook library. At runtime Activity dispatch can resolve this virtual method.
+     */
+    @Suppress("unused")
+    fun execStartActivity(
         who: Context,
         contextThread: IBinder,
         token: IBinder,
@@ -47,7 +53,9 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
         options: Bundle?
     ): ActivityResult? {
         val routed = routeForGuest(target, intent)
-        return base.execStartActivity(who, contextThread, token, target, routed, requestCode, options)
+        return HiddenInstrumentationDispatch.execStartActivity(
+            base, who, contextThread, token, target, routed, requestCode, options
+        )
     }
 
     private fun routeForGuest(activity: Activity, intent: Intent): Intent {
@@ -57,6 +65,37 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
         if (slot < 0) return intent
         val session = runCatching { RuntimeRegistry.get(packageName, slot) }.getOrNull() ?: return intent
         return RuntimeIntentRouter.wrap(activity, session, intent)
+    }
+}
+
+private object HiddenInstrumentationDispatch {
+    private val method by lazy {
+        Instrumentation::class.java.getDeclaredMethod(
+            "execStartActivity",
+            Context::class.java,
+            IBinder::class.java,
+            IBinder::class.java,
+            Activity::class.java,
+            Intent::class.java,
+            Int::class.javaPrimitiveType,
+            Bundle::class.java
+        ).apply { isAccessible = true }
+    }
+
+    fun execStartActivity(
+        instrumentation: Instrumentation,
+        who: Context,
+        contextThread: IBinder,
+        token: IBinder,
+        target: Activity,
+        intent: Intent,
+        requestCode: Int,
+        options: Bundle?
+    ): Instrumentation.ActivityResult? {
+        @Suppress("UNCHECKED_CAST")
+        return method.invoke(
+            instrumentation, who, contextThread, token, target, intent, requestCode, options
+        ) as? Instrumentation.ActivityResult
     }
 }
 
