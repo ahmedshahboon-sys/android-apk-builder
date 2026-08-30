@@ -2,7 +2,7 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <application android:theme="@style/AppTheme" android:usesCleartextTraffic="true" android:label="Shahboun Router E5785">
-        <activity android:name=".MainActivityV13" android:screenOrientation="portrait" android:exported="true">
+        <activity android:name=".MainActivityV14" android:screenOrientation="portrait" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
