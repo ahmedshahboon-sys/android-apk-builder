@@ -31,4 +31,10 @@ class MultiApplication : Application() {
                 RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge unavailable: ${it.stackTraceToString()}")
             }
     }
+
+    fun requireRuntimeBridge() {
+        check(runtimeBridgeReady) {
+            "جسر تشغيل النسخ غير متاح على هذا الجهاز. افتح «التشخيص» وانسخ السجل."
+        }
+    }
 }
