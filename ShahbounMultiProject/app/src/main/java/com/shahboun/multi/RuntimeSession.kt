@@ -38,9 +38,6 @@ class RuntimeSession(
 
         val guestContext = RuntimeGuestContext(base, this, slotDir)
 
-        // Match Android's real Application lifecycle as closely as possible.
-        // Application.attach(Context) invokes attachBaseContext(), which many heavy
-        // apps use to install process-wide context/singletons before providers and onCreate.
         val attached = runCatching {
             val attach = Application::class.java.getDeclaredMethod("attach", Context::class.java).apply {
                 isAccessible = true
@@ -52,7 +49,6 @@ class RuntimeSession(
         }.getOrDefault(false)
 
         if (!attached) {
-            // Conservative fallback for devices that block reflective access.
             val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
             baseField.set(app, guestContext)
         }
@@ -63,7 +59,6 @@ class RuntimeSession(
             "guest Application attached ${runtimePackage.packageName}/${runtimePackage.slot} attached=$attached class=${app.javaClass.name}"
         )
 
-        // Android installs manifest providers after Application.attach() and before onCreate().
         val components = RuntimeComponentHost(base, this, slotDir)
         componentHost = components
         RuntimeDiagnostics.log("RUNTIME", "initializing guest providers ${runtimePackage.packageName}/${runtimePackage.slot}")
@@ -81,6 +76,50 @@ class RuntimeSession(
         componentHost = null
         guestApplication = null
         closeables.asReversed().forEach { runCatching { it.close() } }
+    }
+}
+
+/**
+ * Guest APKs may bundle their own AndroidX/Google/Kotlin libraries. A normal
+ * DexClassLoader is parent-first, which can accidentally bind guest code to the
+ * host app's dependency versions. That caused WhatsApp to resolve
+ * AppLocalesMetadataHolderService from Shahboun Multi instead of from its APK.
+ *
+ * Framework + bridge classes remain parent-first. Everything else is guest-first.
+ */
+private class GuestDexClassLoader(
+    dexPath: String,
+    optimizedDirectory: String?,
+    librarySearchPath: String?,
+    parent: ClassLoader
+) : DexClassLoader(dexPath, optimizedDirectory, librarySearchPath, parent) {
+
+    private val parentFirstPrefixes = arrayOf(
+        "java.",
+        "javax.",
+        "android.",
+        "dalvik.",
+        "sun.",
+        "org.apache.",
+        "org.xml.",
+        "org.w3c.",
+        "com.android.",
+        "com.shahboun.multi."
+    )
+
+    override fun loadClass(name: String, resolve: Boolean): Class<*> {
+        synchronized(getClassLoadingLock(name)) {
+            findLoadedClass(name)?.let { return it }
+
+            if (parentFirstPrefixes.any { name.startsWith(it) }) {
+                return super.loadClass(name, resolve)
+            }
+
+            val loaded = runCatching { findClass(name) }.getOrNull()
+                ?: super.loadClass(name, false)
+            if (resolve) resolveClass(loaded)
+            return loaded
+        }
     }
 }
 
@@ -103,12 +142,13 @@ class RuntimeSessionFactory(private val context: Context) {
                 allApks.joinToString { "${it.name}:r=${it.canRead()}:w=${it.canWrite()}:size=${it.length()}" }
         )
 
-        val loader = DexClassLoader(
+        val loader = GuestDexClassLoader(
             pkg.dexPath,
             codeCache.absolutePath,
             nativeDir.absolutePath,
             context.classLoader
         )
+        RuntimeDiagnostics.log("DEX", "guest-first classloader enabled package=${pkg.packageName} slot=${pkg.slot}")
 
         val closeables = mutableListOf<Closeable>()
         val resources = if (Build.VERSION.SDK_INT >= 30) {
