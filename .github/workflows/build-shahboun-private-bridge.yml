@@ -1,6 +1,6 @@
 name: Build Shahboun Multi Native
 
-# Stable signing baseline v1
+# Stable signing baseline v1 - storage isolation fix
 on:
   push:
     branches: [main]
