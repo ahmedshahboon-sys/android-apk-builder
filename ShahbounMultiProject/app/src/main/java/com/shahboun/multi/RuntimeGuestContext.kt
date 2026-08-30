@@ -8,6 +8,7 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.os.Build
 import android.view.LayoutInflater
@@ -19,10 +20,21 @@ class RuntimeGuestContext(
     private val session: RuntimeSession,
     private val slotDir: File
 ) : ContextWrapper(base) {
+    private val guestTheme: Resources.Theme by lazy {
+        session.resources.newTheme().apply {
+            val appTheme = runCatching {
+                baseContext.packageManager.getApplicationInfo(session.runtimePackage.packageName, 0).theme
+            }.getOrDefault(0)
+            if (appTheme != 0) applyStyle(appTheme, true)
+        }
+    }
+
     override fun getPackageName(): String = session.runtimePackage.packageName
     override fun getClassLoader(): ClassLoader = session.classLoader
     override fun getResources(): Resources = session.resources
     override fun getAssets() = session.resources.assets
+    override fun getTheme(): Resources.Theme = guestTheme
+    override fun setTheme(resid: Int) { if (resid != 0) guestTheme.applyStyle(resid, true) }
     override fun getApplicationContext(): Context = session.guestApplication ?: this
     override fun getPackageCodePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
@@ -129,14 +141,30 @@ class RuntimeGuestContext(
             setActivityApplication(activity, guestApplication)
 
             RuntimeIntentRouter.originalIntent(wrapperIntent)?.let { activity.intent = it }
-            RuntimeDiagnostics.log("RUNTIME", "attached guest context $packageName/$slot activity=$guestActivity")
 
+            rebuildGuestTheme(activity, originalBase, packageName, guestActivity)
+            RuntimeDiagnostics.log("RUNTIME", "attached guest context $packageName/$slot activity=$guestActivity")
+        }
+
+        private fun rebuildGuestTheme(activity: Activity, hostBase: Context, packageName: String, activityName: String) {
             runCatching {
                 val themeWrapper = Class.forName("android.view.ContextThemeWrapper")
-                val resourcesField = themeWrapper.getDeclaredField("mResources").apply { isAccessible = true }
-                resourcesField.set(activity, null)
+                themeWrapper.getDeclaredField("mResources").apply { isAccessible = true }.set(activity, null)
+                themeWrapper.getDeclaredField("mTheme").apply { isAccessible = true }.set(activity, null)
+                themeWrapper.getDeclaredField("mThemeResource").apply { isAccessible = true }.setInt(activity, 0)
+
+                val component = ComponentName(packageName, activityName)
+                val info = if (Build.VERSION.SDK_INT >= 33) {
+                    hostBase.packageManager.getActivityInfo(component, PackageManager.ComponentInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION") hostBase.packageManager.getActivityInfo(component, 0)
+                }
+                val themeId = if (info.theme != 0) info.theme else hostBase.packageManager.getApplicationInfo(packageName, 0).theme
+                if (themeId != 0) activity.setTheme(themeId)
+                RuntimeDiagnostics.log("RUNTIME", "guest theme rebuilt $packageName activity=$activityName theme=0x${themeId.toString(16)}")
             }.onFailure {
-                RuntimeDiagnostics.log("RUNTIME", "theme resource reset failed: ${it.message}")
+                RuntimeDiagnostics.log("RUNTIME", "guest theme rebuild failed: ${it.stackTraceToString()}")
+                throw it
             }
         }
 
