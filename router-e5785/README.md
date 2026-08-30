@@ -2,6 +2,8 @@
 
 Clean rebuild targeting Huawei E5785Lh-22c / HiLink only.
 
+Current diagnostic build: `v1.5.0` (`versionCode 6`).
+
 ## Architecture
 - `HilinkSessionManager`: session + CSRF token lifecycle; never reuses consumed write tokens.
 - `E5785CapabilityProbe`: probes endpoints after authentication and gates UI features by actual firmware support.
