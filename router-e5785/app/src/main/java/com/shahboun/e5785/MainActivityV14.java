@@ -23,6 +23,7 @@ import java.util.*;
  */
 public class MainActivityV14 extends MainActivityV13 {
     private volatile boolean benchStop = false;
+    private volatile String benchFatal = "";
     private final List<BenchResult> lastBench = new ArrayList<>();
 
     private static final String[][] BAND_CONFIGS = {
@@ -232,7 +233,7 @@ public class MainActivityV14 extends MainActivityV13 {
 
     @Override void benchmark() {
         if(!logged){show("اختبار الترددات","سجّل الدخول للراوتر أولًا.");return;}
-        benchStop=false; lastBench.clear();
+        benchStop=false; benchFatal=""; live=false; lastBench.clear();
         final Dialog progress=baseDialog();
         LinearLayout card=dialogCard();
         TextView title=dialogText("اختبار جميع الترددات",20,TEXT); card.addView(title);
@@ -251,7 +252,7 @@ public class MainActivityV14 extends MainActivityV13 {
         String original=getSync("/api/net/net-mode");
         String om=tagAny(original,"NetworkMode"), ob=tagAny(original,"NetworkBand"), ol=tagAny(original,"LTEBand");
         if(bad(original)||om.isEmpty()||ob.isEmpty()||ol.isEmpty()){
-            runOnUiThread(()->{progress.dismiss();show("اختبار الترددات","تعذر قراءة إعداد الشبكة الأصلي، لذلك تم إيقاف الاختبار لحماية الاتصال.\n\n"+stateOf(original));});return;
+            runOnUiThread(()->{progress.dismiss();if(currentPage==0){live=true;tick();}show("اختبار الترددات","تعذر قراءة إعداد الشبكة الأصلي، لذلك تم إيقاف الاختبار لحماية الاتصال.\n\n"+stateOf(original));});return;
         }
         prefs.edit().putString("snapMode",om).putString("snapBand",ob).putString("snapLte",ol).apply();
 
@@ -263,7 +264,12 @@ public class MainActivityV14 extends MainActivityV13 {
             String r=postSync("/api/net/net-mode",netXml(cfg[2],"3FFFFFFF",cfg[1]));
             if(!okResponse(r)){
                 br.ok=false;br.error=stateOf(r);
-                runOnUiThread(()->metrics.setText("لم يقبل الراوتر هذا الإعداد • سيتم الانتقال للتالي"));
+                if(r.contains("<code>100003</code>")||r.contains("<code>125001</code>")||r.contains("<code>125002</code>")||r.contains("<code>125003</code>")){
+                    benchFatal=stateOf(r);
+                    runOnUiThread(()->metrics.setText("توقّف الاختبار لحماية الجلسة والإعداد الأصلي"));
+                    break;
+                }
+                runOnUiThread(()->metrics.setText("لم يقبل الراوتر هذا التردد • سيتم الانتقال للتالي"));
                 sleepMs(1500);continue;
             }
             sleepMs(6500);
@@ -293,7 +299,8 @@ public class MainActivityV14 extends MainActivityV13 {
         final BenchResult finalBest=best;
         final boolean restored=okResponse(restore);
         runOnUiThread(()->{
-            progress.dismiss();h.postDelayed(this::refreshAll,1200);
+            progress.dismiss();if(currentPage==0){live=true;tick();}h.postDelayed(this::refreshAll,1200);
+            if(!benchFatal.isEmpty()){show("توقف اختبار الترددات","أوقف التطبيق الاختبار بعد فقدان صلاحية الإدارة، ولم يرسل بقية أوامر الترددات.\n\n"+benchFatal+"\n\n"+(restored?"تم استرجاع الإعداد الأصلي.":"لم يؤكد الراوتر الاسترجاع؛ استخدم زر استرجاع Snapshot بعد إعادة الدخول."));return;}
             if(benchStop){show("تم إيقاف الاختبار",restored?"تم إيقاف الاختبار واسترجاع الإعداد الأصلي.":"تم إيقاف الاختبار، لكن الراوتر لم يؤكد استرجاع الإعداد الأصلي. جرّب زر الاسترجاع الآمن.");return;}
             if(finalBest==null){show("نتيجة الاختبار","لم نحصل على قياسات ناجحة. تم "+(restored?"استرجاع":"محاولة استرجاع")+" الإعداد الأصلي.");return;}
             prefs.edit().putString("bestBandName",finalBest.name).putString("bestBandMask",finalBest.mask).putString("bestBandMode",finalBest.mode).putString("bestReport",reportText(finalBest)).apply();
