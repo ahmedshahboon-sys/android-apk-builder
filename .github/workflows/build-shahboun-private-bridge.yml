@@ -98,7 +98,7 @@ jobs:
           APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
           test -n "$APK" && test -s "$APK"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" | tee /tmp/apk-signature.txt
-          grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' /tmp/apk-signature.txt
+          grep -Eq 'Verified using v(2|3) scheme \(APK Signature Scheme v(2|3)\): true' /tmp/apk-signature.txt
           mkdir -p output
           cp "$APK" output/ShahbounMulti.apk
           sha256sum output/ShahbounMulti.apk > output/ShahbounMulti.apk.sha256
