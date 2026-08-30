@@ -8,6 +8,7 @@ import android.content.res.loader.ResourcesLoader
 import android.content.res.loader.ResourcesProvider
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.Os
 import dalvik.system.DexClassLoader
 import java.io.Closeable
 import java.io.File
@@ -50,12 +51,21 @@ class RuntimeSession(
 /** Creates code/resource/native loaders using only Shahboun runtime code. */
 class RuntimeSessionFactory(private val context: Context) {
     fun create(pkg: RuntimePackage, slotDir: File): RuntimeSession {
+        val allApks = listOf(pkg.baseApk) + pkg.splitApks
+        RuntimeCodeSecurity.prepareApks(allApks)
+
         val codeCache = File(slotDir, "code_cache").apply { require(exists() || mkdirs()) }
         val nativeDir = File(slotDir, "native").apply {
             if (exists()) deleteRecursively()
             require(mkdirs())
         }
-        NativeLibraryExtractor.extract(listOf(pkg.baseApk) + pkg.splitApks, nativeDir)
+        NativeLibraryExtractor.extract(allApks, nativeDir)
+
+        RuntimeDiagnostics.log(
+            "DEX",
+            "loading package=${pkg.packageName} slot=${pkg.slot} apks=${allApks.size} " +
+                allApks.joinToString { "${it.name}:r=${it.canRead()}:w=${it.canWrite()}:size=${it.length()}" }
+        )
 
         val loader = DexClassLoader(
             pkg.dexPath,
@@ -68,7 +78,6 @@ class RuntimeSessionFactory(private val context: Context) {
         val resources = if (Build.VERSION.SDK_INT >= 30) {
             val base = Resources(context.resources.assets, context.resources.displayMetrics, context.resources.configuration)
             val resourcesLoader = ResourcesLoader()
-            val allApks = listOf(pkg.baseApk) + pkg.splitApks
             allApks.forEach { apk ->
                 ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                     val provider = ResourcesProvider.loadFromApk(pfd)
@@ -90,6 +99,23 @@ class RuntimeSessionFactory(private val context: Context) {
             require(Application::class.java.isAssignableFrom(loader.loadClass(name))) { "Application class غير صالح" }
         }
         return RuntimeSession(pkg, loader, resources, closeables)
+    }
+}
+
+/** Android 14+ rejects dynamically loaded dex/apk files that remain writable. */
+private object RuntimeCodeSecurity {
+    fun prepareApks(apks: List<File>) {
+        require(apks.isNotEmpty()) { "لا توجد ملفات APK للتشغيل" }
+        apks.forEach { apk ->
+            require(apk.isFile && apk.length() > 0) { "ملف APK غير صالح: ${apk.name}" }
+            runCatching { Os.chmod(apk.absolutePath, 0b100100100) }
+                .recoverCatching {
+                    require(apk.setReadOnly()) { "تعذر حماية ملف APK: ${apk.name}" }
+                }
+                .getOrThrow()
+            require(apk.canRead()) { "ملف APK غير قابل للقراءة: ${apk.name}" }
+            require(!apk.canWrite()) { "ملف APK ما زال قابلاً للكتابة: ${apk.name}" }
+        }
     }
 }
 
