@@ -29,7 +29,7 @@
         <item name="buttonBarNeutralButtonStyle">@style/Widget.ShahbounMulti.DialogButton</item>
     </style>
 
-    <style name="Widget.ShahbounMulti.DialogButton" parent="Widget.Material3.Button.TextButton.Dialog.Flush">
+    <style name="Widget.ShahbounMulti.DialogButton" parent="Widget.Material3.Button.TextButton.Dialog">
         <item name="android:textColor">#FF8A1F</item>
         <item name="android:textStyle">bold</item>
     </style>
