@@ -3,14 +3,37 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.shahboun.multi"
     compileSdk = 36
+
+    val stableStore = System.getenv("SHAHBOUN_KEYSTORE")
+    val stableStorePassword = System.getenv("SHAHBOUN_STORE_PASSWORD")
+    val stableKeyAlias = System.getenv("SHAHBOUN_KEY_ALIAS")
+    val stableKeyPassword = System.getenv("SHAHBOUN_KEY_PASSWORD")
+    val hasStableSigning = !stableStore.isNullOrBlank() && !stableStorePassword.isNullOrBlank() && !stableKeyAlias.isNullOrBlank() && !stableKeyPassword.isNullOrBlank()
+
     defaultConfig {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.1"
+        versionCode = 5
+        versionName = "0.4.0"
         manifestPlaceholders["debugActivityEnabled"] = "true"
     }
+
+    if (hasStableSigning) {
+        signingConfigs {
+            create("shahbounStable") {
+                storeFile = file(stableStore!!)
+                storePassword = stableStorePassword
+                keyAlias = stableKeyAlias
+                keyPassword = stableKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -23,12 +46,14 @@ android {
         debug {
             isDebuggable = true
             manifestPlaceholders["debugActivityEnabled"] = "true"
+            if (hasStableSigning) signingConfig = signingConfigs.getByName("shahbounStable")
         }
         release {
             isDebuggable = false
             isMinifyEnabled = false
             isShrinkResources = false
             manifestPlaceholders["debugActivityEnabled"] = "false"
+            if (hasStableSigning) signingConfig = signingConfigs.getByName("shahbounStable")
         }
     }
     packaging { resources.excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*") }
