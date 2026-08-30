@@ -5,7 +5,7 @@ import android.view.*;
 import android.widget.*;
 import java.util.*;
 
-/** v1.6.0: fixed single-use HiLink tokens and bounded, serialized live refresh. */
+/** Fixed single-use HiLink tokens and bounded, serialized live refresh. */
 public class MainActivityV16 extends MainActivityV15 {
     private final Object refreshLock=new Object();
     private volatile boolean refreshRunning=false,probeRunning=false,tickPending=false;
@@ -13,8 +13,8 @@ public class MainActivityV16 extends MainActivityV15 {
 
     @Override public void onCreate(Bundle b){
         super.onCreate(b);
-        log("APP","SESSION-FIX","v1.6.0 • single-use tokens • serialized refresh • private diagnostics");
-        try{View head=root.getChildAt(0);if(head instanceof ViewGroup){View names=((ViewGroup)head).getChildAt(0);if(names instanceof ViewGroup&&((ViewGroup)names).getChildCount()>1){View sub=((ViewGroup)names).getChildAt(1);if(sub instanceof TextView)((TextView)sub).setText("Huawei E5785Lh-22c Edition  •  v1.6.0");}}}catch(Exception ignored){}
+        log("APP","SESSION-FIX","v"+BuildConfig.VERSION_NAME+" • single-use tokens • serialized refresh • private diagnostics");
+        try{View head=root.getChildAt(0);if(head instanceof ViewGroup){View names=((ViewGroup)head).getChildAt(0);if(names instanceof ViewGroup&&((ViewGroup)names).getChildCount()>1){View sub=((ViewGroup)names).getChildAt(1);if(sub instanceof TextView)((TextView)sub).setText("Huawei E5785Lh-22c Edition  •  v"+BuildConfig.VERSION_NAME);}}}catch(Exception ignored){}
     }
 
     @Override void tick(){
