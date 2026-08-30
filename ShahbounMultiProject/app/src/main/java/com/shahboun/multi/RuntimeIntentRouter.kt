@@ -14,9 +14,13 @@ object RuntimeIntentRouter {
         val pkg = session.runtimePackage
         val target = resolveGuestActivity(context, pkg.packageName, original) ?: return original
 
+        // Never derive the stub package from the guest-wrapped Context. After a guest
+        // Activity is attached, Context.getPackageName() intentionally returns the guest
+        // package. The stub is declared only in the Shahboun host manifest.
+        val hostPackage = BuildConfig.APPLICATION_ID
         return Intent(original).apply {
-            component = ComponentName(context.packageName, RuntimeStubActivity::class.java.name)
-            `package` = context.packageName
+            component = ComponentName(hostPackage, RuntimeStubActivity::class.java.name)
+            `package` = hostPackage
             putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
             putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
             putExtra(EXTRA_RUNTIME_ACTIVITY, target)
