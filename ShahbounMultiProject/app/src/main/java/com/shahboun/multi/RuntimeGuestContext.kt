@@ -21,18 +21,30 @@ class RuntimeGuestContext(
     override fun getAssets() = session.resources.assets
     override fun getApplicationContext(): Context = session.guestApplication ?: this
 
-    override fun getFilesDir(): File = File(slotDir, "files").apply { mkdirs() }
-    override fun getCacheDir(): File = File(slotDir, "cache").apply { mkdirs() }
-    override fun getCodeCacheDir(): File = File(slotDir, "code_cache").apply { mkdirs() }
-    override fun getNoBackupFilesDir(): File = File(slotDir, "no_backup").apply { mkdirs() }
+    override fun getFilesDir(): File = cloneDir("files")
+    override fun getCacheDir(): File = cloneDir("cache")
+    override fun getCodeCacheDir(): File = cloneDir("code_cache")
+    override fun getNoBackupFilesDir(): File = cloneDir("no_backup")
+
+    override fun getDir(name: String, mode: Int): File {
+        val safe = safeName(name)
+        return cloneDir("app_$safe")
+    }
+
+    override fun getExternalFilesDir(type: String?): File {
+        val base = cloneDir("external/files")
+        return if (type.isNullOrBlank()) base else File(base, safeName(type)).apply { mkdirs() }
+    }
+
+    override fun getExternalCacheDir(): File = cloneDir("external/cache")
 
     override fun getDatabasePath(name: String): File {
-        val dir = File(slotDir, "databases").apply { mkdirs() }
-        return File(dir, name)
+        val dir = cloneDir("databases")
+        return File(dir, safeName(name))
     }
 
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
-        val safe = name.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+        val safe = safeName(name)
         val key = "clone_${session.runtimePackage.packageName}_${session.runtimePackage.slot}_$safe"
         return baseContext.getSharedPreferences(key, mode)
     }
@@ -44,6 +56,12 @@ class RuntimeGuestContext(
         }
         return super.getSystemService(name)
     }
+
+    private fun cloneDir(relative: String): File = File(slotDir, relative).apply {
+        if (!exists()) require(mkdirs()) { "Unable to create clone directory: $relative" }
+    }
+
+    private fun safeName(value: String): String = value.replace(Regex("[^A-Za-z0-9_.-]"), "_")
 
     companion object {
         fun attachIfNeeded(activity: Activity) {
@@ -66,11 +84,14 @@ class RuntimeGuestContext(
             setActivityApplication(activity, guestApplication)
 
             RuntimeIntentRouter.originalIntent(wrapperIntent)?.let { activity.intent = it }
+            RuntimeDiagnostics.log("RUNTIME", "attached guest context $packageName/$slot activity=$guestActivity")
 
             runCatching {
                 val themeWrapper = Class.forName("android.view.ContextThemeWrapper")
                 val resourcesField = themeWrapper.getDeclaredField("mResources").apply { isAccessible = true }
                 resourcesField.set(activity, null)
+            }.onFailure {
+                RuntimeDiagnostics.log("RUNTIME", "theme resource reset failed: ${it.message}")
             }
         }
 
