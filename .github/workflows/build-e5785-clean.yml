@@ -35,13 +35,13 @@ jobs:
           test -f "$UNSIGNED" || UNSIGNED=router-e5785/app/build/outputs/apk/release/app-release.apk
           BUILD_TOOLS=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
           "$BUILD_TOOLS/zipalign" -f 4 "$UNSIGNED" output/e5785-aligned.apk
-          "$BUILD_TOOLS/apksigner" sign --ks android/fixed_debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out output/Shahboun_Router_E5785_1.0.0.apk output/e5785-aligned.apk
-          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs output/Shahboun_Router_E5785_1.0.0.apk
+          "$BUILD_TOOLS/apksigner" sign --ks android/fixed_debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out output/Shahboun_Router_E5785_v1.3.0.apk output/e5785-aligned.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs output/Shahboun_Router_E5785_v1.3.0.apk
           rm output/e5785-aligned.apk
-          sha256sum output/Shahboun_Router_E5785_1.0.0.apk > output/Shahboun_Router_E5785_1.0.0.apk.sha256
+          sha256sum output/Shahboun_Router_E5785_v1.3.0.apk > output/Shahboun_Router_E5785_v1.3.0.apk.sha256
       - uses: actions/upload-artifact@v4
         with:
-          name: shahboun-router-e5785-1.0.0-signed
+          name: shahboun-router-e5785-v1.3.0-signed
           path: output/*
           if-no-files-found: error
           retention-days: 7
