@@ -67,7 +67,7 @@ class MainActivity : AppCompatActivity() {
     private fun buildUi() {
         val scroll = ScrollView(this).apply { isFillViewport = true; setBackgroundColor(bg) }
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setPadding(dp(18), dp(20), dp(18), dp(40)); setBackgroundColor(bg) }
-        scroll.addView(root, FrameLayout.LayoutParams(-1, -2)); setContentView(scroll)
+        scroll.addView(root, ViewGroup.LayoutParams(-1, -2)); setContentView(scroll)
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(18)) }
         val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.END }
         brand.addView(tv("مكرّر التطبيقات", 27f, 2)); brand.addView(tv("مساحتك الخاصة لتكرار التطبيقات", 13f, 0, textSecondary).apply { setPadding(0, dp(5), 0, 0) })
@@ -111,7 +111,7 @@ class MainActivity : AppCompatActivity() {
         val container=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setPadding(dp(8),dp(6),dp(8),dp(6))}
         val rows=mutableListOf<View>()
         apps.forEach{a->val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setPadding(dp(10),dp(9),dp(10),dp(9));background=rounded(surface2,14);isClickable=true;isFocusable=true};val icon=ImageView(this).apply{scaleType=ImageView.ScaleType.CENTER_INSIDE;setImageDrawable(runCatching{packageManager.getApplicationIcon(a.packageName)}.getOrNull());setPadding(dp(3),dp(3),dp(3),dp(3))};row.addView(icon,LinearLayout.LayoutParams(dp(48),dp(48)).apply{marginEnd=dp(10)});val labels=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.END};labels.addView(tv(a.label,15f,1).apply{gravity=Gravity.END});labels.addView(tv(a.packageName,10.5f,0,textSecondary).apply{gravity=Gravity.END;setPadding(0,dp(3),0,0)});row.addView(labels,LinearLayout.LayoutParams(0,-2,1f));container.addView(row,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(3),0,dp(3))});rows+=row}
-        val scroll=ScrollView(this).apply{isFillViewport=false;addView(container,ScrollView.LayoutParams(-1,-2))}
+        val scroll=ScrollView(this).apply{isFillViewport=false;addView(container,ViewGroup.LayoutParams(-1,-2))}
         val dialog=showStyled(MaterialAlertDialogBuilder(this).setTitle("اختر تطبيقًا مثبتًا").setView(scroll).setNegativeButton("إلغاء",null))
         dialog.setOnShowListener{scroll.layoutParams=scroll.layoutParams.apply{height=(resources.displayMetrics.heightPixels*.68f).toInt()};rows.forEachIndexed{i,row->row.setOnClickListener{dialog.dismiss();createDialog(apps[i])}};dialog.window?.decorView?.let{CairoFontManager.applyTo(it,this)}}
     }
