@@ -5,48 +5,91 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Typeface
+import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
 class DebugActivity : Activity() {
-    private val arabic by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
     private lateinit var output: TextView
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = Color.rgb(13, 11, 18)
+        window.navigationBarColor = Color.rgb(13, 11, 18)
         title = "تشخيص Shahboun Multi"
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 24, 24, 24)
+            layoutDirection = View.LAYOUT_DIRECTION_RTL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            setBackgroundColor(Color.rgb(13, 11, 18))
         }
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.addView(button("تحديث") { refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
-        buttons.addView(button("نسخ") { copy() }, LinearLayout.LayoutParams(0, -2, 1f))
-        buttons.addView(button("مشاركة") { share() }, LinearLayout.LayoutParams(0, -2, 1f))
-        buttons.addView(button("مسح") { RuntimeDiagnostics.clear(); refresh() }, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(buttons)
+
+        val titleView = TextView(this).apply {
+            text = "التشخيص"
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            typeface = CairoFontManager.typeface(this@DebugActivity, 700)
+            gravity = Gravity.END
+            includeFontPadding = false
+            setPadding(0, 0, 0, dp(10))
+        }
+        root.addView(titleView, LinearLayout.LayoutParams(-1, -2))
+
+        val buttonRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        buttonRow.addView(button("تحديث") { refresh() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
+        buttonRow.addView(button("نسخ") { copy() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
+        buttonRow.addView(button("مشاركة") { share() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
+        buttonRow.addView(button("مسح") { RuntimeDiagnostics.clear(); refresh() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
+        root.addView(buttonRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+
         output = TextView(this).apply {
-            typeface = arabic
-            textSize = 13f
+            typeface = CairoFontManager.typeface(this@DebugActivity, 400)
+            textSize = 12f
+            setTextColor(Color.rgb(235, 231, 240))
             setTextIsSelectable(true)
-            gravity = Gravity.START
-            setPadding(8, 16, 8, 16)
+            gravity = Gravity.START or Gravity.TOP
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setBackgroundColor(Color.rgb(24, 21, 32))
+            includeFontPadding = false
         }
-        val scroll = ScrollView(this).apply { addView(output) }
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        val horizontal = HorizontalScrollView(this).apply {
+            isFillViewport = true
+            addView(output, HorizontalScrollView.LayoutParams(-1, -2))
+        }
+        val vertical = ScrollView(this).apply {
+            isFillViewport = true
+            addView(horizontal, ScrollView.LayoutParams(-1, -2))
+        }
+        root.addView(vertical, LinearLayout.LayoutParams(-1, 0, 1f))
+
         setContentView(root)
+        CairoFontManager.prepare(this) { runOnUiThread { CairoFontManager.applyTo(root, this) } }
         refresh()
     }
 
     private fun button(label: String, action: () -> Unit) = Button(this).apply {
         text = label
-        typeface = arabic
+        textSize = 12f
+        setTextColor(Color.WHITE)
+        typeface = CairoFontManager.typeface(this@DebugActivity, 500)
+        setBackgroundColor(Color.rgb(255, 122, 0))
+        minWidth = 0
+        minHeight = 0
+        setPadding(dp(4), 0, dp(4), 0)
         setOnClickListener { action() }
     }
 
