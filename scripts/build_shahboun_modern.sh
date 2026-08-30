@@ -8,20 +8,20 @@ if [ ! -x "$SDKMANAGER" ]; then
   SDKMANAGER=$(find "$ANDROID_HOME" -type f -name sdkmanager | head -1)
 fi
 yes | "$SDKMANAGER" --licenses >/dev/null || true
-"$SDKMANAGER" "platform-tools" "build-tools;35.0.0" "platforms;android-35" "ndk;29.0.13846066"
+"$SDKMANAGER" "platform-tools" "build-tools;36.0.0" "platforms;android-36"
 
-rm -rf /tmp/ShahbounMultiEngine
-git clone --depth 1 https://github.com/Black00Z/Blacks-BlackBox.git /tmp/ShahbounMultiEngine
-chmod +x /tmp/ShahbounMultiEngine/gradlew
-mkdir -p /tmp/ShahbounMultiEngine/app/src/main/res/font
-curl -L --fail --retry 3 -o /tmp/ShahbounMultiEngine/app/src/main/res/font/cairo_regular.ttf https://github.com/google/fonts/raw/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf
-python3 "$GITHUB_WORKSPACE/scripts/patch_shahboun_modern.py"
-python3 "$GITHUB_WORKSPACE/scripts/add_shahboun_colors.py"
+if grep -R -n -E 'BlackBox|Black00Z|Dobby|VirtualApp|VirtualXposed|niunaijun' "$GITHUB_WORKSPACE/ShahbounMultiProject" --exclude-dir=build; then
+  echo 'External clone engine reference found'
+  exit 1
+fi
 
-cd /tmp/ShahbounMultiEngine
-./gradlew --no-daemon :app:assembleDebug
-APK=$(find app/build/outputs/apk/debug -type f -name '*universal*.apk' | head -1)
-if [ -z "$APK" ]; then APK=$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1); fi
-test -n "$APK"
-test -s "$APK"
+if find "$GITHUB_WORKSPACE/ShahbounMultiProject/app" -type f \( -name '*.so' -o -name '*.aar' -o -name '*.jar' -o -name '*.dex' \) | grep -q .; then
+  echo 'Prebuilt engine binary found in Shahboun project'
+  exit 1
+fi
+
+cd "$GITHUB_WORKSPACE/ShahbounMultiProject"
+gradle :app:assembleDebug --stacktrace
+APK=$(find app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
+test -n "$APK" && test -s "$APK"
 cp "$APK" "$GITHUB_WORKSPACE/ShahbounMulti-Modern.apk"
