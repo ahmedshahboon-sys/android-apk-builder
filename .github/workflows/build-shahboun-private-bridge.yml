@@ -21,13 +21,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
+      - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
 
       - name: Install Android 16 SDK
         run: |
@@ -40,7 +42,7 @@ jobs:
         run: |
           set -euxo pipefail
           cd ShahbounMultiProject
-          if grep -R -n -E 'top\.niunaijun|BlackBoxCore|Dobby|Black00Z|jmpews' app/src --include='*.java' --include='*.kt' --include='*.xml'; then
+          if grep -R -n -E 'top\.niunaijun|BlackBoxCore|Dobby|Black00Z|jmpews|VirtualApp|VirtualXposed' app/src --include='*.java' --include='*.kt' --include='*.xml'; then
             echo 'Third-party virtualization source reference found'; exit 1
           fi
           if find app -type f \( -name '*.so' -o -name '*.a' -o -name '*.aar' -o -name '*.jar' -o -name '*.dex' \) | grep -q .; then
