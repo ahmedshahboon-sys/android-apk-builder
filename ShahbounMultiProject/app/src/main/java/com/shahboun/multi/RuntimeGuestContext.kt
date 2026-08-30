@@ -1,6 +1,7 @@
 package com.shahboun.multi
 
 import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
@@ -18,6 +19,7 @@ class RuntimeGuestContext(
     override fun getClassLoader(): ClassLoader = session.classLoader
     override fun getResources(): Resources = session.resources
     override fun getAssets() = session.resources.assets
+    override fun getApplicationContext(): Context = session.guestApplication ?: this
 
     override fun getFilesDir(): File = File(slotDir, "files").apply { mkdirs() }
     override fun getCacheDir(): File = File(slotDir, "cache").apply { mkdirs() }
@@ -51,24 +53,28 @@ class RuntimeGuestContext(
             val guestActivity = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY) ?: return
             if (slot < 0 || activity.javaClass.name != guestActivity) return
 
-            val app = activity.applicationContext as? MultiApplication ?: return
+            val hostApp = activity.applicationContext as? MultiApplication ?: return
             val session = RuntimeRegistry.get(packageName, slot)
-            val slotDir = app.engine.runtimeSlotDir(packageName, slot)
-            val guest = RuntimeGuestContext(activity.baseContext, session, slotDir)
+            val slotDir = hostApp.engine.runtimeSlotDir(packageName, slot)
+            val originalBase = activity.baseContext
+            val guest = RuntimeGuestContext(originalBase, session, slotDir)
 
-            // Activity is already attached by ActivityThread at this point. Replace only
-            // its ContextWrapper base before guest onCreate executes.
-            val contextWrapper = ContextWrapper::class.java
-            val baseField = contextWrapper.getDeclaredField("mBase").apply { isAccessible = true }
+            val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
             baseField.set(activity, guest)
 
-            // Clear cached ContextThemeWrapper resources when present so getResources()
-            // resolves through the guest context/session.
+            val guestApplication = session.ensureGuestApplication(originalBase, slotDir)
+            setActivityApplication(activity, guestApplication)
+
             runCatching {
                 val themeWrapper = Class.forName("android.view.ContextThemeWrapper")
                 val resourcesField = themeWrapper.getDeclaredField("mResources").apply { isAccessible = true }
                 resourcesField.set(activity, null)
             }
+        }
+
+        private fun setActivityApplication(activity: Activity, application: Application) {
+            val field = Activity::class.java.getDeclaredField("mApplication").apply { isAccessible = true }
+            field.set(activity, application)
         }
     }
 }
