@@ -48,6 +48,7 @@
 
         <activity
             android:name=".DebugActivity"
+            android:enabled="${debugActivityEnabled}"
             android:exported="false" />
 
         <activity
