@@ -1,6 +1,6 @@
 name: Build Shahboun Multi Native
 
-# Trigger marker: guest-theme-isolation
+# Stable signing baseline v1
 on:
   push:
     branches: [main]
@@ -32,6 +32,42 @@ jobs:
         with:
           gradle-version: '8.13'
 
+      - name: Restore stable signing material
+        uses: actions/cache@v4
+        with:
+          path: .ci-signing
+          key: shahboun-multi-signing-v1
+
+      - name: Create stable signing material if missing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-signing
+          if [ ! -s .ci-signing/shahboun-update.jks ] || [ ! -s .ci-signing/signing.properties ]; then
+            PASS=$(openssl rand -hex 24)
+            keytool -genkeypair -v \
+              -keystore .ci-signing/shahboun-update.jks \
+              -storepass "$PASS" \
+              -keypass "$PASS" \
+              -alias shahboun-update \
+              -keyalg RSA -keysize 4096 -validity 10000 \
+              -dname "CN=Ahmed Shahboun, OU=Mokarrer Apps, O=Shahboun, L=Tripoli, C=LY"
+            printf 'store_password=%s\nkey_password=%s\nkey_alias=shahboun-update\n' "$PASS" "$PASS" > .ci-signing/signing.properties
+            chmod 600 .ci-signing/shahboun-update.jks .ci-signing/signing.properties
+          fi
+
+      - name: Export signing environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          source <(sed 's/^/export /' .ci-signing/signing.properties)
+          {
+            echo "SHAHBOUN_KEYSTORE=$GITHUB_WORKSPACE/.ci-signing/shahboun-update.jks"
+            echo "SHAHBOUN_STORE_PASSWORD=$store_password"
+            echo "SHAHBOUN_KEY_PASSWORD=$key_password"
+            echo "SHAHBOUN_KEY_ALIAS=$key_alias"
+          } >> "$GITHUB_ENV"
+
       - name: Install Android 16 SDK
         run: |
           set -euxo pipefail
@@ -56,14 +92,17 @@ jobs:
           cd ShahbounMultiProject
           gradle --no-daemon :app:assembleDebug --stacktrace
 
-      - name: Verify APK
+      - name: Verify stable signature and APK
         run: |
           set -euxo pipefail
           APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
           test -n "$APK" && test -s "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" | tee /tmp/apk-signature.txt
+          grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' /tmp/apk-signature.txt
           mkdir -p output
           cp "$APK" output/ShahbounMulti.apk
           sha256sum output/ShahbounMulti.apk > output/ShahbounMulti.apk.sha256
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs output/ShahbounMulti.apk > output/ShahbounMulti.signature.txt
           unzip -t output/ShahbounMulti.apk >/dev/null
 
       - uses: actions/upload-artifact@v4
