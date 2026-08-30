@@ -27,7 +27,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
-    <application android:name=".MultiApplication" android:allowBackup="true" android:label="مكرّر التطبيقات" android:theme="@style/Theme.ShahbounMulti">
+    <application android:name=".MultiApplication" android:allowBackup="true" android:label="مكرّر التطبيقات" android:icon="@drawable/ic_launcher_mokarrer" android:roundIcon="@drawable/ic_launcher_mokarrer" android:theme="@style/Theme.ShahbounMulti">
         <service android:name=".RuntimeStubService" android:exported="false" android:stopWithTask="false" />
         <activity android:name=".RuntimeStubActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
         <activity android:name=".DebugActivity" android:enabled="${debugActivityEnabled}" android:exported="false" />
