@@ -24,6 +24,7 @@ public class MainActivityV13 extends MainActivityV12 {
     private final Object secLock = new Object();
     private String apiCookie = "";
     private final ArrayDeque<String> tokens = new ArrayDeque<>();
+    private final Set<String> deniedAfterAuth = new HashSet<>();
     private boolean authReady = false;
     private String lastDebug = "";
 
@@ -100,7 +101,10 @@ public class MainActivityV13 extends MainActivityV12 {
             apiCookie = ""; tokens.clear(); authReady = false;
             String st = securityInfo();
             if (st.contains("<error>")) return st;
-            String token = firstToken();
+            // The login token is single-use. Removing it here is critical: keeping it at the
+            // head of the queue makes the first administrative POST reuse an already consumed
+            // token and Huawei answers with 125003.
+            String token = takeToken();
             if (token.isEmpty()) return "NO_TOKEN";
 
             String state = rawGet("/api/user/state-login", apiCookie, false);
@@ -109,18 +113,21 @@ public class MainActivityV13 extends MainActivityV12 {
             String enc = encodePassword(pass, pt, token);
             String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request>" +
                     "<Username>admin</Username><Password>" + enc + "</Password><password_type>" + pt + "</password_type></request>";
+            sessionTrace("LOGIN", "requesting administrative session");
             String resp = rawPost("/api/user/login", xml, token, apiCookie, true);
             if (resp.contains("<response>OK</response>") || resp.matches("(?s).*<response>\\s*OK\\s*</response>.*")) {
                 authReady = true;
                 // Confirm with state-login. Some firmwares use State=0 for authenticated.
-                String verify = rawGet("/api/user/state-login", apiCookie, false);
+                String verify = rawGet("/api/user/state-login", apiCookie, true);
                 lastDebug = "LOGIN=" + resp + "\nSTATE=" + verify;
+                sessionTrace("LOGIN", "administrative session ready");
                 return "OK";
             }
             if (resp.contains("<code>108003</code>")) { // already logged in in this session
                 authReady = true; return "OK_ALREADY";
             }
             lastDebug = "LOGIN_FAIL=" + resp;
+            sessionTrace("LOGIN", "failed • code=" + pick(tagAny(resp,"code"),"unknown"));
             return resp;
         }
     }
@@ -129,6 +136,7 @@ public class MainActivityV13 extends MainActivityV12 {
         HttpURLConnection c = (HttpURLConnection)new URL(BASE + "/api/webserver/SesTokInfo").openConnection();
         c.setConnectTimeout(4500); c.setReadTimeout(6000); c.setUseCaches(false);
         c.setRequestProperty("Accept", "application/xml,text/xml,*/*");
+        if (!apiCookie.isEmpty()) c.setRequestProperty("Cookie", apiCookie);
         int code = c.getResponseCode();
         String body = readStream(code >= 400 ? c.getErrorStream() : c.getInputStream());
         String ses = tagAny(body, "SesInfo");
@@ -142,10 +150,13 @@ public class MainActivityV13 extends MainActivityV12 {
 
     private void collectSecurityHeaders(HttpURLConnection c) {
         try {
-            String sc = c.getHeaderField("Set-Cookie");
-            if (sc != null && !sc.isEmpty()) {
-                String one = sc.split(";",2)[0];
-                if (one.toLowerCase(Locale.US).contains("sessionid")) apiCookie = one;
+            for (Map.Entry<String,List<String>> entry : c.getHeaderFields().entrySet()) {
+                if (entry.getKey() == null || !"set-cookie".equalsIgnoreCase(entry.getKey())) continue;
+                for (String sc : entry.getValue()) {
+                    if (sc == null || sc.isEmpty()) continue;
+                    String one = sc.split(";",2)[0].trim();
+                    if (one.toLowerCase(Locale.US).contains("sessionid")) apiCookie = one;
+                }
             }
             collectTokens(c.getHeaderField("__RequestVerificationToken"));
             collectTokens(c.getHeaderField("__RequestVerificationTokenone"));
@@ -155,13 +166,13 @@ public class MainActivityV13 extends MainActivityV12 {
 
     private void collectTokens(String s) {
         if (s == null) return;
-        for (String t : s.split("#")) {
-            t = t.trim();
-            if (!t.isEmpty() && !tokens.contains(t)) tokens.addLast(t);
+        synchronized (secLock) {
+            for (String t : s.split("#")) {
+                t = t.trim();
+                if (!t.isEmpty() && !tokens.contains(t)) tokens.addLast(t);
+            }
         }
     }
-
-    private String firstToken() { return tokens.isEmpty() ? "" : tokens.peekFirst(); }
     private String takeToken() {
         String t = tokens.pollFirst();
         if (t == null) t = "";
@@ -227,34 +238,67 @@ public class MainActivityV13 extends MainActivityV12 {
         }
     }
 
+    void sessionTrace(String event, String detail) { }
+
+    private boolean authError(String x) {
+        return x != null && (x.contains("<code>125001</code>") ||
+                x.contains("<code>125002</code>") || x.contains("<code>125003</code>"));
+    }
+
+    private boolean protectedRead(String path) {
+        return "/api/device/signal".equals(path) || "/api/device/information".equals(path) ||
+                "/api/net/net-mode".equals(path) || "/api/net/net-mode-list".equals(path) ||
+                "/api/wlan/host-list".equals(path);
+    }
+
     @Override String getSync(String path) {
         ensureSecurity();
         String r = rawGet(path, apiCookie, true);
-        if (r.contains("<code>125002</code>") || r.contains("<code>125003</code>")) {
+        boolean denied = r.contains("<code>100003</code>") && protectedRead(path) && !deniedAfterAuth.contains(path);
+        if (authError(r) || denied) {
             synchronized (secLock) {
+                authReady = false;
                 try { if (!password.isEmpty()) loginSync(password); } catch (Exception ignored) {}
             }
-            r = rawGet(path, apiCookie, true);
+            if (authReady) {
+                r = rawGet(path, apiCookie, true);
+                if (r.contains("<code>100003</code>")) deniedAfterAuth.add(path);
+            }
         }
         return r;
     }
 
     @Override String postSync(String path, String xml) {
-        ensureSecurity();
-        String tok;
         synchronized (secLock) {
-            tok = takeToken();
-            if (tok.isEmpty()) { try { securityInfo(); } catch (Exception ignored) {} tok = takeToken(); }
-        }
-        String r = rawPost(path, xml, tok, apiCookie, true);
-        if (r.contains("<code>125001</code>") || r.contains("<code>125002</code>") || r.contains("<code>125003</code>")) {
-            synchronized (secLock) {
-                try { loginSync(password); } catch (Exception ignored) {}
+            try {
+                if (!authReady) {
+                    String login = loginSync(password);
+                    if (!login.startsWith("OK")) return login;
+                }
+                String tok = takeToken();
+                if (tok.isEmpty()) {
+                    securityInfo();
+                    tok = takeToken();
+                }
+                if (tok.isEmpty()) return "<transport><error>NO_TOKEN</error></transport>";
+                String r = rawPost(path, xml, tok, apiCookie, true);
+                if (!authError(r)) return r;
+
+                authReady = false;
+                sessionTrace("SESSION", "expired during POST • re-authenticating once");
+                String login = loginSync(password);
+                if (!login.startsWith("OK")) return r;
                 tok = takeToken();
+                if (tok.isEmpty()) {
+                    securityInfo();
+                    tok = takeToken();
+                }
+                if (tok.isEmpty()) return r;
+                return rawPost(path, xml, tok, apiCookie, true);
+            } catch (Exception e) {
+                return "<transport><error>" + safe(e.toString()) + "</error></transport>";
             }
-            r = rawPost(path, xml, tok, apiCookie, true);
         }
-        return r;
     }
 
     @Override boolean bad(String x) {
