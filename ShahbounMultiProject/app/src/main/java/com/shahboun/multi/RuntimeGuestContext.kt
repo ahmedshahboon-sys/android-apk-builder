@@ -76,7 +76,7 @@ class RuntimeGuestContext(
     }
 
     override fun deleteFile(name: String): Boolean = File(filesDir, safeName(name)).delete()
-    override fun fileList(): Array<String> = filesDir.list().orEmpty()
+    override fun fileList(): Array<String> = filesDir.list()?.map { it }.orEmpty().toTypedArray()
 
     override fun getExternalFilesDir(type: String?): File {
         val base = cloneDir("external/files")
@@ -101,12 +101,12 @@ class RuntimeGuestContext(
     override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?, errorHandler: DatabaseErrorHandler?): SQLiteDatabase {
         val path = getDatabasePath(name)
         path.parentFile?.mkdirs()
-        return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path, factory, errorHandler)
+        return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path.absolutePath, factory, errorHandler)
         else SQLiteDatabase.openOrCreateDatabase(path, factory)
     }
 
     override fun deleteDatabase(name: String): Boolean = SQLiteDatabase.deleteDatabase(getDatabasePath(name))
-    override fun databaseList(): Array<String> = cloneDir("databases").list().orEmpty()
+    override fun databaseList(): Array<String> = cloneDir("databases").list()?.map { it }.orEmpty().toTypedArray()
 
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
         val safe = safeName(name)
