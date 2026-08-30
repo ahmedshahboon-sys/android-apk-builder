@@ -1,13 +1,13 @@
 <resources>
-    <style name="Theme.ShahbounMulti" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.ShahbounMulti" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="colorPrimary">#FF7A00</item>
+        <item name="colorPrimaryVariant">#C45B00</item>
         <item name="colorOnPrimary">#FFFFFF</item>
-        <item name="colorPrimaryContainer">#3A210E</item>
-        <item name="colorOnPrimaryContainer">#FFD9B8</item>
         <item name="colorSecondary">#FF9B42</item>
+        <item name="colorSecondaryVariant">#D97418</item>
+        <item name="colorOnSecondary">#FFFFFF</item>
         <item name="colorSurface">#181520</item>
         <item name="colorOnSurface">#F5F2FA</item>
-        <item name="colorSurfaceContainer">#1F1B2A</item>
         <item name="android:colorAccent">#FF7A00</item>
         <item name="android:windowBackground">#0D0B12</item>
         <item name="android:navigationBarColor">#0D0B12</item>
@@ -18,18 +18,15 @@
         <item name="materialAlertDialogTheme">@style/ThemeOverlay.ShahbounMulti.AlertDialog</item>
     </style>
 
-    <style name="ThemeOverlay.ShahbounMulti.AlertDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+    <style name="ThemeOverlay.ShahbounMulti.AlertDialog" parent="ThemeOverlay.MaterialComponents.MaterialAlertDialog">
         <item name="colorPrimary">#FF7A00</item>
         <item name="colorSecondary">#FF9B42</item>
         <item name="colorSurface">#181520</item>
         <item name="colorOnSurface">#F5F2FA</item>
         <item name="android:colorAccent">#FF7A00</item>
-        <item name="buttonBarPositiveButtonStyle">@style/Widget.ShahbounMulti.DialogButton</item>
-        <item name="buttonBarNegativeButtonStyle">@style/Widget.ShahbounMulti.DialogButton</item>
-        <item name="buttonBarNeutralButtonStyle">@style/Widget.ShahbounMulti.DialogButton</item>
     </style>
 
-    <style name="Widget.ShahbounMulti.DialogButton" parent="Widget.Material3.Button.TextButton.Dialog">
+    <style name="Widget.ShahbounMulti.DialogButton" parent="Widget.MaterialComponents.Button.TextButton.Dialog">
         <item name="android:textColor">#FF8A1F</item>
         <item name="android:textStyle">bold</item>
     </style>
