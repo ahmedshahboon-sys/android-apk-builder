@@ -48,7 +48,7 @@ class RuntimeComponentHost(
                 require(android.content.ContentProvider::class.java.isAssignableFrom(clazz)) { "Provider class غير صالح: $name" }
                 val provider = clazz.getDeclaredConstructor().newInstance() as android.content.ContentProvider
                 provider.attachInfo(guestContext, providerInfo)
-                providers += provider
+                providers.add(provider)
                 RuntimeDiagnostics.log("PROVIDER", "initialized ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name")
             }.onFailure {
                 RuntimeDiagnostics.log("PROVIDER", "failed $name: ${it.stackTraceToString()}")
@@ -65,7 +65,8 @@ class RuntimeComponentHost(
             val clazz = session.classLoader.loadClass(name)
             require(BroadcastReceiver::class.java.isAssignableFrom(clazz)) { "Receiver class غير صالح: $name" }
             val receiver = clazz.getDeclaredConstructor().newInstance() as BroadcastReceiver
-            receiver.onReceive(guestContext, Intent(intent).apply { component = ComponentName(session.runtimePackage.packageName, name) })
+            val guestIntent = Intent(intent).setComponent(ComponentName(session.runtimePackage.packageName, name))
+            receiver.onReceive(guestContext, guestIntent)
             RuntimeDiagnostics.log("RECEIVER", "delivered ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name")
             true
         }.getOrElse {
