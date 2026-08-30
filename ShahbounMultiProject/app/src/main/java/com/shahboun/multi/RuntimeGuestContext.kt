@@ -2,14 +2,17 @@ package com.shahboun.multi
 
 import android.app.Activity
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.Resources
+import android.os.Build
 import android.view.LayoutInflater
 import java.io.File
 
-/** Context presented to a guest Activity before its onCreate callback. */
+/** Context presented to guest components with clone-scoped storage and component routing. */
 class RuntimeGuestContext(
     base: Context,
     private val session: RuntimeSession,
@@ -26,10 +29,7 @@ class RuntimeGuestContext(
     override fun getCodeCacheDir(): File = cloneDir("code_cache")
     override fun getNoBackupFilesDir(): File = cloneDir("no_backup")
 
-    override fun getDir(name: String, mode: Int): File {
-        val safe = safeName(name)
-        return cloneDir("app_$safe")
-    }
+    override fun getDir(name: String, mode: Int): File = cloneDir("app_${safeName(name)}")
 
     override fun getExternalFilesDir(type: String?): File {
         val base = cloneDir("external/files")
@@ -38,15 +38,40 @@ class RuntimeGuestContext(
 
     override fun getExternalCacheDir(): File = cloneDir("external/cache")
 
-    override fun getDatabasePath(name: String): File {
-        val dir = cloneDir("databases")
-        return File(dir, safeName(name))
-    }
+    override fun getDatabasePath(name: String): File = File(cloneDir("databases"), safeName(name))
 
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
         val safe = safeName(name)
         val key = "clone_${session.runtimePackage.packageName}_${session.runtimePackage.slot}_$safe"
         return baseContext.getSharedPreferences(key, mode)
+    }
+
+    override fun startService(service: Intent): ComponentName? {
+        val wrapper = session.componentHost?.wrapServiceIntent(service)
+        if (wrapper != null) {
+            RuntimeDiagnostics.log("SERVICE", "route startService ${session.runtimePackage.packageName}/${session.runtimePackage.slot} target=${service.component?.className ?: service.action}")
+            return baseContext.startService(wrapper)
+        }
+        return super.startService(service)
+    }
+
+    override fun startForegroundService(service: Intent): ComponentName? {
+        val wrapper = session.componentHost?.wrapServiceIntent(service)
+        if (wrapper != null) {
+            RuntimeDiagnostics.log("SERVICE", "route startForegroundService ${session.runtimePackage.packageName}/${session.runtimePackage.slot} target=${service.component?.className ?: service.action}")
+            return if (Build.VERSION.SDK_INT >= 26) baseContext.startForegroundService(wrapper) else baseContext.startService(wrapper)
+        }
+        return super.startForegroundService(service)
+    }
+
+    override fun stopService(name: Intent): Boolean {
+        val wrapper = session.componentHost?.wrapServiceIntent(name)
+        return if (wrapper != null) baseContext.stopService(wrapper) else super.stopService(name)
+    }
+
+    override fun sendBroadcast(intent: Intent) {
+        if (session.componentHost?.dispatchExplicitReceiver(intent) == true) return
+        super.sendBroadcast(intent)
     }
 
     override fun getSystemService(name: String): Any? {
