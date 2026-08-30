@@ -12,6 +12,7 @@ import android.view.*
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
@@ -31,15 +32,15 @@ class MainActivity : AppCompatActivity() {
     private val bg = Color.rgb(13, 11, 18)
     private val surface = Color.rgb(24, 21, 32)
     private val surface2 = Color.rgb(31, 27, 42)
-    private val primary = Color.rgb(132, 94, 247)
+    private val primary = Color.rgb(255, 122, 0)
     private val textPrimary = Color.rgb(245, 242, 250)
     private val textSecondary = Color.rgb(180, 174, 193)
     private val success = Color.rgb(77, 210, 150)
     private val danger = Color.rgb(255, 102, 122)
 
-    private val arabicTitle by lazy { Typeface.create("sans-serif", Typeface.BOLD) }
-    private val arabicMedium by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
-    private val arabicBody by lazy { Typeface.create("sans-serif", Typeface.NORMAL) }
+    private val arabicTitle: Typeface get() = CairoFontManager.typeface(this, 700)
+    private val arabicMedium: Typeface get() = CairoFontManager.typeface(this, 500)
+    private val arabicBody: Typeface get() = CairoFontManager.typeface(this, 400)
     private var pendingLaunch: CloneProfile? = null
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -58,6 +59,11 @@ class MainActivity : AppCompatActivity() {
         store = CloneStore(this)
         RuntimeDiagnostics.log("UI", "MainActivity onCreate bridgeReady=${app.runtimeBridgeReady}")
         buildUi()
+        CairoFontManager.prepare(this) {
+            runOnUiThread {
+                if (::root.isInitialized) CairoFontManager.applyTo(root, this)
+            }
+        }
         requestNotifications()
         render()
     }
@@ -115,8 +121,10 @@ class MainActivity : AppCompatActivity() {
 
         root.addView(primaryButton("＋  إضافة نسخة جديدة") { pickApp() }, LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(12) })
         val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        tools.addView(secondaryButton("التشخيص") { startActivity(Intent(this, DebugActivity::class.java)) }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
-        tools.addView(secondaryButton("الإعدادات") { settingsDialog() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6); marginEnd = dp(6) })
+        if (BuildConfig.DEBUG) {
+            tools.addView(secondaryButton("التشخيص") { startActivity(Intent(this, DebugActivity::class.java)) }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
+        }
+        tools.addView(secondaryButton("الإعدادات") { settingsDialog() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = if (BuildConfig.DEBUG) dp(6) else 0; marginEnd = dp(6) })
         tools.addView(secondaryButton("قفل") { lockNow() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6) })
         root.addView(tools, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(24) })
 
@@ -170,6 +178,7 @@ class MainActivity : AppCompatActivity() {
             body.addView(actions); card.addView(body)
             listBox.addView(card, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(6), 0, dp(8)) })
         }
+        if (CairoFontManager.isReady(this)) CairoFontManager.applyTo(listBox, this)
     }
 
     private fun launchClone(c: CloneProfile) {
@@ -188,43 +197,52 @@ class MainActivity : AppCompatActivity() {
         return pm.getInstalledApplications(0).filter { it.packageName != packageName && pm.getLaunchIntentForPackage(it.packageName) != null }.map { InstalledApp(it.packageName, pm.getApplicationLabel(it).toString()) }.sortedBy { it.label.lowercase() }
     }
 
+    private fun showStyled(builder: MaterialAlertDialogBuilder): AlertDialog {
+        val dialog = builder.show()
+        dialog.window?.decorView?.let { CairoFontManager.applyTo(it, this) }
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(primary)
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(primary)
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setTextColor(primary)
+        return dialog
+    }
+
     private fun pickApp() {
         val apps = installed(); val names = apps.map { "${it.label}\n${it.packageName}" }.toTypedArray()
-        MaterialAlertDialogBuilder(this).setTitle("اختر تطبيقًا مثبتًا").setItems(names) { _, i -> createDialog(apps[i]) }.setNegativeButton("إلغاء", null).show()
+        showStyled(MaterialAlertDialogBuilder(this).setTitle("اختر تطبيقًا مثبتًا").setItems(names) { _, i -> createDialog(apps[i]) }.setNegativeButton("إلغاء", null))
     }
 
     private fun createDialog(appInfo: InstalledApp) {
         val input = TextInputEditText(this).apply { hint = "اسم النسخة"; setText("${appInfo.label} ${nextSlot(appInfo.packageName) + 1}"); typeface = arabicBody }
-        MaterialAlertDialogBuilder(this).setTitle("إنشاء نسخة").setView(input).setPositiveButton("إنشاء") { _, _ ->
+        showStyled(MaterialAlertDialogBuilder(this).setTitle("إنشاء نسخة").setView(input).setPositiveButton("إنشاء") { _, _ ->
             val slot = nextSlot(appInfo.packageName); val name = input.text?.toString()?.trim().orEmpty().ifBlank { "${appInfo.label} ${slot + 1}" }
             RuntimeDiagnostics.log("CLONE", "create ${appInfo.packageName}/$slot")
             engine.createClone(appInfo.packageName, slot).onSuccess { val x = items; x += CloneProfile(System.currentTimeMillis(), appInfo.packageName, appInfo.label, name, slot); store.save(x); render(); RuntimeDiagnostics.log("CLONE", "created ${appInfo.packageName}/$slot"); toast("تم إنشاء النسخة") }.onFailure { RuntimeDiagnostics.log("CLONE", "create failed ${appInfo.packageName}/$slot: ${it.stackTraceToString()}"); toast("تعذر إنشاء النسخة: ${it.message}") }
-        }.setNegativeButton("إلغاء", null).show()
+        }.setNegativeButton("إلغاء", null))
     }
 
     private fun nextSlot(pkg: String) = (items.filter { it.packageName == pkg }.maxOfOrNull { it.slot } ?: -1) + 1
 
     private fun manage(c: CloneProfile) {
         val opts = arrayOf("إعادة تسمية", if (c.favorite) "إلغاء المفضلة" else "إضافة للمفضلة", if (c.frozen) "إلغاء التجميد" else "تجميد", if (c.hidden) "إظهار" else "إخفاء", "مسح البيانات", "حذف النسخة")
-        MaterialAlertDialogBuilder(this).setTitle(c.customName).setItems(opts) { _, which -> when (which) {
+        showStyled(MaterialAlertDialogBuilder(this).setTitle(c.customName).setItems(opts) { _, which -> when (which) {
             0 -> rename(c); 1 -> update(c) { it.copy(favorite = !it.favorite) }; 2 -> update(c) { it.copy(frozen = !it.frozen) }; 3 -> update(c) { it.copy(hidden = !it.hidden) }
             4 -> engine.clearData(c.packageName, c.slot).onSuccess { RuntimeDiagnostics.log("CLONE", "cleared ${c.packageName}/${c.slot}"); toast("تم مسح بيانات النسخة") }.onFailure { RuntimeDiagnostics.log("CLONE", "clear failed: ${it.stackTraceToString()}"); toast(it.message ?: "تعذر مسح البيانات") }
             5 -> confirmDelete(c)
-        } }.show()
+        } })
     }
 
     private fun rename(c: CloneProfile) {
         val input = TextInputEditText(this).apply { setText(c.customName); typeface = arabicBody }
-        MaterialAlertDialogBuilder(this).setTitle("إعادة تسمية").setView(input).setPositiveButton("حفظ") { _, _ -> update(c) { it.copy(customName = input.text.toString()) } }.setNegativeButton("إلغاء", null).show()
+        showStyled(MaterialAlertDialogBuilder(this).setTitle("إعادة تسمية").setView(input).setPositiveButton("حفظ") { _, _ -> update(c) { it.copy(customName = input.text.toString()) } }.setNegativeButton("إلغاء", null))
     }
 
     private fun update(c: CloneProfile, f: (CloneProfile) -> CloneProfile) { val x = items; val idx = x.indexOfFirst { it.id == c.id }; if (idx >= 0) { x[idx] = f(x[idx]); store.save(x); render() } }
 
     private fun confirmDelete(c: CloneProfile) {
-        MaterialAlertDialogBuilder(this).setTitle("حذف النسخة؟").setMessage("لن يتم حذف التطبيق الأصلي.").setPositiveButton("حذف") { _, _ ->
+        showStyled(MaterialAlertDialogBuilder(this).setTitle("حذف النسخة؟").setMessage("لن يتم حذف التطبيق الأصلي.").setPositiveButton("حذف") { _, _ ->
             engine.remove(c.packageName, c.slot).onSuccess { RuntimeDiagnostics.log("CLONE", "removed ${c.packageName}/${c.slot}") }.onFailure { RuntimeDiagnostics.log("CLONE", "remove failed: ${it.stackTraceToString()}") }
             val x = items; x.removeAll { it.id == c.id }; store.save(x); render()
-        }.setNegativeButton("إلغاء", null).show()
+        }.setNegativeButton("إلغاء", null))
     }
 
     private fun lockNow() {
@@ -234,9 +252,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun settingsDialog() {
-        MaterialAlertDialogBuilder(this).setTitle("الإعدادات").setItems(arrayOf("حالة المحرك: ${engine.name}", "إعدادات البطارية", "إعدادات الإشعارات", "التشخيص", "حول التطبيق")) { _, i -> when (i) {
-            1 -> startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); 2 -> startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)); 3 -> startActivity(Intent(this, DebugActivity::class.java)); 4 -> toast("Shahboun Multi Debug • Shahboun Clone Engine • Android 10–16")
-        } }.show()
+        val options = if (BuildConfig.DEBUG) {
+            arrayOf("حالة المحرك: ${engine.name}", "إعدادات البطارية", "إعدادات الإشعارات", "التشخيص", "حول التطبيق")
+        } else {
+            arrayOf("حالة المحرك: ${engine.name}", "إعدادات البطارية", "إعدادات الإشعارات", "حول التطبيق")
+        }
+        showStyled(MaterialAlertDialogBuilder(this).setTitle("الإعدادات").setItems(options) { _, i ->
+            if (BuildConfig.DEBUG) {
+                when (i) {
+                    1 -> startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    2 -> startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                    3 -> startActivity(Intent(this, DebugActivity::class.java))
+                    4 -> toast("Shahboun Multi • ${BuildConfig.VERSION_NAME} • Shahboun Clone Engine • Android 10–16")
+                }
+            } else {
+                when (i) {
+                    1 -> startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    2 -> startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                    3 -> toast("Shahboun Multi • ${BuildConfig.VERSION_NAME} • Shahboun Clone Engine • Android 10–16")
+                }
+            }
+        })
     }
 
     private fun requestNotifications() { if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 77) }
