@@ -36,7 +36,6 @@ class RuntimeGuestContext(
             splitPublicSourceDirs = splitSourceDirs
             dataDir = cloneDir("data").absolutePath
             deviceProtectedDataDir = cloneDir("device_data").absolutePath
-            credentialProtectedDataDir = cloneDir("credential_data").absolutePath
             nativeLibraryDir = cloneDir("native").absolutePath
         }
     }
