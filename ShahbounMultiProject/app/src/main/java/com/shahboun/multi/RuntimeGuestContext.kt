@@ -178,29 +178,36 @@ class RuntimeGuestContext(
 
             RuntimeIntentRouter.originalIntent(wrapperIntent)?.let { activity.intent = it }
 
-            rebuildGuestTheme(activity, originalBase, packageName, guestActivity)
+            applyGuestTheme(activity, originalBase, packageName, guestActivity)
             RuntimeDiagnostics.log("RUNTIME", "attached guest context $packageName/$slot activity=$guestActivity")
         }
 
-        private fun rebuildGuestTheme(activity: Activity, hostBase: Context, packageName: String, activityName: String) {
-            runCatching {
-                val themeWrapper = Class.forName("android.view.ContextThemeWrapper")
-                themeWrapper.getDeclaredField("mResources").apply { isAccessible = true }.set(activity, null)
-                themeWrapper.getDeclaredField("mTheme").apply { isAccessible = true }.set(activity, null)
-                themeWrapper.getDeclaredField("mThemeResource").apply { isAccessible = true }.setInt(activity, 0)
-
+        /**
+         * Android 16 no longer exposes the old ContextThemeWrapper.mTheme layout used by
+         * earlier releases. The guest base context already owns the guest Resources/Theme,
+         * so rebuilding framework-private theme fields is unnecessary and crashes on SDK 36.
+         * Resolve the guest activity theme through PackageManager and apply it only through
+         * the public Activity.setTheme API.
+         */
+        private fun applyGuestTheme(activity: Activity, hostBase: Context, packageName: String, activityName: String) {
+            val themeId = runCatching {
                 val component = ComponentName(packageName, activityName)
                 val info = if (Build.VERSION.SDK_INT >= 33) {
                     hostBase.packageManager.getActivityInfo(component, PackageManager.ComponentInfoFlags.of(0))
                 } else {
                     @Suppress("DEPRECATION") hostBase.packageManager.getActivityInfo(component, 0)
                 }
-                val themeId = if (info.theme != 0) info.theme else hostBase.packageManager.getApplicationInfo(packageName, 0).theme
-                if (themeId != 0) activity.setTheme(themeId)
-                RuntimeDiagnostics.log("RUNTIME", "guest theme rebuilt $packageName activity=$activityName theme=0x${themeId.toString(16)}")
+                if (info.theme != 0) info.theme else hostBase.packageManager.getApplicationInfo(packageName, 0).theme
             }.onFailure {
-                RuntimeDiagnostics.log("RUNTIME", "guest theme rebuild failed: ${it.stackTraceToString()}")
-                throw it
+                RuntimeDiagnostics.log("RUNTIME", "guest theme lookup failed $packageName activity=$activityName: ${it.message}")
+            }.getOrDefault(0)
+
+            if (themeId != 0) {
+                runCatching { activity.setTheme(themeId) }
+                    .onSuccess { RuntimeDiagnostics.log("RUNTIME", "guest theme applied $packageName activity=$activityName theme=0x${themeId.toString(16)}") }
+                    .onFailure { RuntimeDiagnostics.log("RUNTIME", "guest theme apply failed $packageName activity=$activityName: ${it.stackTraceToString()}") }
+            } else {
+                RuntimeDiagnostics.log("RUNTIME", "guest theme defaulted $packageName activity=$activityName")
             }
         }
 
