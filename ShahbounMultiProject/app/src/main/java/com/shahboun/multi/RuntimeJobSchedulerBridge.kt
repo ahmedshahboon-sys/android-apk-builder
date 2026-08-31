@@ -63,7 +63,7 @@ object RuntimeJobSchedulerBridge {
                 "cancel" -> routeCancel(session, method, args)
                 "cancelAll" -> routeCancelAll(session, method, args)
                 "getPendingJob" -> routeGetPendingJob(session, method, args)
-                "getAllPendingJobs" -> routeGetAllPendingJobs(session, method, args)
+                "getAllPendingJobs" -> invokeDelegate(method, args)
                 else -> invokeDelegate(method, args)
             }
         }
@@ -105,8 +105,25 @@ object RuntimeJobSchedulerBridge {
 
         private fun routeCancelAll(session: RuntimeSession, method: Method, args: Array<out Any?>?): Any? {
             val records = recordsFor(session.runtimePackage.packageName, session.runtimePackage.slot)
-            val scheduler = appContext.getSystemService(JobScheduler::class.java)
-            records.forEach { record -> runCatching { scheduler?.cancel(record.hostJobId) }; remove(record.hostJobId) }
+            val cancelMethod = delegate.javaClass.methods.firstOrNull { candidate ->
+                candidate.name == "cancel" && candidate.parameterTypes.lastOrNull() == Int::class.javaPrimitiveType
+            }
+            if (cancelMethod == null) {
+                RuntimeDiagnostics.log("JOB", "cancelAll fallback: binder cancel method unavailable")
+                return nullFor(method.returnType)
+            }
+            val namespace = args?.firstOrNull { it is String } as? String
+            records.forEach { record ->
+                runCatching {
+                    val callArgs = when (cancelMethod.parameterCount) {
+                        1 -> arrayOf<Any?>(record.hostJobId)
+                        2 -> arrayOf<Any?>(namespace, record.hostJobId)
+                        else -> return@runCatching
+                    }
+                    cancelMethod.invoke(delegate, *callArgs)
+                }.onFailure { RuntimeDiagnostics.log("JOB", "cancel host=${record.hostJobId} failed: ${it.javaClass.simpleName}") }
+                remove(record.hostJobId)
+            }
             RuntimeDiagnostics.log("JOB", "cancelAll ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=${records.size}")
             return nullFor(method.returnType)
         }
@@ -119,13 +136,6 @@ object RuntimeJobSchedulerBridge {
             val mutable = Array<Any?>(source.size) { source[it] }
             mutable[intIndex] = hostJobId(session.runtimePackage.packageName, session.runtimePackage.slot, guestId)
             return invokeDelegate(method, mutable)
-        }
-
-        private fun routeGetAllPendingJobs(session: RuntimeSession, method: Method, args: Array<out Any?>?): Any? {
-            val result = invokeDelegate(method, args) ?: return null
-            // Binder return types vary by Android version (List or ParceledListSlice). Avoid unsafe rewriting;
-            // the scheduling/cancel paths are fully clone-scoped and diagnostics retain ownership.
-            return result
         }
 
         private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
@@ -217,9 +227,8 @@ open class RuntimeJobService : JobService() {
         }
         if (!session.runtimePackage.ownsService(record.serviceName)) return false
         val guest = running.getOrPut(params.jobId) { createGuest(session, record.serviceName, record.packageName, record.slot) }
-        return runCatching {
-            RuntimeExecutionScope.withSession(session) { guest.service.onStartJob(params) }
-        }.onFailure { RuntimeDiagnostics.log("JOB", "onStartJob failed ${record.packageName}/${record.slot} ${record.serviceName}: ${it.stackTraceToString()}") }
+        return runCatching { RuntimeExecutionScope.withSession(session) { guest.service.onStartJob(params) } }
+            .onFailure { RuntimeDiagnostics.log("JOB", "onStartJob failed ${record.packageName}/${record.slot} ${record.serviceName}: ${it.stackTraceToString()}") }
             .getOrDefault(false)
     }
 
@@ -246,7 +255,6 @@ open class RuntimeJobService : JobService() {
             val guestContext = RuntimeGuestContext(baseContext, session, app.engine.runtimeSlotDir(packageName, slot))
             attachServiceFields(service, guestContext, session, serviceName)
             service.onCreate()
-            // Initializes the guest JobServiceEngine so guest jobFinished() is usable.
             service.onBind(Intent())
             RuntimeDiagnostics.log("JOB", "created guest JobService $packageName/$slot $serviceName process=${if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName}")
             Guest(service, session)
