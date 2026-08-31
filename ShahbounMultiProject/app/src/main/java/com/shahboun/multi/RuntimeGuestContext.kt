@@ -2,14 +2,12 @@ package com.shahboun.multi
 
 import android.app.Activity
 import android.app.Application
-import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
@@ -27,9 +25,7 @@ class RuntimeGuestContext(
 ) : ContextWrapper(base) {
     private val guestTheme: Resources.Theme by lazy {
         session.resources.newTheme().apply {
-            val appTheme = runCatching {
-                baseContext.packageManager.getApplicationInfo(session.runtimePackage.packageName, 0).theme
-            }.getOrDefault(0)
+            val appTheme = session.runtimePackage.appTheme
             if (appTheme != 0) applyStyle(appTheme, true)
         }
     }
@@ -45,15 +41,21 @@ class RuntimeGuestContext(
     override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
 
     override fun getApplicationInfo(): ApplicationInfo {
-        val original = baseContext.packageManager.getApplicationInfo(session.runtimePackage.packageName, 0)
-        return ApplicationInfo(original).apply {
-            sourceDir = session.runtimePackage.baseApk.absolutePath
-            publicSourceDir = session.runtimePackage.baseApk.absolutePath
-            splitSourceDirs = session.runtimePackage.splitApks.map { it.absolutePath }.toTypedArray()
+        val pkg = session.runtimePackage
+        return ApplicationInfo().apply {
+            packageName = pkg.packageName
+            className = pkg.applicationClass
+            sourceDir = pkg.baseApk.absolutePath
+            publicSourceDir = pkg.baseApk.absolutePath
+            splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray()
             splitPublicSourceDirs = splitSourceDirs
             dataDir = cloneDir("data").absolutePath
             deviceProtectedDataDir = cloneDir("device_data").absolutePath
             nativeLibraryDir = cloneDir("native").absolutePath
+            theme = pkg.appTheme
+            targetSdkVersion = pkg.targetSdk
+            if (Build.VERSION.SDK_INT >= 24) minSdkVersion = pkg.minSdk
+            flags = pkg.appFlags
         }
     }
 
@@ -115,7 +117,7 @@ class RuntimeGuestContext(
         return baseContext.getSharedPreferences(key, mode)
     }
 
-    override fun startService(service: Intent): ComponentName? {
+    override fun startService(service: Intent): android.content.ComponentName? {
         val wrapper = session.componentHost?.wrapServiceIntent(service)
         if (wrapper != null) {
             RuntimeDiagnostics.log("SERVICE", "route startService ${session.runtimePackage.packageName}/${session.runtimePackage.slot} target=${service.component?.className ?: service.action}")
@@ -124,7 +126,7 @@ class RuntimeGuestContext(
         return super.startService(service)
     }
 
-    override fun startForegroundService(service: Intent): ComponentName? {
+    override fun startForegroundService(service: Intent): android.content.ComponentName? {
         val wrapper = session.componentHost?.wrapServiceIntent(service)
         if (wrapper != null) {
             RuntimeDiagnostics.log("SERVICE", "route startForegroundService ${session.runtimePackage.packageName}/${session.runtimePackage.slot} target=${service.component?.className ?: service.action}")
@@ -193,29 +195,21 @@ class RuntimeGuestContext(
             RuntimeActivityBindings.bind(activity, packageName, slot)
             RuntimeIntentRouter.originalIntent(wrapperIntent)?.let { activity.intent = it }
 
-            applyGuestTheme(activity, originalBase, packageName, guestActivity)
+            applyGuestTheme(activity, session.runtimePackage, guestActivity)
             RuntimeDiagnostics.log("RUNTIME", "attached guest context $packageName/$slot activity=$guestActivity")
         }
 
-        private fun applyGuestTheme(activity: Activity, hostBase: Context, packageName: String, activityName: String) {
-            val themeId = runCatching {
-                val component = ComponentName(packageName, activityName)
-                val info = if (Build.VERSION.SDK_INT >= 33) {
-                    hostBase.packageManager.getActivityInfo(component, PackageManager.ComponentInfoFlags.of(0))
-                } else {
-                    @Suppress("DEPRECATION") hostBase.packageManager.getActivityInfo(component, 0)
-                }
-                if (info.theme != 0) info.theme else hostBase.packageManager.getApplicationInfo(packageName, 0).theme
-            }.onFailure {
-                RuntimeDiagnostics.log("RUNTIME", "guest theme lookup failed $packageName activity=$activityName: ${it.message}")
-            }.getOrDefault(0)
+        private fun applyGuestTheme(activity: Activity, pkg: RuntimePackage, activityName: String) {
+            val themeId = if (activityName == pkg.launchActivity && pkg.launchActivityTheme != 0) {
+                pkg.launchActivityTheme
+            } else pkg.appTheme
 
             if (themeId != 0) {
                 runCatching { activity.setTheme(themeId) }
-                    .onSuccess { RuntimeDiagnostics.log("RUNTIME", "guest theme applied $packageName activity=$activityName theme=0x${themeId.toString(16)}") }
-                    .onFailure { RuntimeDiagnostics.log("RUNTIME", "guest theme apply failed $packageName activity=$activityName: ${it.stackTraceToString()}") }
+                    .onSuccess { RuntimeDiagnostics.log("RUNTIME", "guest theme applied ${pkg.packageName} activity=$activityName theme=0x${themeId.toString(16)}") }
+                    .onFailure { RuntimeDiagnostics.log("RUNTIME", "guest theme apply failed ${pkg.packageName} activity=$activityName: ${it.stackTraceToString()}") }
             } else {
-                RuntimeDiagnostics.log("RUNTIME", "guest theme defaulted $packageName activity=$activityName")
+                RuntimeDiagnostics.log("RUNTIME", "guest theme defaulted ${pkg.packageName} activity=$activityName")
             }
         }
 
