@@ -2,6 +2,7 @@ package com.shahboun.multi
 
 import android.app.Activity
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.os.Bundle
 import android.widget.TextView
 
@@ -39,9 +40,17 @@ object RuntimeProcessPool {
         RuntimeStubService3::class.java,
         RuntimeStubService4::class.java
     )
+    private val receiverStubs: Array<Class<out BroadcastReceiver>> = arrayOf(
+        RuntimeStubReceiver0::class.java,
+        RuntimeStubReceiver1::class.java,
+        RuntimeStubReceiver2::class.java,
+        RuntimeStubReceiver3::class.java,
+        RuntimeStubReceiver4::class.java
+    )
 
     fun processIndex(packageName: String, slot: Int): Int = Math.floorMod(31 * packageName.hashCode() + slot, activityStubs.size)
     fun activityStub(packageName: String, slot: Int): Class<out Activity> = activityStubs[processIndex(packageName, slot)]
     fun serviceStub(packageName: String, slot: Int): Class<out Service> = serviceStubs[processIndex(packageName, slot)]
+    fun receiverStub(packageName: String, slot: Int): Class<out BroadcastReceiver> = receiverStubs[processIndex(packageName, slot)]
     fun isActivityStubName(name: String?): Boolean = name == RuntimeStubActivity::class.java.name || activityStubs.any { it.name == name }
 }
