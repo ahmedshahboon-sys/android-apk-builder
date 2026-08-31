@@ -51,10 +51,10 @@ class RuntimeSession(
         val components = RuntimeComponentHost(base, this, slotDir)
         componentHost = components
         RuntimeDiagnostics.log("RUNTIME", "initializing guest providers ${runtimePackage.packageName}/${runtimePackage.slot}")
-        components.initializeProviders()
+        RuntimeExecutionScope.withSession(this) { components.initializeProviders() }
         RuntimeDiagnostics.log("RUNTIME", "guest providers ready ${runtimePackage.packageName}/${runtimePackage.slot}")
         RuntimeDiagnostics.log("RUNTIME", "calling guest Application.onCreate ${runtimePackage.packageName}/${runtimePackage.slot}")
-        app.onCreate()
+        RuntimeExecutionScope.withSession(this) { app.onCreate() }
         RuntimeDiagnostics.log("RUNTIME", "guest Application ready ${runtimePackage.packageName}/${runtimePackage.slot}")
         return app
     }
@@ -104,9 +104,6 @@ class RuntimeSessionFactory(private val context: Context) {
 
         val closeables = mutableListOf<Closeable>()
         val resources = if (Build.VERSION.SDK_INT >= 30) {
-            // Build a Resources object that starts with framework assets only. Starting from
-            // host resources would mix two unrelated app package-id 0x7f tables; constructing
-            // AssetManager directly is not part of the public SDK on Android 16.
             @Suppress("DEPRECATION")
             val guestResources = Resources(
                 Resources.getSystem().assets,
@@ -176,4 +173,5 @@ object RuntimeRegistry {
     fun get(packageName: String, slot: Int): RuntimeSession = sessions[key(packageName, slot)] ?: error("جلسة التشغيل غير موجودة")
     fun remove(packageName: String, slot: Int) { sessions.remove(key(packageName, slot))?.close() }
     fun clear() { sessions.values.forEach { it.close() }; sessions.clear() }
+    fun sessionForClassLoader(loader: ClassLoader?): RuntimeSession? = loader?.let { candidate -> sessions.values.firstOrNull { it.classLoader === candidate } }
 }
