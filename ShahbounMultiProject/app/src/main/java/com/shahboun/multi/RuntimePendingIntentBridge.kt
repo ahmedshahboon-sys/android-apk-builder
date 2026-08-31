@@ -18,9 +18,7 @@ object RuntimePendingIntentBridge {
 
     fun install(context: Context): Result<Unit> = runCatching {
         if (installed) return@runCatching
-        runCatching {
-            ActivityManager::class.java.getDeclaredMethod("getService").apply { isAccessible = true }.invoke(null)
-        }
+        runCatching { ActivityManager::class.java.getDeclaredMethod("getService").apply { isAccessible = true }.invoke(null) }
         val singletonField = ActivityManager::class.java.getDeclaredField("IActivityManagerSingleton").apply { isAccessible = true }
         val singleton = singletonField.get(null) ?: error("ActivityManager singleton غير متاح")
         val instanceField = findField(singleton.javaClass, "mInstance") ?: error("ActivityManager instance غير متاح")
@@ -46,17 +44,12 @@ object RuntimePendingIntentBridge {
             val source = args ?: emptyArray()
             val mutable = Array<Any?>(source.size) { source[it] }
             val senderType = mutable.firstOrNull { it is Int } as? Int ?: return invokeDelegate(method, args)
-            if (senderType !in setOf(INTENT_SENDER_BROADCAST, INTENT_SENDER_ACTIVITY, INTENT_SENDER_SERVICE, INTENT_SENDER_FOREGROUND_SERVICE)) {
-                return invokeDelegate(method, args)
-            }
+            if (senderType !in setOf(INTENT_SENDER_BROADCAST, INTENT_SENDER_ACTIVITY, INTENT_SENDER_SERVICE, INTENT_SENDER_FOREGROUND_SERVICE)) return invokeDelegate(method, args)
 
             val intentsIndex = method.parameterTypes.indexOfFirst { it.isArray && it.componentType == Intent::class.java }
             if (intentsIndex < 0) return invokeDelegate(method, args)
             val intents = mutable[intentsIndex] as? Array<*> ?: return invokeDelegate(method, args)
-            val routed = Array(intents.size) { index ->
-                val original = intents[index] as? Intent ?: Intent()
-                route(session, senderType, original)
-            }
+            val routed = Array(intents.size) { index -> route(session, senderType, intents[index] as? Intent ?: Intent()) }
             mutable[intentsIndex] = routed
 
             val guestPackage = session.runtimePackage.packageName
@@ -74,7 +67,7 @@ object RuntimePendingIntentBridge {
                 INTENT_SENDER_SERVICE, INTENT_SENDER_FOREGROUND_SERVICE -> {
                     session.componentHost?.wrapServiceIntent(original) ?: original.component?.let { component ->
                         if (component.packageName == pkg.packageName && pkg.ownsService(component.className)) {
-                            Intent(context, RuntimeStubService::class.java).apply {
+                            Intent(context, RuntimeProcessPool.serviceStub(pkg.packageName, pkg.slot)).apply {
                                 putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
                                 putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
                                 putExtra(EXTRA_RUNTIME_SERVICE, component.className)
