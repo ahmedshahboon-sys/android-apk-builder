@@ -26,6 +26,10 @@ class MultiApplication : Application() {
             .onSuccess { RuntimeDiagnostics.log("PM", "package manager bridge ready") }
             .onFailure { RuntimeDiagnostics.log("PM", "package manager bridge fallback: ${it.stackTraceToString()}") }
 
+        RuntimeNotificationBridge.install(this)
+            .onSuccess { RuntimeDiagnostics.log("NOTIFY", "notification bridge ready") }
+            .onFailure { RuntimeDiagnostics.log("NOTIFY", "notification bridge fallback: ${it.stackTraceToString()}") }
+
         RuntimeInstrumentationInstaller.install()
             .onSuccess {
                 runtimeBridgeReady = true
