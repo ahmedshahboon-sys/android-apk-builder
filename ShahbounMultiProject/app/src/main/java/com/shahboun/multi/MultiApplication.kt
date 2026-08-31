@@ -38,6 +38,10 @@ class MultiApplication : Application() {
             .onSuccess { RuntimeDiagnostics.log("PENDING", "PendingIntent bridge ready") }
             .onFailure { RuntimeDiagnostics.log("PENDING", "PendingIntent bridge fallback: ${it.stackTraceToString()}") }
 
+        RuntimeAlarmBridge.install(this)
+            .onSuccess { RuntimeDiagnostics.log("ALARM", "AlarmManager bridge ready") }
+            .onFailure { RuntimeDiagnostics.log("ALARM", "AlarmManager bridge fallback: ${it.stackTraceToString()}") }
+
         RuntimeJobSchedulerBridge.install(this)
             .onSuccess { RuntimeDiagnostics.log("JOB", "JobScheduler bridge ready") }
             .onFailure { RuntimeDiagnostics.log("JOB", "JobScheduler bridge fallback: ${it.stackTraceToString()}") }
