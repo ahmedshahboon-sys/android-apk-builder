@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ProviderInfo
 import android.os.Build
 import android.os.IBinder
 import java.io.Closeable
@@ -16,10 +17,6 @@ import java.util.concurrent.ConcurrentHashMap
 internal const val EXTRA_RUNTIME_SERVICE = "shahboun.runtime.service"
 internal const val EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT = "shahboun.runtime.original_service_intent"
 
-/**
- * Own lifecycle bridge for guest providers, explicit receivers and services.
- * It never forwards a guest component to the installed original package.
- */
 class RuntimeComponentHost(
     private val hostContext: Context,
     private val session: RuntimeSession,
@@ -31,24 +28,23 @@ class RuntimeComponentHost(
     @Synchronized
     fun initializeProviders() {
         if (providers.isNotEmpty()) return
-        val pm = hostContext.packageManager
-        val flags = if (Build.VERSION.SDK_INT >= 33) {
-            PackageManager.PackageInfoFlags.of(PackageManager.GET_PROVIDERS.toLong())
-        } else null
-        val info = if (Build.VERSION.SDK_INT >= 33) {
-            pm.getPackageInfo(session.runtimePackage.packageName, flags!!)
-        } else {
-            @Suppress("DEPRECATION") pm.getPackageInfo(session.runtimePackage.packageName, PackageManager.GET_PROVIDERS)
-        }
-        info.providers.orEmpty().forEach { providerInfo ->
-            val name = providerInfo.name ?: return@forEach
+        session.runtimePackage.providers.forEach { snapshot ->
+            val name = snapshot.name
             runCatching {
                 val clazz = session.classLoader.loadClass(name)
                 require(android.content.ContentProvider::class.java.isAssignableFrom(clazz)) { "Provider class غير صالح: $name" }
                 val provider = clazz.getDeclaredConstructor().newInstance() as android.content.ContentProvider
+                val providerInfo = ProviderInfo().apply {
+                    this.name = name
+                    packageName = session.runtimePackage.packageName
+                    authority = snapshot.authority
+                    exported = snapshot.exported
+                    grantUriPermissions = snapshot.grantUriPermissions
+                    applicationInfo = guestContext.applicationInfo
+                }
                 provider.attachInfo(guestContext, providerInfo)
                 providers.add(provider)
-                RuntimeDiagnostics.log("PROVIDER", "initialized ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name")
+                RuntimeDiagnostics.log("PROVIDER", "initialized snapshot ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
             }.onFailure {
                 RuntimeDiagnostics.log("PROVIDER", "failed $name: ${it.stackTraceToString()}")
                 throw it
@@ -103,7 +99,6 @@ class RuntimeComponentHost(
     }
 }
 
-/** Declared host service that delegates lifecycle to a guest Service object. */
 class RuntimeStubService : Service() {
     private data class GuestService(val service: Service, val session: RuntimeSession)
     private data class ServiceRequest(
