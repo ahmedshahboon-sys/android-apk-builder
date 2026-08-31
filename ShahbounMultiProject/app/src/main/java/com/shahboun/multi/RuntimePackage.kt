@@ -2,6 +2,7 @@ package com.shahboun.multi
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -17,7 +18,10 @@ data class RuntimeProviderInfo(
 data class RuntimeComponentInfo(
     val name: String,
     val exported: Boolean,
-    val theme: Int = 0
+    val theme: Int = 0,
+    val targetActivity: String? = null,
+    val processName: String? = null,
+    val permission: String? = null
 )
 
 data class RuntimePackage(
@@ -27,6 +31,7 @@ data class RuntimePackage(
     val splitApks: List<File>,
     val splitNames: List<String>,
     val launchActivity: String,
+    val launchAlias: String?,
     val applicationClass: String?,
     val versionCode: Long,
     val sha256: String,
@@ -41,26 +46,31 @@ data class RuntimePackage(
     val services: List<RuntimeComponentInfo>,
     val receivers: List<RuntimeComponentInfo>
 ) {
-    val dexPath: String get() = (listOf(baseApk) + splitApks).joinToString(File.pathSeparator) { it.absolutePath }
-    fun ownsActivity(name: String): Boolean = name == launchActivity || activities.any { it.name == name }
+    val allApks: List<File> get() = listOf(baseApk) + splitApks
+    val dexApks: List<File> get() = allApks.filter(RuntimePackageInstaller::containsDex)
+    val dexPath: String get() = dexApks.joinToString(File.pathSeparator) { it.absolutePath }
+    fun ownsActivity(name: String): Boolean = name == launchActivity || name == launchAlias || activities.any { it.name == name || it.targetActivity == name }
     fun ownsService(name: String): Boolean = services.any { it.name == name }
     fun ownsReceiver(name: String): Boolean = receivers.any { it.name == name }
-    fun activityTheme(name: String): Int = activities.firstOrNull { it.name == name }?.theme ?: 0
+    fun activityTheme(name: String): Int = activities.firstOrNull { it.name == name || it.targetActivity == name }?.theme ?: 0
+    fun resolveActivity(name: String): String = activities.firstOrNull { it.name == name }?.targetActivity?.takeIf { it.isNotBlank() } ?: name
 }
 
 class RuntimePackageInstaller(private val context: Context) {
     fun snapshot(packageName: String, slot: Int, slotDir: File): RuntimePackage {
         val pm = context.packageManager
-        val appInfo = pm.getApplicationInfo(packageName, 0)
+        val appInfo = if (Build.VERSION.SDK_INT >= 33) {
+            pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
+        } else @Suppress("DEPRECATION") pm.getApplicationInfo(packageName, PackageManager.GET_META_DATA)
         val launch = pm.getLaunchIntentForPackage(packageName) ?: error("التطبيق لا يملك شاشة تشغيل رئيسية")
-        val launcherComponent = launch.component ?: error("تعذر تحديد شاشة تشغيل التطبيق")
-        val activityInfo = runCatching { pm.getActivityInfo(launcherComponent, 0) }.getOrNull()
-        // Launch intents may point to an activity-alias. Instantiate the target activity class, not the alias name.
-        val launchActivity = activityInfo?.targetActivity?.takeIf { it.isNotBlank() }
-            ?: activityInfo?.name?.takeIf { it.isNotBlank() }
-            ?: launcherComponent.className
+        val launchComponent = launch.component ?: error("تعذر تحديد شاشة تشغيل التطبيق")
+        val launchInfo = if (Build.VERSION.SDK_INT >= 33) {
+            pm.getActivityInfo(launchComponent, PackageManager.ComponentInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
+        } else @Suppress("DEPRECATION") pm.getActivityInfo(launchComponent, PackageManager.GET_META_DATA)
+        val resolvedLaunch = launchInfo.targetActivity?.takeIf { it.isNotBlank() } ?: launchInfo.name
+        val launchAlias = launchInfo.name.takeIf { it != resolvedLaunch }
         val applicationClass = appInfo.className?.takeIf { it.isNotBlank() }
-        val launchActivityTheme = activityInfo?.theme ?: 0
+        val launchActivityTheme = launchInfo.theme
 
         val apkDir = File(slotDir, "apk").apply {
             if (exists()) deleteRecursively()
@@ -78,40 +88,35 @@ class RuntimePackageInstaller(private val context: Context) {
             File(apkDir, "split-$index.apk").also { copyVerified(File(source), it) }
         }
 
-        val packageFlags = PackageManager.GET_PROVIDERS or PackageManager.GET_ACTIVITIES or
-            PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS
-        val pkg = if (android.os.Build.VERSION.SDK_INT >= 33) {
-            pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(packageFlags.toLong()))
-        } else {
-            @Suppress("DEPRECATION") pm.getPackageInfo(packageName, packageFlags)
-        }
-        val versionCode = if (android.os.Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else {
-            @Suppress("DEPRECATION") pkg.versionCode.toLong()
-        }
+        val packageFlags = PackageManager.GET_PROVIDERS or PackageManager.GET_ACTIVITIES or PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS or PackageManager.GET_META_DATA
+        val pkg = if (Build.VERSION.SDK_INT >= 33) pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(packageFlags.toLong()))
+        else @Suppress("DEPRECATION") pm.getPackageInfo(packageName, packageFlags)
+        val versionCode = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else @Suppress("DEPRECATION") pkg.versionCode.toLong()
         val providers = pkg.providers.orEmpty().mapNotNull { info ->
             val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             RuntimeProviderInfo(name, info.authority, info.exported, info.grantUriPermissions)
         }
         val activities = pkg.activities.orEmpty().mapNotNull { info ->
             val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RuntimeComponentInfo(name, info.exported, info.theme)
+            RuntimeComponentInfo(name, info.exported, info.theme, info.targetActivity, info.processName, info.permission)
         }
         val services = pkg.services.orEmpty().mapNotNull { info ->
             val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RuntimeComponentInfo(name, info.exported)
+            RuntimeComponentInfo(name, info.exported, processName = info.processName, permission = info.permission)
         }
         val receivers = pkg.receivers.orEmpty().mapNotNull { info ->
             val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RuntimeComponentInfo(name, info.exported)
+            RuntimeComponentInfo(name, info.exported, processName = info.processName, permission = info.permission)
         }
 
         val digest = sha256(base)
         val splitDigests = splits.map(::sha256)
         File(slotDir, "runtime.meta").writeText(buildString {
-            appendLine("format=10")
+            appendLine("format=11")
             appendLine("package=$packageName")
             appendLine("slot=$slot")
-            appendLine("launchActivity=$launchActivity")
+            appendLine("launchActivity=$resolvedLaunch")
+            appendLine("launchAlias=${launchAlias.orEmpty()}")
             appendLine("applicationClass=${applicationClass.orEmpty()}")
             appendLine("versionCode=$versionCode")
             appendLine("sha256=$digest")
@@ -121,7 +126,7 @@ class RuntimePackageInstaller(private val context: Context) {
             appendLine("appTheme=${appInfo.theme}")
             appendLine("launchActivityTheme=$launchActivityTheme")
             appendLine("targetSdk=${appInfo.targetSdkVersion}")
-            appendLine("minSdk=${if (android.os.Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1}")
+            appendLine("minSdk=${if (Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1}")
             appendLine("appFlags=${appInfo.flags}")
             writeProviders(providers)
             writeComponents("activity", activities)
@@ -129,12 +134,9 @@ class RuntimePackageInstaller(private val context: Context) {
             writeComponents("receiver", receivers)
         })
 
-        return RuntimePackage(
-            packageName, slot, base, splits, normalizedSplitNames, launchActivity, applicationClass,
-            versionCode, digest, splitDigests, appInfo.theme, launchActivityTheme,
-            appInfo.targetSdkVersion, if (android.os.Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1,
-            appInfo.flags, providers, activities, services, receivers
-        )
+        return RuntimePackage(packageName, slot, base, splits, normalizedSplitNames, resolvedLaunch, launchAlias, applicationClass,
+            versionCode, digest, splitDigests, appInfo.theme, launchActivityTheme, appInfo.targetSdkVersion,
+            if (Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1, appInfo.flags, providers, activities, services, receivers)
     }
 
     fun read(packageName: String, slot: Int, slotDir: File): RuntimePackage {
@@ -148,7 +150,8 @@ class RuntimePackageInstaller(private val context: Context) {
         val apkDir = File(slotDir, "apk")
         val base = File(apkDir, "base.apk")
         require(base.isFile) { "APK النسخة مفقود" }
-        val splits = apkDir.listFiles().orEmpty().filter { it.name.startsWith("split-") && it.extension == "apk" }.sortedBy { it.name.substringAfter("split-").substringBefore('.').toIntOrNull() ?: Int.MAX_VALUE }
+        val splits = apkDir.listFiles().orEmpty().filter { it.name.startsWith("split-") && it.extension == "apk" }
+            .sortedBy { it.name.substringAfter("split-").substringBefore('.').toIntOrNull() ?: Int.MAX_VALUE }
         val expected = values["sha256"] ?: error("بصمة APK مفقودة")
         require(sha256(base) == expected) { "فشل تحقق سلامة APK الخاص بالنسخة" }
         val expectedSplitCount = values["splitCount"]?.toIntOrNull() ?: 0
@@ -164,27 +167,12 @@ class RuntimePackageInstaller(private val context: Context) {
         val activities = readComponents(values, "activity")
         val services = readComponents(values, "service")
         val receivers = readComponents(values, "receiver")
-        return RuntimePackage(
-            packageName = packageName,
-            slot = slot,
-            baseApk = base,
-            splitApks = splits,
-            splitNames = splitNames,
-            launchActivity = values["launchActivity"] ?: error("شاشة التشغيل غير مسجلة"),
-            applicationClass = values["applicationClass"]?.takeIf { it.isNotBlank() },
-            versionCode = values["versionCode"]?.toLongOrNull() ?: 0L,
-            sha256 = expected,
-            splitSha256 = splitDigests,
-            appTheme = values["appTheme"]?.toIntOrNull() ?: 0,
-            launchActivityTheme = values["launchActivityTheme"]?.toIntOrNull() ?: 0,
-            targetSdk = values["targetSdk"]?.toIntOrNull() ?: android.os.Build.VERSION.SDK_INT,
-            minSdk = values["minSdk"]?.toIntOrNull() ?: 1,
-            appFlags = values["appFlags"]?.toIntOrNull() ?: 0,
-            providers = providers,
-            activities = activities,
-            services = services,
-            receivers = receivers
-        )
+        return RuntimePackage(packageName, slot, base, splits, splitNames,
+            values["launchActivity"] ?: error("شاشة التشغيل غير مسجلة"), values["launchAlias"]?.takeIf { it.isNotBlank() },
+            values["applicationClass"]?.takeIf { it.isNotBlank() }, values["versionCode"]?.toLongOrNull() ?: 0L,
+            expected, splitDigests, values["appTheme"]?.toIntOrNull() ?: 0, values["launchActivityTheme"]?.toIntOrNull() ?: 0,
+            values["targetSdk"]?.toIntOrNull() ?: Build.VERSION.SDK_INT, values["minSdk"]?.toIntOrNull() ?: 1,
+            values["appFlags"]?.toIntOrNull() ?: 0, providers, activities, services, receivers)
     }
 
     private fun StringBuilder.writeProviders(items: List<RuntimeProviderInfo>) {
@@ -202,7 +190,12 @@ class RuntimePackageInstaller(private val context: Context) {
         items.forEachIndexed { index, component ->
             appendLine("$prefix.$index.name=${component.name}")
             appendLine("$prefix.$index.exported=${component.exported}")
-            if (prefix == "activity") appendLine("$prefix.$index.theme=${component.theme}")
+            appendLine("$prefix.$index.processName=${component.processName.orEmpty()}")
+            appendLine("$prefix.$index.permission=${component.permission.orEmpty()}")
+            if (prefix == "activity") {
+                appendLine("$prefix.$index.theme=${component.theme}")
+                appendLine("$prefix.$index.targetActivity=${component.targetActivity.orEmpty()}")
+            }
         }
     }
 
@@ -210,12 +203,8 @@ class RuntimePackageInstaller(private val context: Context) {
         val count = values["providerCount"]?.toIntOrNull() ?: 0
         return (0 until count).mapNotNull { index ->
             val name = values["provider.$index.name"]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RuntimeProviderInfo(
-                name = name,
-                authority = values["provider.$index.authority"]?.takeIf { it.isNotBlank() },
-                exported = values["provider.$index.exported"].toBoolean(),
-                grantUriPermissions = values["provider.$index.grantUriPermissions"].toBoolean()
-            )
+            RuntimeProviderInfo(name, values["provider.$index.authority"]?.takeIf { it.isNotBlank() },
+                values["provider.$index.exported"].toBoolean(), values["provider.$index.grantUriPermissions"].toBoolean())
         }
     }
 
@@ -223,11 +212,10 @@ class RuntimePackageInstaller(private val context: Context) {
         val count = values["${prefix}Count"]?.toIntOrNull() ?: 0
         return (0 until count).mapNotNull { index ->
             val name = values["$prefix.$index.name"]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RuntimeComponentInfo(
-                name = name,
-                exported = values["$prefix.$index.exported"].toBoolean(),
-                theme = if (prefix == "activity") values["$prefix.$index.theme"]?.toIntOrNull() ?: 0 else 0
-            )
+            RuntimeComponentInfo(name, values["$prefix.$index.exported"].toBoolean(),
+                if (prefix == "activity") values["$prefix.$index.theme"]?.toIntOrNull() ?: 0 else 0,
+                if (prefix == "activity") values["$prefix.$index.targetActivity"]?.takeIf { it.isNotBlank() } else null,
+                values["$prefix.$index.processName"]?.takeIf { it.isNotBlank() }, values["$prefix.$index.permission"]?.takeIf { it.isNotBlank() })
         }
     }
 
@@ -248,5 +236,11 @@ class RuntimePackageInstaller(private val context: Context) {
             }
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    companion object {
+        fun containsDex(file: File): Boolean = runCatching {
+            java.util.zip.ZipFile(file).use { zip -> zip.entries().asSequence().any { it.name.matches(Regex("classes(\\d*)?\\.dex")) } }
+        }.getOrDefault(false)
     }
 }
