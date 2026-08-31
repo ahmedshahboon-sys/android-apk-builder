@@ -155,6 +155,7 @@ class CloneUpdatesActivity : Activity() {
         button.text = "جاري التحديث…"
         executor.execute {
             val result = engine.updateClone(clone.packageName, clone.slot)
+            RuntimeUpdateCenter.checkAndNotify(this, engine)
             runOnUiThread {
                 result.onSuccess { Toast.makeText(this, "تم تحديث ${clone.customName}", Toast.LENGTH_LONG).show() }
                     .onFailure { Toast.makeText(this, "فشل تحديث ${clone.customName}: ${it.message}", Toast.LENGTH_LONG).show() }
@@ -176,6 +177,7 @@ class CloneUpdatesActivity : Activity() {
                     .onFailure { failures += "${clone.customName}: ${it.message ?: "خطأ"}" }
             }
             RuntimeDiagnostics.log("UPDATE", "update-all complete success=$success failed=${failures.size}")
+            RuntimeUpdateCenter.checkAndNotify(this, engine)
             runOnUiThread {
                 val message = buildString {
                     append("تم تحديث $success نسخة")
