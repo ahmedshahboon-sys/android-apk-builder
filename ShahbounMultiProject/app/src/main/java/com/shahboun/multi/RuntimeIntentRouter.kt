@@ -14,7 +14,7 @@ object RuntimeIntentRouter {
         val pkg = session.runtimePackage
         val target = resolveGuestActivity(context, pkg, original) ?: return original
         val hostPackage = BuildConfig.APPLICATION_ID
-        val stub = RuntimeProcessPool.activityStub(pkg.slot)
+        val stub = RuntimeProcessPool.activityStub(pkg.packageName, pkg.slot)
         return Intent(original).apply {
             component = ComponentName(hostPackage, stub.name)
             `package` = hostPackage
