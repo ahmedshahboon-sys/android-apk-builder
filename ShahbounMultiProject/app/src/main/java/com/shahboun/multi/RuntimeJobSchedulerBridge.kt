@@ -52,6 +52,19 @@ object RuntimeJobSchedulerBridge {
         return JobRecord(parts[0], parts[1].toIntOrNull() ?: return null, parts[2], parts[3].toIntOrNull() ?: return null, hostJobId)
     }
 
+    fun cancelClone(packageName: String, slot: Int): Int {
+        if (!::appContext.isInitialized) return 0
+        val records = recordsFor(packageName, slot)
+        val scheduler = appContext.getSystemService(JobScheduler::class.java)
+        records.forEach { record ->
+            runCatching { scheduler?.cancel(record.hostJobId) }
+                .onFailure { RuntimeDiagnostics.log("JOB", "cancelClone host=${record.hostJobId} failed: ${it.javaClass.simpleName}") }
+            remove(record.hostJobId)
+        }
+        RuntimeDiagnostics.log("JOB", "cancelClone $packageName/$slot count=${records.size}")
+        return records.size
+    }
+
     data class JobRecord(val packageName: String, val slot: Int, val serviceName: String, val guestJobId: Int, val hostJobId: Int)
 
     private class Handler(private val delegate: Any) : InvocationHandler {
