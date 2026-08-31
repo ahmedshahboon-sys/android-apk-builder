@@ -31,7 +31,6 @@ object RuntimePackageManagerBridge {
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate))
         pmField.set(pm, proxy)
 
-        // New ApplicationPackageManager instances normally read the same ActivityThread field.
         runCatching {
             val activityThread = Class.forName("android.app.ActivityThread")
             val staticField = activityThread.getDeclaredField("sPackageManager").apply { isAccessible = true }
@@ -65,7 +64,10 @@ object RuntimePackageManagerBridge {
                 applicationInfo = applicationInfo(session)
                 @Suppress("DEPRECATION")
                 versionCode = session.runtimePackage.versionCode.toInt()
-                if (android.os.Build.VERSION.SDK_INT >= 28) versionCodeMajor = (session.runtimePackage.versionCode ushr 32).toInt()
+                runCatching {
+                    PackageInfo::class.java.getMethod("setLongVersionCode", Long::class.javaPrimitiveType)
+                        .invoke(this, session.runtimePackage.versionCode)
+                }
             }
         }
 
