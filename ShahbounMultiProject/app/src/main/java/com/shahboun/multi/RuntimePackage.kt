@@ -14,6 +14,11 @@ data class RuntimeProviderInfo(
     val grantUriPermissions: Boolean
 )
 
+data class RuntimeComponentInfo(
+    val name: String,
+    val exported: Boolean
+)
+
 data class RuntimePackage(
     val packageName: String,
     val slot: Int,
@@ -29,9 +34,15 @@ data class RuntimePackage(
     val targetSdk: Int,
     val minSdk: Int,
     val appFlags: Int,
-    val providers: List<RuntimeProviderInfo>
+    val providers: List<RuntimeProviderInfo>,
+    val activities: List<RuntimeComponentInfo>,
+    val services: List<RuntimeComponentInfo>,
+    val receivers: List<RuntimeComponentInfo>
 ) {
     val dexPath: String get() = (listOf(baseApk) + splitApks).joinToString(File.pathSeparator) { it.absolutePath }
+    fun ownsActivity(name: String): Boolean = name == launchActivity || activities.any { it.name == name }
+    fun ownsService(name: String): Boolean = services.any { it.name == name }
+    fun ownsReceiver(name: String): Boolean = receivers.any { it.name == name }
 }
 
 class RuntimePackageInstaller(private val context: Context) {
@@ -54,7 +65,8 @@ class RuntimePackageInstaller(private val context: Context) {
             File(apkDir, "split-$index.apk").also { copyVerified(File(source), it) }
         }
 
-        val packageFlags = PackageManager.GET_PROVIDERS
+        val packageFlags = PackageManager.GET_PROVIDERS or PackageManager.GET_ACTIVITIES or
+            PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS
         val pkg = if (android.os.Build.VERSION.SDK_INT >= 33) {
             pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(packageFlags.toLong()))
         } else {
@@ -67,11 +79,23 @@ class RuntimePackageInstaller(private val context: Context) {
             val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             RuntimeProviderInfo(name, info.authority, info.exported, info.grantUriPermissions)
         }
+        val activities = pkg.activities.orEmpty().mapNotNull { info ->
+            val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            RuntimeComponentInfo(name, info.exported)
+        }
+        val services = pkg.services.orEmpty().mapNotNull { info ->
+            val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            RuntimeComponentInfo(name, info.exported)
+        }
+        val receivers = pkg.receivers.orEmpty().mapNotNull { info ->
+            val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            RuntimeComponentInfo(name, info.exported)
+        }
 
         val digest = sha256(base)
         val splitDigests = splits.map(::sha256)
         File(slotDir, "runtime.meta").writeText(buildString {
-            appendLine("format=6")
+            appendLine("format=7")
             appendLine("package=$packageName")
             appendLine("slot=$slot")
             appendLine("launchActivity=$launchActivity")
@@ -85,20 +109,17 @@ class RuntimePackageInstaller(private val context: Context) {
             appendLine("targetSdk=${appInfo.targetSdkVersion}")
             appendLine("minSdk=${if (android.os.Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1}")
             appendLine("appFlags=${appInfo.flags}")
-            appendLine("providerCount=${providers.size}")
-            providers.forEachIndexed { index, provider ->
-                appendLine("provider.$index.name=${provider.name}")
-                appendLine("provider.$index.authority=${provider.authority.orEmpty()}")
-                appendLine("provider.$index.exported=${provider.exported}")
-                appendLine("provider.$index.grantUriPermissions=${provider.grantUriPermissions}")
-            }
+            writeProviders(providers)
+            writeComponents("activity", activities)
+            writeComponents("service", services)
+            writeComponents("receiver", receivers)
         })
 
         return RuntimePackage(
             packageName, slot, base, splits, launchActivity, applicationClass,
             versionCode, digest, splitDigests, appInfo.theme, launchActivityTheme,
             appInfo.targetSdkVersion, if (android.os.Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1,
-            appInfo.flags, providers
+            appInfo.flags, providers, activities, services, receivers
         )
     }
 
@@ -124,16 +145,10 @@ class RuntimePackageInstaller(private val context: Context) {
             if (expectedSplit != null) require(actual == expectedSplit) { "فشل تحقق سلامة Split APK رقم ${index + 1}" }
             actual
         }
-        val providerCount = values["providerCount"]?.toIntOrNull() ?: 0
-        val providers = (0 until providerCount).mapNotNull { index ->
-            val name = values["provider.$index.name"]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RuntimeProviderInfo(
-                name = name,
-                authority = values["provider.$index.authority"]?.takeIf { it.isNotBlank() },
-                exported = values["provider.$index.exported"].toBoolean(),
-                grantUriPermissions = values["provider.$index.grantUriPermissions"].toBoolean()
-            )
-        }
+        val providers = readProviders(values)
+        val activities = readComponents(values, "activity")
+        val services = readComponents(values, "service")
+        val receivers = readComponents(values, "receiver")
         return RuntimePackage(
             packageName = packageName,
             slot = slot,
@@ -149,8 +164,50 @@ class RuntimePackageInstaller(private val context: Context) {
             targetSdk = values["targetSdk"]?.toIntOrNull() ?: android.os.Build.VERSION.SDK_INT,
             minSdk = values["minSdk"]?.toIntOrNull() ?: 1,
             appFlags = values["appFlags"]?.toIntOrNull() ?: 0,
-            providers = providers
+            providers = providers,
+            activities = activities,
+            services = services,
+            receivers = receivers
         )
+    }
+
+    private fun StringBuilder.writeProviders(items: List<RuntimeProviderInfo>) {
+        appendLine("providerCount=${items.size}")
+        items.forEachIndexed { index, provider ->
+            appendLine("provider.$index.name=${provider.name}")
+            appendLine("provider.$index.authority=${provider.authority.orEmpty()}")
+            appendLine("provider.$index.exported=${provider.exported}")
+            appendLine("provider.$index.grantUriPermissions=${provider.grantUriPermissions}")
+        }
+    }
+
+    private fun StringBuilder.writeComponents(prefix: String, items: List<RuntimeComponentInfo>) {
+        appendLine("${prefix}Count=${items.size}")
+        items.forEachIndexed { index, component ->
+            appendLine("$prefix.$index.name=${component.name}")
+            appendLine("$prefix.$index.exported=${component.exported}")
+        }
+    }
+
+    private fun readProviders(values: Map<String, String>): List<RuntimeProviderInfo> {
+        val count = values["providerCount"]?.toIntOrNull() ?: 0
+        return (0 until count).mapNotNull { index ->
+            val name = values["provider.$index.name"]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            RuntimeProviderInfo(
+                name = name,
+                authority = values["provider.$index.authority"]?.takeIf { it.isNotBlank() },
+                exported = values["provider.$index.exported"].toBoolean(),
+                grantUriPermissions = values["provider.$index.grantUriPermissions"].toBoolean()
+            )
+        }
+    }
+
+    private fun readComponents(values: Map<String, String>, prefix: String): List<RuntimeComponentInfo> {
+        val count = values["${prefix}Count"]?.toIntOrNull() ?: 0
+        return (0 until count).mapNotNull { index ->
+            val name = values["$prefix.$index.name"]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            RuntimeComponentInfo(name, values["$prefix.$index.exported"].toBoolean())
+        }
     }
 
     private fun copyVerified(source: File, target: File) {
