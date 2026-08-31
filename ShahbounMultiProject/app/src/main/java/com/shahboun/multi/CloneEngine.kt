@@ -1,6 +1,7 @@
 package com.shahboun.multi
 
 import android.content.Context
+import android.content.Intent
 import java.io.File
 import java.security.MessageDigest
 
@@ -45,12 +46,12 @@ class ShahbounCloneEngine : CloneEngine {
         require(!dir.exists()) { "Clone already exists" }
         require(dir.mkdirs()) { "Unable to create isolated clone storage" }
         try {
-            listOf("data", "cache", "files", "databases", "no_backup", "code_cache", "native").forEach {
+            listOf("data", "device_data", "cache", "files", "databases", "no_backup", "code_cache", "native", "external").forEach {
                 require(File(dir, it).mkdirs()) { "Unable to create clone directory: $it" }
             }
             File(dir, "clone.meta").writeText(
                 buildString {
-                    appendLine("format=2")
+                    appendLine("format=3")
                     appendLine("package=$packageName")
                     appendLine("slot=$slot")
                     appendLine("created=${System.currentTimeMillis()}")
@@ -68,11 +69,10 @@ class ShahbounCloneEngine : CloneEngine {
         require(packageName.isNotBlank()) { "Package name is empty" }
         require(slot >= 0) { "Invalid clone slot" }
         appContext.packageManager.getApplicationInfo(packageName, 0)
+        forceStop(packageName, slot).getOrThrow()
 
         val dir = runtimeSlotDir(packageName, slot)
         require(dir.isDirectory) { "Clone does not exist" }
-        RuntimeRegistry.remove(packageName, slot)
-
         val apkDir = File(dir, "apk")
         val runtimeMeta = File(dir, "runtime.meta")
         require(apkDir.isDirectory && runtimeMeta.isFile) { "Clone runtime snapshot is incomplete" }
@@ -140,23 +140,65 @@ class ShahbounCloneEngine : CloneEngine {
         appContext.startActivity(intent)
     }
 
+    fun forceStop(packageName: String, slot: Int): Result<Unit> = runCatching {
+        requireInitialized()
+        RuntimeActivityBindings.finishClone(packageName, slot)
+        RuntimeJobSchedulerBridge.cancelClone(packageName, slot)
+        val stub = RuntimeProcessPool.serviceStub(packageName, slot)
+        runCatching {
+            appContext.startService(Intent(appContext, stub).apply {
+                action = ACTION_RUNTIME_STOP_CLONE
+                putExtra(EXTRA_RUNTIME_PACKAGE, packageName)
+                putExtra(EXTRA_RUNTIME_SLOT, slot)
+            })
+        }
+        RuntimeRegistry.remove(packageName, slot)
+        RuntimeDiagnostics.log("ENGINE", "clone force-stopped $packageName/$slot")
+    }
+
     override fun remove(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized()
-        RuntimeRegistry.remove(packageName, slot)
+        forceStop(packageName, slot).getOrThrow()
+        deleteCloneSharedPreferences(packageName, slot)
         val dir = runtimeSlotDir(packageName, slot)
         if (dir.exists()) require(dir.deleteRecursively()) { "Unable to remove clone storage" }
     }
 
     override fun clearData(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized()
-        RuntimeRegistry.remove(packageName, slot)
+        forceStop(packageName, slot).getOrThrow()
+        deleteCloneSharedPreferences(packageName, slot)
         val dir = runtimeSlotDir(packageName, slot)
         require(dir.isDirectory) { "Clone does not exist" }
-        listOf("data", "cache", "files", "databases", "no_backup", "code_cache").forEach { name ->
+        val keep = setOf("apk", "runtime.meta", "clone.meta", "native")
+        dir.listFiles().orEmpty().filter { it.name !in keep && !it.name.endsWith("update-backup") }.forEach { child ->
+            if (child.exists()) require(child.deleteRecursively()) { "Unable to clear ${child.name}" }
+        }
+        listOf("data", "device_data", "cache", "files", "databases", "no_backup", "code_cache", "external").forEach { name ->
+            val child = File(dir, name)
+            require(child.exists() || child.mkdirs()) { "Unable to reset $name" }
+        }
+        RuntimeDiagnostics.log("ENGINE", "clone data cleared $packageName/$slot")
+    }
+
+    fun clearCache(packageName: String, slot: Int): Result<Unit> = runCatching {
+        requireInitialized()
+        forceStop(packageName, slot).getOrThrow()
+        val dir = runtimeSlotDir(packageName, slot)
+        require(dir.isDirectory) { "Clone does not exist" }
+        listOf("cache", "code_cache", "external/cache").forEach { name ->
             val child = File(dir, name)
             if (child.exists()) child.deleteRecursively()
             require(child.mkdirs()) { "Unable to reset $name" }
         }
+        RuntimeDiagnostics.log("ENGINE", "clone cache cleared $packageName/$slot")
+    }
+
+    fun cloneSizeBytes(packageName: String, slot: Int): Long {
+        requireInitialized()
+        val dir = runtimeSlotDir(packageName, slot)
+        if (!dir.exists()) return 0L
+        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } + sharedPreferenceBytes(packageName, slot)
     }
 
     fun runtimeSlotDir(packageName: String, slot: Int): File {
@@ -166,6 +208,24 @@ class ShahbounCloneEngine : CloneEngine {
             .joinToString("") { "%02x".format(it) }
             .take(20)
         return File(rootDir, "$digest/$slot")
+    }
+
+    private fun sharedPreferencePrefix(packageName: String, slot: Int) = "clone_${packageName}_${slot}_"
+
+    private fun deleteCloneSharedPreferences(packageName: String, slot: Int) {
+        val prefix = sharedPreferencePrefix(packageName, slot)
+        val shared = File(appContext.applicationInfo.dataDir, "shared_prefs")
+        shared.listFiles().orEmpty().filter { it.name.startsWith(prefix) && it.name.endsWith(".xml") }.forEach { file ->
+            val name = file.name.removeSuffix(".xml")
+            runCatching { appContext.deleteSharedPreferences(name) }
+            if (file.exists()) file.delete()
+        }
+    }
+
+    private fun sharedPreferenceBytes(packageName: String, slot: Int): Long {
+        val prefix = sharedPreferencePrefix(packageName, slot)
+        val shared = File(appContext.applicationInfo.dataDir, "shared_prefs")
+        return shared.listFiles().orEmpty().filter { it.name.startsWith(prefix) && it.name.endsWith(".xml") }.sumOf { it.length() }
     }
 
     private fun requireInitialized() {
