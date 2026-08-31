@@ -17,10 +17,6 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Clone-aware JobScheduler bridge. Android stores jobs per host UID, so each guest job receives
- * a deterministic host id and is redirected to a host-declared JobService in the same clone process.
- */
 object RuntimeJobSchedulerBridge {
     @Volatile private var installed = false
     private lateinit var appContext: Context
@@ -30,9 +26,9 @@ object RuntimeJobSchedulerBridge {
         if (installed) return@runCatching
         appContext = context.applicationContext
         val scheduler = context.getSystemService(JobScheduler::class.java) ?: error("JobScheduler غير متاح")
-        val field = findField(scheduler.javaClass, "mBinder") ?: error("JobScheduler.mBinder غير متاح")
-        field.isAccessible = true
-        val delegate = field.get(scheduler) ?: error("IJobScheduler غير متاح")
+        val pair = findServiceField(scheduler, "IJobScheduler") ?: error("IJobScheduler binder غير متاح")
+        val field = pair.first
+        val delegate = pair.second
         if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
             installed = true
             return@runCatching
@@ -40,9 +36,10 @@ object RuntimeJobSchedulerBridge {
         val interfaces = collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة IJobScheduler غير متاحة" }
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate))
+        field.isAccessible = true
         field.set(scheduler, proxy)
         installed = true
-        RuntimeDiagnostics.log("JOB", "clone-aware JobScheduler bridge installed")
+        RuntimeDiagnostics.log("JOB", "clone-aware JobScheduler bridge installed field=${field.name} owner=${field.declaringClass.name}")
     }
 
     fun lookup(hostJobId: Int): JobRecord? {
@@ -57,8 +54,7 @@ object RuntimeJobSchedulerBridge {
         val records = recordsFor(packageName, slot)
         val scheduler = appContext.getSystemService(JobScheduler::class.java)
         records.forEach { record ->
-            runCatching { scheduler?.cancel(record.hostJobId) }
-                .onFailure { RuntimeDiagnostics.log("JOB", "cancelClone host=${record.hostJobId} failed: ${it.javaClass.simpleName}") }
+            runCatching { scheduler?.cancel(record.hostJobId) }.onFailure { RuntimeDiagnostics.log("JOB", "cancelClone host=${record.hostJobId} failed: ${it.javaClass.simpleName}") }
             remove(record.hostJobId)
         }
         RuntimeDiagnostics.log("JOB", "cancelClone $packageName/$slot count=${records.size}")
@@ -89,7 +85,6 @@ object RuntimeJobSchedulerBridge {
             val service = original.service
             val pkg = session.runtimePackage
             if (service.packageName != pkg.packageName || !pkg.ownsService(service.className)) return invokeDelegate(method, args)
-
             val hostId = hostJobId(pkg.packageName, pkg.slot, original.id)
             val hostService = ComponentName(BuildConfig.APPLICATION_ID, RuntimeProcessPool.jobServiceStub(pkg.packageName, pkg.slot).name)
             val routed = cloneAndPatchJob(original, hostId, hostService).getOrElse {
@@ -118,13 +113,8 @@ object RuntimeJobSchedulerBridge {
 
         private fun routeCancelAll(session: RuntimeSession, method: Method, args: Array<out Any?>?): Any? {
             val records = recordsFor(session.runtimePackage.packageName, session.runtimePackage.slot)
-            val cancelMethod = delegate.javaClass.methods.firstOrNull { candidate ->
-                candidate.name == "cancel" && candidate.parameterTypes.lastOrNull() == Int::class.javaPrimitiveType
-            }
-            if (cancelMethod == null) {
-                RuntimeDiagnostics.log("JOB", "cancelAll fallback: binder cancel method unavailable")
-                return nullFor(method.returnType)
-            }
+            val cancelMethod = delegate.javaClass.methods.firstOrNull { it.name == "cancel" && it.parameterTypes.lastOrNull() == Int::class.javaPrimitiveType }
+                ?: return nullFor(method.returnType)
             val namespace = args?.firstOrNull { it is String } as? String
             records.forEach { record ->
                 runCatching {
@@ -134,7 +124,7 @@ object RuntimeJobSchedulerBridge {
                         else -> return@runCatching
                     }
                     cancelMethod.invoke(delegate, *callArgs)
-                }.onFailure { RuntimeDiagnostics.log("JOB", "cancel host=${record.hostJobId} failed: ${it.javaClass.simpleName}") }
+                }
                 remove(record.hostJobId)
             }
             RuntimeDiagnostics.log("JOB", "cancelAll ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=${records.size}")
@@ -153,80 +143,53 @@ object RuntimeJobSchedulerBridge {
 
         private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
             method.invoke(delegate, *(args ?: emptyArray()))
-        } catch (e: InvocationTargetException) {
-            throw (e.targetException ?: e)
-        }
+        } catch (e: InvocationTargetException) { throw (e.targetException ?: e) }
     }
 
     private fun cloneAndPatchJob(original: JobInfo, hostId: Int, hostService: ComponentName): Result<JobInfo> = runCatching {
         val parcel = android.os.Parcel.obtain()
-        val clone = try {
-            original.writeToParcel(parcel, 0)
-            parcel.setDataPosition(0)
-            JobInfo.CREATOR.createFromParcel(parcel)
-        } finally { parcel.recycle() }
+        val clone = try { original.writeToParcel(parcel, 0); parcel.setDataPosition(0); JobInfo.CREATOR.createFromParcel(parcel) } finally { parcel.recycle() }
         val idField = findField(JobInfo::class.java, "jobId") ?: error("JobInfo.jobId غير متاح")
         val serviceField = findField(JobInfo::class.java, "service") ?: error("JobInfo.service غير متاح")
-        idField.isAccessible = true
-        serviceField.isAccessible = true
-        idField.setInt(clone, hostId)
-        serviceField.set(clone, hostService)
+        idField.isAccessible = true; serviceField.isAccessible = true
+        idField.setInt(clone, hostId); serviceField.set(clone, hostService)
         clone
     }
 
     private fun hostJobId(packageName: String, slot: Int, guestId: Int): Int {
-        var h = 17
-        h = 31 * h + packageName.hashCode()
-        h = 31 * h + slot
-        h = 31 * h + guestId
+        var h = 17; h = 31 * h + packageName.hashCode(); h = 31 * h + slot; h = 31 * h + guestId
         return h and 0x7fffffff
     }
 
-    private fun save(record: JobRecord) {
-        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("job.${record.hostJobId}", "${record.packageName}|${record.slot}|${record.serviceName}|${record.guestJobId}")
-            .apply()
+    private fun save(record: JobRecord) { appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("job.${record.hostJobId}", "${record.packageName}|${record.slot}|${record.serviceName}|${record.guestJobId}").apply() }
+    private fun remove(hostJobId: Int) { appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostJobId").apply() }
+    private fun recordsFor(packageName: String, slot: Int): List<JobRecord> = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).all.keys.mapNotNull { key ->
+        val id = key.removePrefix("job.").toIntOrNull() ?: return@mapNotNull null
+        lookup(id)?.takeIf { it.packageName == packageName && it.slot == slot }
     }
+    private fun nullFor(type: Class<*>): Any? = when (type) { Boolean::class.javaPrimitiveType -> false; Int::class.javaPrimitiveType -> 0; Long::class.javaPrimitiveType -> 0L; else -> null }
 
-    private fun remove(hostJobId: Int) {
-        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostJobId").apply()
-    }
-
-    private fun recordsFor(packageName: String, slot: Int): List<JobRecord> {
-        return appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).all.keys.mapNotNull { key ->
-            val id = key.removePrefix("job.").toIntOrNull() ?: return@mapNotNull null
-            lookup(id)?.takeIf { it.packageName == packageName && it.slot == slot }
-        }
-    }
-
-    private fun nullFor(type: Class<*>): Any? = when (type) {
-        Boolean::class.javaPrimitiveType -> false
-        Int::class.javaPrimitiveType -> 0
-        Long::class.javaPrimitiveType -> 0L
-        else -> null
-    }
-
-    private fun findField(type: Class<*>, name: String): java.lang.reflect.Field? {
-        var current: Class<*>? = type
-        while (current != null) {
-            runCatching { current.getDeclaredField(name) }.getOrNull()?.let { return it }
-            current = current.superclass
+    private fun findServiceField(instance: Any, hint: String): Pair<java.lang.reflect.Field, Any>? {
+        var c: Class<*>? = instance.javaClass
+        while (c != null) {
+            for (field in c.declaredFields) {
+                val value = runCatching { field.isAccessible = true; field.get(instance) }.getOrNull() ?: continue
+                val names = buildList {
+                    add(value.javaClass.name); add(field.type.name)
+                    value.javaClass.interfaces.forEach { add(it.name) }
+                    field.type.interfaces.forEach { add(it.name) }
+                }
+                if (names.any { it.contains(hint, ignoreCase = true) }) return field to value
+            }
+            c = c.superclass
         }
         return null
     }
 
-    private fun collectInterfaces(type: Class<*>): Array<Class<*>> {
-        val all = LinkedHashSet<Class<*>>()
-        var current: Class<*>? = type
-        while (current != null) {
-            all.addAll(current.interfaces)
-            current = current.superclass
-        }
-        return all.toTypedArray()
-    }
+    private fun findField(type: Class<*>, name: String): java.lang.reflect.Field? { var current:Class<*>?=type; while(current!=null){runCatching{current.getDeclaredField(name)}.getOrNull()?.let{return it};current=current.superclass};return null }
+    private fun collectInterfaces(type: Class<*>): Array<Class<*>> { val all=LinkedHashSet<Class<*>>();var current:Class<*>?=type;while(current!=null){all.addAll(current.interfaces);current=current.superclass};return all.toTypedArray() }
 }
 
-/** Host JobService dispatches system callbacks to the guest JobService mapped by RuntimeJobSchedulerBridge. */
 open class RuntimeJobService : JobService() {
     private data class Guest(val service: JobService, val session: RuntimeSession)
     private val running = ConcurrentHashMap<Int, Guest>()
@@ -235,43 +198,34 @@ open class RuntimeJobService : JobService() {
         val record = RuntimeJobSchedulerBridge.lookup(params.jobId) ?: return false
         val app = applicationContext as? MultiApplication ?: MultiApplication.current ?: return false
         val session = runCatching { app.engine.sessionFor(record.packageName, record.slot) }.getOrElse {
-            RuntimeDiagnostics.log("JOB", "session restore failed host=${params.jobId}: ${it.stackTraceToString()}")
-            return false
+            RuntimeDiagnostics.log("JOB", "session restore failed host=${params.jobId}: ${it.stackTraceToString()}"); return false
         }
         if (!session.runtimePackage.ownsService(record.serviceName)) return false
         val guest = running.getOrPut(params.jobId) { createGuest(session, record.serviceName, record.packageName, record.slot) }
-        return runCatching { RuntimeExecutionScope.withSession(session) { guest.service.onStartJob(params) } }
-            .onFailure { RuntimeDiagnostics.log("JOB", "onStartJob failed ${record.packageName}/${record.slot} ${record.serviceName}: ${it.stackTraceToString()}") }
-            .getOrDefault(false)
+        return runCatching { RuntimeExecutionScope.withSession(session) { guest.service.onStartJob(params) } }.getOrDefault(false)
     }
 
     override fun onStopJob(params: JobParameters): Boolean {
         val record = RuntimeJobSchedulerBridge.lookup(params.jobId) ?: return false
         val guest = running[params.jobId] ?: return false
-        return runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onStopJob(params) } }
-            .onFailure { RuntimeDiagnostics.log("JOB", "onStopJob failed ${record.packageName}/${record.slot}: ${it.stackTraceToString()}") }
-            .getOrDefault(false)
+        return runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onStopJob(params) } }.getOrDefault(false)
     }
 
     override fun onDestroy() {
         running.values.forEach { guest -> runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onDestroy() } } }
-        running.clear()
-        super.onDestroy()
+        running.clear(); super.onDestroy()
     }
 
-    private fun createGuest(session: RuntimeSession, serviceName: String, packageName: String, slot: Int): Guest {
-        return RuntimeExecutionScope.withSession(session) {
-            val clazz = session.classLoader.loadClass(serviceName)
-            require(JobService::class.java.isAssignableFrom(clazz)) { "JobService class غير صالح: $serviceName" }
-            val service = clazz.getDeclaredConstructor().newInstance() as JobService
-            val app = applicationContext as MultiApplication
-            val guestContext = RuntimeGuestContext(baseContext, session, app.engine.runtimeSlotDir(packageName, slot))
-            attachServiceFields(service, guestContext, session, serviceName)
-            service.onCreate()
-            service.onBind(Intent())
-            RuntimeDiagnostics.log("JOB", "created guest JobService $packageName/$slot $serviceName process=${if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName}")
-            Guest(service, session)
-        }
+    private fun createGuest(session: RuntimeSession, serviceName: String, packageName: String, slot: Int): Guest = RuntimeExecutionScope.withSession(session) {
+        val clazz = session.classLoader.loadClass(serviceName)
+        require(JobService::class.java.isAssignableFrom(clazz)) { "JobService class غير صالح: $serviceName" }
+        val service = clazz.getDeclaredConstructor().newInstance() as JobService
+        val app = applicationContext as MultiApplication
+        val guestContext = RuntimeGuestContext(baseContext, session, app.engine.runtimeSlotDir(packageName, slot))
+        attachServiceFields(service, guestContext, session, serviceName)
+        service.onCreate(); service.onBind(Intent())
+        RuntimeDiagnostics.log("JOB", "created guest JobService $packageName/$slot $serviceName process=${if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName}")
+        Guest(service, session)
     }
 
     private fun attachServiceFields(service: Service, guestContext: Context, session: RuntimeSession, serviceName: String) {
@@ -280,10 +234,7 @@ open class RuntimeJobService : JobService() {
         fun field(name: String) = serviceClass.getDeclaredField(name).apply { isAccessible = true }
         field("mApplication").set(service, session.guestApplication ?: application)
         field("mClassName").set(service, serviceName)
-        listOf("mThread", "mToken", "mActivityManager", "mStartCompatibility").forEach { name ->
-            runCatching { val f = field(name); f.set(service, f.get(this)) }
-                .onFailure { RuntimeDiagnostics.log("JOB", "attach field $name unavailable for $serviceName: ${it.javaClass.simpleName}") }
-        }
+        listOf("mThread", "mToken", "mActivityManager", "mStartCompatibility").forEach { name -> runCatching { val f=field(name); f.set(service, f.get(this)) } }
     }
 }
 
