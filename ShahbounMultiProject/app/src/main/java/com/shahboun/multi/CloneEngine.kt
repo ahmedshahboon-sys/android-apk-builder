@@ -9,6 +9,7 @@ interface CloneEngine {
     fun isAvailable(): Boolean
     fun initialize(context: Context): Result<Unit>
     fun createClone(packageName: String, slot: Int): Result<Unit>
+    fun updateClone(packageName: String, slot: Int): Result<Unit>
     fun launch(packageName: String, slot: Int): Result<Unit>
     fun remove(packageName: String, slot: Int): Result<Unit>
     fun clearData(packageName: String, slot: Int): Result<Unit>
@@ -61,6 +62,52 @@ class ShahbounCloneEngine : CloneEngine {
         }
     }
 
+    override fun updateClone(packageName: String, slot: Int): Result<Unit> = runCatching {
+        requireInitialized()
+        require(packageName.isNotBlank()) { "Package name is empty" }
+        require(slot >= 0) { "Invalid clone slot" }
+        appContext.packageManager.getApplicationInfo(packageName, 0)
+
+        val dir = runtimeSlotDir(packageName, slot)
+        require(dir.isDirectory) { "Clone does not exist" }
+        RuntimeRegistry.remove(packageName, slot)
+
+        val apkDir = File(dir, "apk")
+        val runtimeMeta = File(dir, "runtime.meta")
+        require(apkDir.isDirectory && runtimeMeta.isFile) { "Clone runtime snapshot is incomplete" }
+
+        val backupApk = File(dir, "apk.update-backup")
+        val backupMeta = File(dir, "runtime.meta.update-backup")
+        if (backupApk.exists()) backupApk.deleteRecursively()
+        if (backupMeta.exists()) backupMeta.delete()
+
+        require(apkDir.renameTo(backupApk)) { "Unable to prepare APK update backup" }
+        require(runtimeMeta.renameTo(backupMeta)) {
+            backupApk.renameTo(apkDir)
+            "Unable to prepare metadata update backup"
+        }
+
+        try {
+            val updated = installer.snapshot(packageName, slot, dir)
+            installer.read(packageName, slot, dir)
+            backupApk.deleteRecursively()
+            backupMeta.delete()
+            listOf("code_cache", "native").forEach { name ->
+                val child = File(dir, name)
+                if (child.exists()) child.deleteRecursively()
+                require(child.mkdirs()) { "Unable to reset $name after update" }
+            }
+            RuntimeDiagnostics.log("UPDATE", "clone updated $packageName/$slot version=${updated.versionCode}")
+        } catch (t: Throwable) {
+            File(dir, "apk").deleteRecursively()
+            File(dir, "runtime.meta").delete()
+            require(backupApk.renameTo(apkDir)) { "Update failed and APK backup could not be restored" }
+            require(backupMeta.renameTo(runtimeMeta)) { "Update failed and metadata backup could not be restored" }
+            RuntimeDiagnostics.log("UPDATE", "clone update rolled back $packageName/$slot: ${t.stackTraceToString()}")
+            throw t
+        }
+    }
+
     override fun launch(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized()
         (appContext as? MultiApplication)?.requireRuntimeBridge()
@@ -73,10 +120,6 @@ class ShahbounCloneEngine : CloneEngine {
         RuntimeRegistry.put(session)
 
         try {
-            // Heavy apps such as WhatsApp initialize process-wide state from their
-            // Application before the launcher Activity constructor runs. Android
-            // normally guarantees this ordering for installed packages, so the
-            // Shahboun runtime must reproduce the same lifecycle explicitly.
             RuntimeDiagnostics.log("RUNTIME", "initializing guest Application $packageName/$slot")
             session.ensureGuestApplication(appContext, dir)
             RuntimeDiagnostics.log("RUNTIME", "guest Application ready $packageName/$slot")
