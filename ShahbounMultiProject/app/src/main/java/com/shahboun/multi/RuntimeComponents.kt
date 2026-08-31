@@ -31,19 +31,21 @@ class RuntimeComponentHost(
         session.runtimePackage.providers.forEach { snapshot ->
             val name = snapshot.name
             runCatching {
-                val clazz = session.classLoader.loadClass(name)
-                require(android.content.ContentProvider::class.java.isAssignableFrom(clazz)) { "Provider class غير صالح: $name" }
-                val provider = clazz.getDeclaredConstructor().newInstance() as android.content.ContentProvider
-                val providerInfo = ProviderInfo().apply {
-                    this.name = name
-                    packageName = session.runtimePackage.packageName
-                    authority = snapshot.authority
-                    exported = snapshot.exported
-                    grantUriPermissions = snapshot.grantUriPermissions
-                    applicationInfo = guestContext.applicationInfo
+                RuntimeExecutionScope.withSession(session) {
+                    val clazz = session.classLoader.loadClass(name)
+                    require(android.content.ContentProvider::class.java.isAssignableFrom(clazz)) { "Provider class غير صالح: $name" }
+                    val provider = clazz.getDeclaredConstructor().newInstance() as android.content.ContentProvider
+                    val providerInfo = ProviderInfo().apply {
+                        this.name = name
+                        packageName = session.runtimePackage.packageName
+                        authority = snapshot.authority
+                        exported = snapshot.exported
+                        grantUriPermissions = snapshot.grantUriPermissions
+                        applicationInfo = guestContext.applicationInfo
+                    }
+                    provider.attachInfo(guestContext, providerInfo)
+                    providers.add(provider)
                 }
-                provider.attachInfo(guestContext, providerInfo)
-                providers.add(provider)
                 RuntimeDiagnostics.log("PROVIDER", "initialized snapshot ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
             }.onFailure {
                 RuntimeDiagnostics.log("PROVIDER", "failed $name: ${it.stackTraceToString()}")
@@ -58,11 +60,13 @@ class RuntimeComponentHost(
         if (component.packageName != pkg.packageName || !pkg.ownsReceiver(component.className)) return false
         val name = component.className
         return runCatching {
-            val clazz = session.classLoader.loadClass(name)
-            require(BroadcastReceiver::class.java.isAssignableFrom(clazz)) { "Receiver class غير صالح: $name" }
-            val receiver = clazz.getDeclaredConstructor().newInstance() as BroadcastReceiver
-            val guestIntent = Intent(intent).setComponent(ComponentName(pkg.packageName, name))
-            receiver.onReceive(guestContext, guestIntent)
+            RuntimeExecutionScope.withSession(session) {
+                val clazz = session.classLoader.loadClass(name)
+                require(BroadcastReceiver::class.java.isAssignableFrom(clazz)) { "Receiver class غير صالح: $name" }
+                val receiver = clazz.getDeclaredConstructor().newInstance() as BroadcastReceiver
+                val guestIntent = Intent(intent).setComponent(ComponentName(pkg.packageName, name))
+                receiver.onReceive(guestContext, guestIntent)
+            }
             RuntimeDiagnostics.log("RECEIVER", "delivered ${pkg.packageName}/${pkg.slot} $name")
             true
         }.getOrElse {
@@ -88,9 +92,6 @@ class RuntimeComponentHost(
             return component.className.takeIf(pkg::ownsService)
         }
         if (intent.`package` != null && intent.`package` != pkg.packageName) return null
-
-        // Intent filters are resolved by Android while the original app is still installed.
-        // Once a concrete target is known, all lifecycle execution remains inside our runtime.
         val probe = Intent(intent).apply { `package` = pkg.packageName }
         val resolved = if (Build.VERSION.SDK_INT >= 33) {
             hostContext.packageManager.resolveService(probe, PackageManager.ResolveInfoFlags.of(0))
@@ -124,8 +125,9 @@ class RuntimeStubService : Service() {
         val guest = running.getOrPut(key) {
             createGuestService(request.session, request.serviceName, request.packageName, request.slot)
         }
-        return runCatching { guest.service.onStartCommand(request.original, flags, startId) }
-            .onFailure { RuntimeDiagnostics.log("SERVICE", "onStartCommand failed $key: ${it.stackTraceToString()}") }
+        return runCatching {
+            RuntimeExecutionScope.withSession(guest.session) { guest.service.onStartCommand(request.original, flags, startId) }
+        }.onFailure { RuntimeDiagnostics.log("SERVICE", "onStartCommand failed $key: ${it.stackTraceToString()}") }
             .getOrDefault(START_NOT_STICKY)
     }
 
@@ -136,8 +138,10 @@ class RuntimeStubService : Service() {
             createGuestService(request.session, request.serviceName, request.packageName, request.slot)
         }
         return runCatching {
-            guest.service.onBind(request.original).also {
-                RuntimeDiagnostics.log("SERVICE", "bound ${request.packageName}/${request.slot} ${request.serviceName} binder=${if (it == null) "null" else "present"}")
+            RuntimeExecutionScope.withSession(guest.session) {
+                guest.service.onBind(request.original).also {
+                    RuntimeDiagnostics.log("SERVICE", "bound ${request.packageName}/${request.slot} ${request.serviceName} binder=${if (it == null) "null" else "present"}")
+                }
             }
         }.onFailure {
             RuntimeDiagnostics.log("SERVICE", "onBind failed $key: ${it.stackTraceToString()}")
@@ -148,8 +152,9 @@ class RuntimeStubService : Service() {
         val request = parseRequest(intent) ?: return super.onUnbind(intent)
         val key = key(request.packageName, request.slot, request.serviceName)
         val guest = running[key] ?: return false
-        return runCatching { guest.service.onUnbind(request.original) }
-            .onFailure { RuntimeDiagnostics.log("SERVICE", "onUnbind failed $key: ${it.stackTraceToString()}") }
+        return runCatching {
+            RuntimeExecutionScope.withSession(guest.session) { guest.service.onUnbind(request.original) }
+        }.onFailure { RuntimeDiagnostics.log("SERVICE", "onUnbind failed $key: ${it.stackTraceToString()}") }
             .getOrDefault(false)
     }
 
@@ -157,13 +162,13 @@ class RuntimeStubService : Service() {
         val request = parseRequest(intent) ?: return
         val key = key(request.packageName, request.slot, request.serviceName)
         running[key]?.let { guest ->
-            runCatching { guest.service.onRebind(request.original) }
+            runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onRebind(request.original) } }
                 .onFailure { RuntimeDiagnostics.log("SERVICE", "onRebind failed $key: ${it.stackTraceToString()}") }
         }
     }
 
     override fun onDestroy() {
-        running.values.forEach { runCatching { it.service.onDestroy() } }
+        running.values.forEach { guest -> runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onDestroy() } } }
         running.clear()
         super.onDestroy()
     }
@@ -188,18 +193,20 @@ class RuntimeStubService : Service() {
     }
 
     private fun createGuestService(session: RuntimeSession, serviceName: String, packageName: String, slot: Int): GuestService {
-        val clazz = session.classLoader.loadClass(serviceName)
-        require(Service::class.java.isAssignableFrom(clazz)) { "Service class غير صالح: $serviceName" }
-        val service = clazz.getDeclaredConstructor().newInstance() as Service
-        val hostApp = applicationContext as MultiApplication
-        val guestContext = RuntimeGuestContext(baseContext, session, hostApp.engine.runtimeSlotDir(packageName, slot))
-        val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
-        baseField.set(service, guestContext)
-        val applicationField = Service::class.java.getDeclaredField("mApplication").apply { isAccessible = true }
-        applicationField.set(service, session.guestApplication ?: application)
-        service.onCreate()
-        RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName")
-        return GuestService(service, session)
+        return RuntimeExecutionScope.withSession(session) {
+            val clazz = session.classLoader.loadClass(serviceName)
+            require(Service::class.java.isAssignableFrom(clazz)) { "Service class غير صالح: $serviceName" }
+            val service = clazz.getDeclaredConstructor().newInstance() as Service
+            val hostApp = applicationContext as MultiApplication
+            val guestContext = RuntimeGuestContext(baseContext, session, hostApp.engine.runtimeSlotDir(packageName, slot))
+            val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
+            baseField.set(service, guestContext)
+            val applicationField = Service::class.java.getDeclaredField("mApplication").apply { isAccessible = true }
+            applicationField.set(service, session.guestApplication ?: application)
+            service.onCreate()
+            RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName")
+            GuestService(service, session)
+        }
     }
 
     private fun key(packageName: String, slot: Int, serviceName: String) = "$packageName#$slot#$serviceName"
