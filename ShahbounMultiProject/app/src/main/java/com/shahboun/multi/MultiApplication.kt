@@ -11,6 +11,7 @@ class MultiApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        current = this
         RuntimeDiagnostics.initialize(this)
         RuntimeDiagnostics.installCrashHandler()
         RuntimeDiagnostics.log("APP", "MultiApplication onCreate")
@@ -49,5 +50,10 @@ class MultiApplication : Application() {
         check(runtimeBridgeReady) {
             "جسر تشغيل النسخ غير متاح على هذا الجهاز. افتح «التشخيص» وانسخ السجل."
         }
+    }
+
+    companion object {
+        @Volatile var current: MultiApplication? = null
+            private set
     }
 }
