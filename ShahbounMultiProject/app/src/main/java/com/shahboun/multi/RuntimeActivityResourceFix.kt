@@ -57,8 +57,11 @@ object RuntimeActivityResourceFix {
     private fun resolveActivityTheme(activity: Activity, session: RuntimeSession): Int {
         val pkg = session.runtimePackage
         val name = activity.javaClass.name
+        val snapshotted = pkg.activityTheme(name)
+        if (snapshotted != 0) return snapshotted
         if (name == pkg.launchActivity && pkg.launchActivityTheme != 0) return pkg.launchActivityTheme
 
+        // Backward compatibility for format <= 7 snapshots created before per-activity themes.
         val liveTheme = runCatching {
             val pm = MultiApplication.current?.packageManager ?: activity.packageManager
             val component = ComponentName(pkg.packageName, name)
