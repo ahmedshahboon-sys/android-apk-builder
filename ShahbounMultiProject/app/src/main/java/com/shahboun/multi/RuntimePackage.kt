@@ -25,6 +25,7 @@ data class RuntimePackage(
     val slot: Int,
     val baseApk: File,
     val splitApks: List<File>,
+    val splitNames: List<String>,
     val launchActivity: String,
     val applicationClass: String?,
     val versionCode: Long,
@@ -63,7 +64,13 @@ class RuntimePackageInstaller(private val context: Context) {
         }
         val base = File(apkDir, "base.apk")
         copyVerified(File(appInfo.sourceDir), base)
-        val splits = appInfo.splitSourceDirs.orEmpty().mapIndexed { index, source ->
+
+        val originalSplitPaths = appInfo.splitSourceDirs.orEmpty()
+        val originalSplitNames = appInfo.splitNames.orEmpty()
+        val normalizedSplitNames = originalSplitPaths.indices.map { index ->
+            originalSplitNames.getOrNull(index)?.takeIf { it.isNotBlank() } ?: "split_$index"
+        }
+        val splits = originalSplitPaths.mapIndexed { index, source ->
             File(apkDir, "split-$index.apk").also { copyVerified(File(source), it) }
         }
 
@@ -97,7 +104,7 @@ class RuntimePackageInstaller(private val context: Context) {
         val digest = sha256(base)
         val splitDigests = splits.map(::sha256)
         File(slotDir, "runtime.meta").writeText(buildString {
-            appendLine("format=8")
+            appendLine("format=9")
             appendLine("package=$packageName")
             appendLine("slot=$slot")
             appendLine("launchActivity=$launchActivity")
@@ -106,6 +113,7 @@ class RuntimePackageInstaller(private val context: Context) {
             appendLine("sha256=$digest")
             appendLine("splitCount=${splits.size}")
             splitDigests.forEachIndexed { index, hash -> appendLine("splitSha256.$index=$hash") }
+            normalizedSplitNames.forEachIndexed { index, name -> appendLine("splitName.$index=$name") }
             appendLine("appTheme=${appInfo.theme}")
             appendLine("launchActivityTheme=$launchActivityTheme")
             appendLine("targetSdk=${appInfo.targetSdkVersion}")
@@ -118,7 +126,7 @@ class RuntimePackageInstaller(private val context: Context) {
         })
 
         return RuntimePackage(
-            packageName, slot, base, splits, launchActivity, applicationClass,
+            packageName, slot, base, splits, normalizedSplitNames, launchActivity, applicationClass,
             versionCode, digest, splitDigests, appInfo.theme, launchActivityTheme,
             appInfo.targetSdkVersion, if (android.os.Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1,
             appInfo.flags, providers, activities, services, receivers
@@ -136,7 +144,7 @@ class RuntimePackageInstaller(private val context: Context) {
         val apkDir = File(slotDir, "apk")
         val base = File(apkDir, "base.apk")
         require(base.isFile) { "APK النسخة مفقود" }
-        val splits = apkDir.listFiles().orEmpty().filter { it.name.startsWith("split-") && it.extension == "apk" }.sortedBy { it.name }
+        val splits = apkDir.listFiles().orEmpty().filter { it.name.startsWith("split-") && it.extension == "apk" }.sortedBy { it.name.substringAfter("split-").substringBefore('.').toIntOrNull() ?: Int.MAX_VALUE }
         val expected = values["sha256"] ?: error("بصمة APK مفقودة")
         require(sha256(base) == expected) { "فشل تحقق سلامة APK الخاص بالنسخة" }
         val expectedSplitCount = values["splitCount"]?.toIntOrNull() ?: 0
@@ -147,6 +155,7 @@ class RuntimePackageInstaller(private val context: Context) {
             if (expectedSplit != null) require(actual == expectedSplit) { "فشل تحقق سلامة Split APK رقم ${index + 1}" }
             actual
         }
+        val splitNames = (0 until expectedSplitCount).map { index -> values["splitName.$index"] ?: "split_$index" }
         val providers = readProviders(values)
         val activities = readComponents(values, "activity")
         val services = readComponents(values, "service")
@@ -156,6 +165,7 @@ class RuntimePackageInstaller(private val context: Context) {
             slot = slot,
             baseApk = base,
             splitApks = splits,
+            splitNames = splitNames,
             launchActivity = values["launchActivity"] ?: error("شاشة التشغيل غير مسجلة"),
             applicationClass = values["applicationClass"]?.takeIf { it.isNotBlank() },
             versionCode = values["versionCode"]?.toLongOrNull() ?: 0L,
@@ -188,7 +198,7 @@ class RuntimePackageInstaller(private val context: Context) {
         items.forEachIndexed { index, component ->
             appendLine("$prefix.$index.name=${component.name}")
             appendLine("$prefix.$index.exported=${component.exported}")
-            if (component.theme != 0) appendLine("$prefix.$index.theme=${component.theme}")
+            if (prefix == "activity") appendLine("$prefix.$index.theme=${component.theme}")
         }
     }
 
@@ -212,7 +222,7 @@ class RuntimePackageInstaller(private val context: Context) {
             RuntimeComponentInfo(
                 name = name,
                 exported = values["$prefix.$index.exported"].toBoolean(),
-                theme = values["$prefix.$index.theme"]?.toIntOrNull() ?: 0
+                theme = if (prefix == "activity") values["$prefix.$index.theme"]?.toIntOrNull() ?: 0 else 0
             )
         }
     }
