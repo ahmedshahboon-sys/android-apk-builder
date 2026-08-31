@@ -53,9 +53,13 @@ class RuntimePackageInstaller(private val context: Context) {
         val pm = context.packageManager
         val appInfo = pm.getApplicationInfo(packageName, 0)
         val launch = pm.getLaunchIntentForPackage(packageName) ?: error("التطبيق لا يملك شاشة تشغيل رئيسية")
-        val launchActivity = launch.component?.className ?: error("تعذر تحديد شاشة تشغيل التطبيق")
+        val launcherComponent = launch.component ?: error("تعذر تحديد شاشة تشغيل التطبيق")
+        val activityInfo = runCatching { pm.getActivityInfo(launcherComponent, 0) }.getOrNull()
+        // Launch intents may point to an activity-alias. Instantiate the target activity class, not the alias name.
+        val launchActivity = activityInfo?.targetActivity?.takeIf { it.isNotBlank() }
+            ?: activityInfo?.name?.takeIf { it.isNotBlank() }
+            ?: launcherComponent.className
         val applicationClass = appInfo.className?.takeIf { it.isNotBlank() }
-        val activityInfo = runCatching { pm.getActivityInfo(launch.component!!, 0) }.getOrNull()
         val launchActivityTheme = activityInfo?.theme ?: 0
 
         val apkDir = File(slotDir, "apk").apply {
@@ -104,7 +108,7 @@ class RuntimePackageInstaller(private val context: Context) {
         val digest = sha256(base)
         val splitDigests = splits.map(::sha256)
         File(slotDir, "runtime.meta").writeText(buildString {
-            appendLine("format=9")
+            appendLine("format=10")
             appendLine("package=$packageName")
             appendLine("slot=$slot")
             appendLine("launchActivity=$launchActivity")
