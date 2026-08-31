@@ -89,16 +89,13 @@ class RuntimeContentResolverBridge(
             scoped(uri) { it.update(uri, values, extras) } ?: system.update(uri, values, extras)
 
         override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
-            // ContentProvider.call() does not carry a Uri. Android's resolver overload with
-            // authority is handled before reaching here, so a provider-specific call should
-            // use call(authority,...). Keep this fallback for wrapped-provider compatibility.
             return super.call(method, arg, extras)
         }
 
         override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? =
             scoped(uri) { it.openFile(uri, mode) } ?: system.openFileDescriptor(uri, mode)
 
-        private inline fun <T> scoped(uri: Uri, block: (ContentProvider) -> T): T? {
+        private fun <T> scoped(uri: Uri, block: (ContentProvider) -> T): T? {
             val provider = local(uri) ?: return null
             RuntimeDiagnostics.log(
                 "CONTENT",
