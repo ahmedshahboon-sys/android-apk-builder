@@ -23,7 +23,7 @@ internal object RuntimeActivityBindings {
 
 class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentation() {
     override fun newActivity(cl: ClassLoader?, className: String?, intent: Intent?): Activity {
-        if (className == RuntimeStubActivity::class.java.name && intent != null) {
+        if (RuntimeProcessPool.isActivityStubName(className) && intent != null) {
             val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE)
             val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
             val requested = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY)
@@ -32,7 +32,7 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
                 val session = app.engine.sessionFor(packageName, slot)
                 require(session.runtimePackage.ownsActivity(requested)) { "Activity غير مسجلة في Snapshot النسخة" }
                 val resolved = session.runtimePackage.resolveActivity(requested)
-                RuntimeDiagnostics.log("RUNTIME", "newActivity requested=$requested resolved=$resolved package=$packageName/$slot")
+                RuntimeDiagnostics.log("RUNTIME", "newActivity stub=$className requested=$requested resolved=$resolved package=$packageName/$slot")
                 return RuntimeExecutionScope.withSession(session) { base.newActivity(session.classLoader, resolved, intent) }
             }
         }
