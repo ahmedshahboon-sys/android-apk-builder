@@ -16,7 +16,8 @@ class MultiApplication : Application() {
         current = this
         RuntimeDiagnostics.initialize(this)
         RuntimeDiagnostics.installCrashHandler()
-        RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=${currentProcessName()}")
+        val processName = currentProcessName()
+        RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=$processName")
         installWebViewIsolation()
         SystemBarsFitter.install(this)
 
@@ -25,6 +26,8 @@ class MultiApplication : Application() {
             .onSuccess { RuntimeDiagnostics.log("ENGINE", "initialized: ${engine.name}") }
             .onFailure { RuntimeDiagnostics.log("ENGINE", "initialize failed: ${it.stackTraceToString()}") }
             .getOrThrow()
+
+        if (processName == packageName) RuntimeUpdateCenter.checkAndNotify(this, engine)
 
         RuntimePackageManagerBridge.install(this)
             .onSuccess { RuntimeDiagnostics.log("PM", "package manager bridge ready") }
