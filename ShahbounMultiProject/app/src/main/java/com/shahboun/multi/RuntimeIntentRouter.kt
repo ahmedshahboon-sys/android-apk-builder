@@ -13,10 +13,10 @@ object RuntimeIntentRouter {
         if (original.hasExtra(EXTRA_RUNTIME_PACKAGE)) return original
         val pkg = session.runtimePackage
         val target = resolveGuestActivity(context, pkg, original) ?: return original
-
         val hostPackage = BuildConfig.APPLICATION_ID
+        val stub = RuntimeProcessPool.activityStub(pkg.slot)
         return Intent(original).apply {
-            component = ComponentName(hostPackage, RuntimeStubActivity::class.java.name)
+            component = ComponentName(hostPackage, stub.name)
             `package` = hostPackage
             putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
             putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
@@ -28,7 +28,7 @@ object RuntimeIntentRouter {
     fun launchIntent(context: Context, session: RuntimeSession): Intent {
         val pkg = session.runtimePackage
         val original = Intent(Intent.ACTION_MAIN).apply {
-            component = ComponentName(pkg.packageName, pkg.launchActivity)
+            component = ComponentName(pkg.packageName, pkg.launchAlias ?: pkg.launchActivity)
             addCategory(Intent.CATEGORY_LAUNCHER)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
@@ -46,9 +46,6 @@ object RuntimeIntentRouter {
             return component.className.takeIf(pkg::ownsActivity)
         }
         if (intent.`package` != null && intent.`package` != pkg.packageName) return null
-
-        // Android still resolves implicit intent filters while the source app is installed.
-        // The concrete component must also exist in our immutable clone snapshot before use.
         val probe = Intent(intent).apply { `package` = pkg.packageName }
         val info = if (Build.VERSION.SDK_INT >= 33) {
             context.packageManager.resolveActivity(probe, android.content.pm.PackageManager.ResolveInfoFlags.of(0))
