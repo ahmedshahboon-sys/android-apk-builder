@@ -47,12 +47,22 @@
         <service android:name=".RuntimeStubService2" android:process=":clone2" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
         <service android:name=".RuntimeStubService3" android:process=":clone3" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
         <service android:name=".RuntimeStubService4" android:process=":clone4" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService5" android:process=":clone5" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService6" android:process=":clone6" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService7" android:process=":clone7" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService8" android:process=":clone8" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService9" android:process=":clone9" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
 
         <service android:name=".RuntimeJobService0" android:process=":clone0" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
         <service android:name=".RuntimeJobService1" android:process=":clone1" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
         <service android:name=".RuntimeJobService2" android:process=":clone2" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
         <service android:name=".RuntimeJobService3" android:process=":clone3" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
         <service android:name=".RuntimeJobService4" android:process=":clone4" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService5" android:process=":clone5" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService6" android:process=":clone6" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService7" android:process=":clone7" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService8" android:process=":clone8" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService9" android:process=":clone9" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
 
         <receiver android:name=".RuntimeSystemReceiver" android:exported="true">
             <intent-filter>
@@ -68,6 +78,11 @@
         <receiver android:name=".RuntimeStubReceiver2" android:process=":clone2" android:exported="false" />
         <receiver android:name=".RuntimeStubReceiver3" android:process=":clone3" android:exported="false" />
         <receiver android:name=".RuntimeStubReceiver4" android:process=":clone4" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver5" android:process=":clone5" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver6" android:process=":clone6" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver7" android:process=":clone7" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver8" android:process=":clone8" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver9" android:process=":clone9" android:exported="false" />
 
         <activity android:name=".RuntimeStubActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
         <activity android:name=".RuntimeStubActivity0" android:process=":clone0" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
@@ -75,6 +90,11 @@
         <activity android:name=".RuntimeStubActivity2" android:process=":clone2" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
         <activity android:name=".RuntimeStubActivity3" android:process=":clone3" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
         <activity android:name=".RuntimeStubActivity4" android:process=":clone4" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity5" android:process=":clone5" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity6" android:process=":clone6" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity7" android:process=":clone7" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity8" android:process=":clone8" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity9" android:process=":clone9" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
 
         <activity android:name=".DebugActivity" android:enabled="${debugActivityEnabled}" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
