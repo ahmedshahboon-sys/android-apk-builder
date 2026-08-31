@@ -13,7 +13,6 @@ internal const val EXTRA_RUNTIME_PACKAGE = "shahboun.runtime.package"
 internal const val EXTRA_RUNTIME_SLOT = "shahboun.runtime.slot"
 internal const val EXTRA_RUNTIME_ACTIVITY = "shahboun.runtime.activity"
 
-/** Keeps runtime ownership without leaking Shahboun extras into the guest's original Intent. */
 internal object RuntimeActivityBindings {
     private data class Key(val packageName: String, val slot: Int)
     private val bindings = Collections.synchronizedMap(WeakHashMap<Activity, Key>())
@@ -33,7 +32,6 @@ internal object RuntimeActivityBindings {
     }
 }
 
-/** Own bridge between Android's Activity launch path and a Shahboun RuntimeSession. */
 class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentation() {
     override fun newActivity(cl: ClassLoader?, className: String?, intent: Intent?): Activity {
         if (className == RuntimeStubActivity::class.java.name && intent != null) {
@@ -42,7 +40,9 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
             val guestActivity = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY)
             if (!packageName.isNullOrBlank() && slot >= 0 && !guestActivity.isNullOrBlank()) {
                 val session = RuntimeRegistry.get(packageName, slot)
-                return base.newActivity(session.classLoader, guestActivity, intent)
+                return RuntimeExecutionScope.withSession(session) {
+                    base.newActivity(session.classLoader, guestActivity, intent)
+                }
             }
         }
         return base.newActivity(cl, className, intent)
@@ -50,23 +50,23 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
 
     override fun callActivityOnCreate(activity: Activity, icicle: Bundle?) {
         RuntimeGuestContext.attachIfNeeded(activity)
-        base.callActivityOnCreate(activity, icicle)
+        scoped(activity) { base.callActivityOnCreate(activity, icicle) }
     }
 
-    override fun callActivityOnStart(activity: Activity) = base.callActivityOnStart(activity)
-    override fun callActivityOnResume(activity: Activity) = base.callActivityOnResume(activity)
-    override fun callActivityOnPause(activity: Activity) = base.callActivityOnPause(activity)
-    override fun callActivityOnStop(activity: Activity) = base.callActivityOnStop(activity)
+    override fun callActivityOnStart(activity: Activity) = scoped(activity) { base.callActivityOnStart(activity) }
+    override fun callActivityOnResume(activity: Activity) = scoped(activity) { base.callActivityOnResume(activity) }
+    override fun callActivityOnPause(activity: Activity) = scoped(activity) { base.callActivityOnPause(activity) }
+    override fun callActivityOnStop(activity: Activity) = scoped(activity) { base.callActivityOnStop(activity) }
     override fun callActivityOnDestroy(activity: Activity) {
-        RuntimeActivityBindings.unbind(activity)
-        base.callActivityOnDestroy(activity)
+        val session = RuntimeActivityBindings.sessionFor(activity)
+        try {
+            if (session != null) RuntimeExecutionScope.withSession(session) { base.callActivityOnDestroy(activity) }
+            else base.callActivityOnDestroy(activity)
+        } finally {
+            RuntimeActivityBindings.unbind(activity)
+        }
     }
 
-    /**
-     * Android keeps Instrumentation.execStartActivity out of the public SDK stubs.
-     * Android 16 can pass a null activity token here when ContextImpl starts the first
-     * runtime activity, so platform-owned arguments stay nullable at this bridge.
-     */
     @Suppress("unused")
     fun execStartActivity(
         who: Context?,
@@ -77,19 +77,25 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
         requestCode: Int,
         options: Bundle?
     ): ActivityResult? {
+        val session = target?.let(RuntimeActivityBindings::sessionFor)
         val routed = if (target != null) routeForGuest(target, intent) else intent
         RuntimeDiagnostics.log(
             "RUNTIME",
             "execStartActivity target=${target?.javaClass?.name ?: "null"} token=${if (token == null) "null" else "present"} routed=${routed.component?.flattenToShortString() ?: routed.action}"
         )
-        return HiddenInstrumentationDispatch.execStartActivity(
-            base, who, contextThread, token, target, routed, requestCode, options
-        )
+        return if (session != null) {
+            RuntimeExecutionScope.withSession(session) {
+                HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options)
+            }
+        } else HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options)
+    }
+
+    private inline fun <T> scoped(activity: Activity, block: () -> T): T {
+        val session = RuntimeActivityBindings.sessionFor(activity)
+        return if (session != null) RuntimeExecutionScope.withSession(session, block) else block()
     }
 
     private fun routeForGuest(activity: Activity, intent: Intent): Intent {
-        // Do not depend on activity.intent here. attachIfNeeded intentionally restores the
-        // guest's original Intent, so runtime metadata is held out-of-band in a weak binding.
         val session = RuntimeActivityBindings.sessionFor(activity) ?: return intent
         return RuntimeIntentRouter.wrap(activity, session, intent)
     }
@@ -120,9 +126,7 @@ private object HiddenInstrumentationDispatch {
         options: Bundle?
     ): Instrumentation.ActivityResult? {
         @Suppress("UNCHECKED_CAST")
-        return method.invoke(
-            instrumentation, who, contextThread, token, target, intent, requestCode, options
-        ) as? Instrumentation.ActivityResult
+        return method.invoke(instrumentation, who, contextThread, token, target, intent, requestCode, options) as? Instrumentation.ActivityResult
     }
 }
 
