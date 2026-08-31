@@ -6,6 +6,15 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -13,6 +22,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
@@ -21,20 +31,22 @@
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
     <application android:name=".MultiApplication" android:allowBackup="true" android:label="مكرّر التطبيقات" android:icon="@drawable/ic_launcher_mokarrer" android:roundIcon="@drawable/ic_launcher_mokarrer" android:theme="@style/Theme.ShahbounMulti">
-        <service android:name=".RuntimeStubService" android:exported="false" android:stopWithTask="false" />
-        <service android:name=".RuntimeStubService0" android:process=":clone0" android:exported="false" android:stopWithTask="false" />
-        <service android:name=".RuntimeStubService1" android:process=":clone1" android:exported="false" android:stopWithTask="false" />
-        <service android:name=".RuntimeStubService2" android:process=":clone2" android:exported="false" android:stopWithTask="false" />
-        <service android:name=".RuntimeStubService3" android:process=":clone3" android:exported="false" android:stopWithTask="false" />
-        <service android:name=".RuntimeStubService4" android:process=":clone4" android:exported="false" android:stopWithTask="false" />
+        <service android:name=".RuntimeStubService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService0" android:process=":clone0" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService1" android:process=":clone1" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService2" android:process=":clone2" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService3" android:process=":clone3" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
+        <service android:name=".RuntimeStubService4" android:process=":clone4" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
 
         <receiver android:name=".RuntimeStubReceiver" android:exported="false" />
         <receiver android:name=".RuntimeStubReceiver0" android:process=":clone0" android:exported="false" />
