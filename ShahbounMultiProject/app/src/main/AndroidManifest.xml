@@ -48,6 +48,12 @@
         <service android:name=".RuntimeStubService3" android:process=":clone3" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
         <service android:name=".RuntimeStubService4" android:process=":clone4" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="dataSync|mediaPlayback|phoneCall|location|connectedDevice|mediaProjection|camera|microphone|remoteMessaging" />
 
+        <service android:name=".RuntimeJobService0" android:process=":clone0" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService1" android:process=":clone1" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService2" android:process=":clone2" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService3" android:process=":clone3" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <service android:name=".RuntimeJobService4" android:process=":clone4" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+
         <receiver android:name=".RuntimeStubReceiver" android:exported="false" />
         <receiver android:name=".RuntimeStubReceiver0" android:process=":clone0" android:exported="false" />
         <receiver android:name=".RuntimeStubReceiver1" android:process=":clone1" android:exported="false" />
