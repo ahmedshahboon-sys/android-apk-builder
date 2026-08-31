@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 internal const val EXTRA_RUNTIME_SERVICE = "shahboun.runtime.service"
 internal const val EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT = "shahboun.runtime.original_service_intent"
+internal const val ACTION_RUNTIME_STOP_CLONE = "com.shahboun.multi.runtime.STOP_CLONE"
 
 class RuntimeComponentHost(
     private val hostContext: Context,
@@ -119,12 +120,31 @@ open class RuntimeStubService : Service() {
     private val running = ConcurrentHashMap<String, GuestService>()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_RUNTIME_STOP_CLONE) {
+            val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return START_NOT_STICKY
+            val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
+            if (slot >= 0) stopCloneServices(packageName, slot)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         val request = parseRequest(intent) ?: return START_NOT_STICKY
         val key = key(request.packageName, request.slot, request.serviceName)
         val guest = running.getOrPut(key) { createGuestService(request.session, request.serviceName, request.packageName, request.slot) }
         return runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onStartCommand(request.original, flags, startId) } }
             .onFailure { RuntimeDiagnostics.log("SERVICE", "onStartCommand failed $key: ${it.stackTraceToString()}") }
             .getOrDefault(START_NOT_STICKY)
+    }
+
+    private fun stopCloneServices(packageName: String, slot: Int) {
+        val prefix = "$packageName#$slot#"
+        val entries = running.entries.filter { it.key.startsWith(prefix) }
+        entries.forEach { entry ->
+            if (running.remove(entry.key, entry.value)) {
+                runCatching { RuntimeExecutionScope.withSession(entry.value.session) { entry.value.service.onDestroy() } }
+                    .onFailure { RuntimeDiagnostics.log("SERVICE", "stop failed ${entry.key}: ${it.stackTraceToString()}") }
+            }
+        }
+        RuntimeDiagnostics.log("SERVICE", "stopped clone services $packageName/$slot count=${entries.size}")
     }
 
     override fun onBind(intent: Intent?): IBinder? {
