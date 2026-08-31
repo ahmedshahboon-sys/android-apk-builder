@@ -79,7 +79,7 @@ object RuntimePendingIntentBridge {
                 INTENT_SENDER_BROADCAST -> {
                     original.component?.let { component ->
                         if (component.packageName == pkg.packageName && pkg.ownsReceiver(component.className)) {
-                            Intent(context, RuntimeStubReceiver::class.java).apply {
+                            Intent(context, RuntimeProcessPool.receiverStub(pkg.packageName, pkg.slot)).apply {
                                 putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
                                 putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
                                 putExtra(EXTRA_RUNTIME_RECEIVER, component.className)
