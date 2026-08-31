@@ -54,6 +54,14 @@
         <service android:name=".RuntimeJobService3" android:process=":clone3" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
         <service android:name=".RuntimeJobService4" android:process=":clone4" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
 
+        <receiver android:name=".RuntimeSystemReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".RuntimeStubReceiver" android:exported="false" />
         <receiver android:name=".RuntimeStubReceiver0" android:process=":clone0" android:exported="false" />
         <receiver android:name=".RuntimeStubReceiver1" android:process=":clone1" android:exported="false" />
