@@ -7,6 +7,7 @@ import android.content.pm.ApplicationInfo
 import android.content.res.Resources
 import android.os.Build
 import android.system.Os
+import android.util.TypedValue
 import dalvik.system.DexClassLoader
 import java.io.Closeable
 import java.io.File
@@ -101,12 +102,14 @@ class RuntimeSessionFactory(private val context: Context) {
         RuntimeDiagnostics.log("DEX", "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}")
 
         val closeables = mutableListOf<Closeable>()
+        val splitPaths = pkg.splitApks.map { it.absolutePath }.toTypedArray()
         val archiveInfo = ApplicationInfo().apply {
             packageName = pkg.packageName
             sourceDir = pkg.baseApk.absolutePath
             publicSourceDir = pkg.baseApk.absolutePath
-            splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray()
-            splitPublicSourceDirs = splitSourceDirs
+            splitSourceDirs = splitPaths
+            splitPublicSourceDirs = splitPaths
+            if (Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
             dataDir = File(slotDir, "data").absolutePath
             nativeLibraryDir = nativeDir.absolutePath
             targetSdkVersion = pkg.targetSdk
@@ -117,8 +120,19 @@ class RuntimeSessionFactory(private val context: Context) {
         val resources = context.packageManager.getResourcesForApplication(archiveInfo)
         RuntimeDiagnostics.log(
             "RES",
-            "archive resource graph attached package=${pkg.packageName} apks=${allApks.size} assets=${resources.assets}"
+            "archive resource graph attached package=${pkg.packageName} apks=${allApks.size} splitNames=${pkg.splitNames.joinToString()} assets=${resources.assets}"
         )
+
+        if (pkg.packageName == "com.whatsapp") {
+            val probe = 0x7f0e1351
+            runCatching {
+                val value = TypedValue()
+                resources.getValue(probe, value, true)
+                RuntimeDiagnostics.log("RES", "resource probe ok package=${pkg.packageName} id=0x${probe.toString(16)} type=${value.type} data=0x${value.data.toString(16)}")
+            }.onFailure {
+                RuntimeDiagnostics.log("RES", "resource probe missing package=${pkg.packageName} id=0x${probe.toString(16)} ${it.javaClass.simpleName}: ${it.message}")
+            }
+        }
 
         val launcher = loader.loadClass(pkg.launchActivity)
         require(android.app.Activity::class.java.isAssignableFrom(launcher)) { "شاشة تشغيل التطبيق ليست Activity صالحة" }
