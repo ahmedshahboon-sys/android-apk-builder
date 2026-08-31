@@ -3,12 +3,13 @@ package com.shahboun.multi
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.util.TypedValue
 import android.view.LayoutInflater
 
-/** Pins every Activity-side framework cache to the exact guest ResourcesImpl before guest onCreate(). */
+/** Pins every Activity-side framework cache to the exact guest Resources graph before guest onCreate(). */
 object RuntimeActivityResourceFix {
     private const val WHATSAPP_LAYOUT_PROBE = 0x7f0e1351
 
@@ -19,37 +20,27 @@ object RuntimeActivityResourceFix {
         val resolvedTheme = resolveActivityTheme(activity, session)
         val guestTheme = guestResources.newTheme().apply { if (resolvedTheme != 0) applyStyle(resolvedTheme, true) }
 
+        // Android 16/OEM ContextThemeWrapper may cache a host Resources object before mBase is replaced.
+        // Do not mutate that host ResourcesImpl: replace every cache with the guest Resources object itself.
         val resourcePins = pinTypedFields(activity, Resources::class.java, guestResources)
         val themePins = pinTypedFields(activity, Resources.Theme::class.java, guestTheme)
         setNamedField(activity, "mResources", guestResources)
         setNamedField(activity, "mTheme", guestTheme)
         setNamedField(activity, "mThemeResource", resolvedTheme)
         setNamedField(activity, "mThemeResId", resolvedTheme)
-
-        // Samsung/Android 16 can keep a stable Resources object while swapping/retaining its ResourcesImpl.
-        // Force any object returned by Activity.getResources() onto the same impl as the session graph.
-        val activityImplPinned = pinResourcesImpl(runCatching { activity.resources }.getOrNull(), guestResources)
+        clearContextThemeWrapperCaches(activity)
 
         val inflater = runCatching {
-            val baseInflater = activity.baseContext.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater
-            baseInflater.cloneInContext(activity.baseContext)
+            (activity.baseContext.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater)
+                .cloneInContext(activity.baseContext)
         }.getOrNull()
-        var inflaterImplPinned = false
         if (inflater != null) {
             pinTypedFields(activity, LayoutInflater::class.java, inflater)
             pinTypedFields(activity.window, LayoutInflater::class.java, inflater)
             setNamedField(activity.window, "mLayoutInflater", inflater)
-            inflaterImplPinned = pinResourcesImpl(runCatching { inflater.context.resources }.getOrNull(), guestResources)
         }
 
-        // Re-read after all pins. If OEM returned another wrapper, pin its impl too.
-        pinResourcesImpl(runCatching { activity.resources }.getOrNull(), guestResources)
-        pinResourcesImpl(runCatching { LayoutInflater.from(activity).context.resources }.getOrNull(), guestResources)
-
-        RuntimeDiagnostics.log(
-            "RES",
-            "activity graph pinned ${pkg.packageName}/${pkg.slot} resources=$resourcePins themes=$themePins activityImpl=$activityImplPinned inflaterImpl=$inflaterImplPinned theme=0x${resolvedTheme.toString(16)}"
-        )
+        RuntimeDiagnostics.log("RES", "activity graph pinned ${pkg.packageName}/${pkg.slot} resources=$resourcePins themes=$themePins theme=0x${resolvedTheme.toString(16)}")
         logGraph("session", session.resources, pkg.packageName, pkg.slot)
         logGraph("activity", activity.resources, pkg.packageName, pkg.slot)
         logGraph("base", activity.baseContext.resources, pkg.packageName, pkg.slot)
@@ -63,17 +54,19 @@ object RuntimeActivityResourceFix {
         }
     }
 
-    private fun pinResourcesImpl(target: Resources?, source: Resources): Boolean {
-        if (target == null || target === source) return target != null
-        return runCatching {
-            val sourceField = findField(source.javaClass, "mResourcesImpl") ?: return@runCatching false
-            val targetField = findField(target.javaClass, "mResourcesImpl") ?: return@runCatching false
-            sourceField.isAccessible = true
-            targetField.isAccessible = true
-            val impl = sourceField.get(source) ?: return@runCatching false
-            targetField.set(target, impl)
-            true
-        }.getOrDefault(false)
+    private fun clearContextThemeWrapperCaches(activity: Activity) {
+        var current: Class<*>? = activity.javaClass
+        while (current != null) {
+            current.declaredFields.forEach { field ->
+                if (field.name == "mResources" || field.name == "mInflater") {
+                    runCatching { field.isAccessible = true; field.set(activity, null) }
+                }
+            }
+            current = current.superclass
+        }
+        // Reinstall exact guest objects after invalidating stale OEM caches.
+        val session = RuntimeActivityBindings.sessionFor(activity) ?: return
+        setNamedField(activity, "mResources", session.resources)
     }
 
     private fun probeResource(label: String, resources: Resources, packageName: String, slot: Int) {
