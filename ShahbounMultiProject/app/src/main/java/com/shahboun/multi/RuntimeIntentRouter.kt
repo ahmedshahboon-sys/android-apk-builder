@@ -12,11 +12,8 @@ object RuntimeIntentRouter {
     fun wrap(context: Context, session: RuntimeSession, original: Intent): Intent {
         if (original.hasExtra(EXTRA_RUNTIME_PACKAGE)) return original
         val pkg = session.runtimePackage
-        val target = resolveGuestActivity(context, pkg.packageName, original) ?: return original
+        val target = resolveGuestActivity(context, pkg, original) ?: return original
 
-        // Never derive the stub package from the guest-wrapped Context. After a guest
-        // Activity is attached, Context.getPackageName() intentionally returns the guest
-        // package. The stub is declared only in the Shahboun host manifest.
         val hostPackage = BuildConfig.APPLICATION_ID
         return Intent(original).apply {
             component = ComponentName(hostPackage, RuntimeStubActivity::class.java.name)
@@ -43,18 +40,22 @@ object RuntimeIntentRouter {
         wrapper.getParcelableExtra(EXTRA_RUNTIME_ORIGINAL_INTENT, Intent::class.java)
     } else wrapper.getParcelableExtra(EXTRA_RUNTIME_ORIGINAL_INTENT)
 
-    private fun resolveGuestActivity(context: Context, guestPackage: String, intent: Intent): String? {
+    private fun resolveGuestActivity(context: Context, pkg: RuntimePackage, intent: Intent): String? {
         intent.component?.let { component ->
-            return component.className.takeIf { component.packageName == guestPackage }
+            if (component.packageName != pkg.packageName) return null
+            return component.className.takeIf(pkg::ownsActivity)
         }
-        if (intent.`package` != null && intent.`package` != guestPackage) return null
+        if (intent.`package` != null && intent.`package` != pkg.packageName) return null
 
-        val probe = Intent(intent).apply { `package` = guestPackage }
+        // Android still resolves implicit intent filters while the source app is installed.
+        // The concrete component must also exist in our immutable clone snapshot before use.
+        val probe = Intent(intent).apply { `package` = pkg.packageName }
         val info = if (Build.VERSION.SDK_INT >= 33) {
             context.packageManager.resolveActivity(probe, android.content.pm.PackageManager.ResolveInfoFlags.of(0))
         } else {
             @Suppress("DEPRECATION") context.packageManager.resolveActivity(probe, 0)
         }
-        return info?.activityInfo?.takeIf { it.packageName == guestPackage }?.name
+        val name = info?.activityInfo?.takeIf { it.packageName == pkg.packageName }?.name ?: return null
+        return name.takeIf(pkg::ownsActivity)
     }
 }
