@@ -27,10 +27,18 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
     <application android:name=".MultiApplication" android:allowBackup="true" android:label="مكرّر التطبيقات" android:icon="@drawable/ic_launcher_mokarrer" android:roundIcon="@drawable/ic_launcher_mokarrer" android:theme="@style/Theme.ShahbounMulti">
         <service android:name=".RuntimeStubService" android:exported="false" android:stopWithTask="false" />
         <receiver android:name=".RuntimeStubReceiver" android:exported="false" />
+
         <activity android:name=".RuntimeStubActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity0" android:process=":clone0" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity1" android:process=":clone1" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity2" android:process=":clone2" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity3" android:process=":clone3" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+        <activity android:name=".RuntimeStubActivity4" android:process=":clone4" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
+
         <activity android:name=".DebugActivity" android:enabled="${debugActivityEnabled}" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
