@@ -3,7 +3,6 @@ package com.shahboun.multi
 import android.app.Activity
 import android.os.Bundle
 import android.widget.TextView
-import kotlin.math.floorMod
 
 /** Declared host Activity token target. Guest activities replace it through ShahbounInstrumentation. */
 open class RuntimeStubActivity : Activity() {
