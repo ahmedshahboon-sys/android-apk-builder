@@ -2,6 +2,7 @@ package com.shahboun.multi
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import java.io.File
 import java.security.MessageDigest
 
@@ -34,6 +35,7 @@ class ShahbounCloneEngine : CloneEngine {
         require(rootDir.exists() || rootDir.mkdirs()) { "Unable to initialize clone storage" }
         installer = RuntimePackageInstaller(appContext)
         sessionFactory = RuntimeSessionFactory(appContext)
+        recoverInterruptedUpdates()
     }
 
     override fun createClone(packageName: String, slot: Int): Result<Unit> = runCatching {
@@ -108,6 +110,16 @@ class ShahbounCloneEngine : CloneEngine {
             throw t
         }
     }
+
+    fun needsUpdate(packageName: String, slot: Int): Boolean = runCatching {
+        requireInitialized()
+        val installed = if (Build.VERSION.SDK_INT >= 33) {
+            appContext.packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0))
+        } else @Suppress("DEPRECATION") appContext.packageManager.getPackageInfo(packageName, 0)
+        val installedVersion = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode else @Suppress("DEPRECATION") installed.versionCode.toLong()
+        val snapshot = installer.read(packageName, slot, runtimeSlotDir(packageName, slot))
+        installedVersion > snapshot.versionCode
+    }.getOrDefault(false)
 
     fun sessionFor(packageName: String, slot: Int): RuntimeSession {
         requireInitialized()
@@ -208,6 +220,27 @@ class ShahbounCloneEngine : CloneEngine {
             .joinToString("") { "%02x".format(it) }
             .take(20)
         return File(rootDir, "$digest/$slot")
+    }
+
+    private fun recoverInterruptedUpdates() {
+        rootDir.listFiles().orEmpty().filter { it.isDirectory }.forEach { packageHashDir ->
+            packageHashDir.listFiles().orEmpty().filter { it.isDirectory }.forEach { slotDir ->
+                val backupApk = File(slotDir, "apk.update-backup")
+                val backupMeta = File(slotDir, "runtime.meta.update-backup")
+                if (!backupApk.exists() && !backupMeta.exists()) return@forEach
+                val liveApk = File(slotDir, "apk")
+                val liveMeta = File(slotDir, "runtime.meta")
+                if (liveApk.isDirectory && liveMeta.isFile) {
+                    backupApk.deleteRecursively(); backupMeta.delete()
+                    RuntimeDiagnostics.log("UPDATE", "discarded stale update backup ${slotDir.absolutePath}")
+                } else if (backupApk.isDirectory && backupMeta.isFile) {
+                    liveApk.deleteRecursively(); liveMeta.delete()
+                    require(backupApk.renameTo(liveApk)) { "تعذر استعادة APK بعد تحديث متقطع" }
+                    require(backupMeta.renameTo(liveMeta)) { "تعذر استعادة metadata بعد تحديث متقطع" }
+                    RuntimeDiagnostics.log("UPDATE", "recovered interrupted update ${slotDir.absolutePath}")
+                }
+            }
+        }
     }
 
     private fun sharedPreferencePrefix(packageName: String, slot: Int) = "clone_${packageName}_${slot}_"
