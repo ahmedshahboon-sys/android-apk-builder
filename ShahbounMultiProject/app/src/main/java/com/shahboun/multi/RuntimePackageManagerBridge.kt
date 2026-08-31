@@ -52,7 +52,7 @@ object RuntimePackageManagerBridge {
             val uidMentioned = values.any { it is Int && it == Process.myUid() }
 
             return when (method.name) {
-                "getApplicationInfo" -> if (packageMentioned) applicationInfo(session) else invokeDelegate(method, args)
+                "getApplicationInfo" -> if (packageMentioned) applicationInfo(session, method, args) else invokeDelegate(method, args)
                 "getPackageInfo" -> if (packageMentioned) packageInfo(session, method, args) else invokeDelegate(method, args)
                 "getPackageUid" -> if (packageMentioned) Process.myUid() else invokeDelegate(method, args)
                 "getPackagesForUid" -> if (uidMentioned) arrayOf(pkg.packageName) else invokeDelegate(method, args)
@@ -71,9 +71,9 @@ object RuntimePackageManagerBridge {
 
         private fun packageInfo(session: RuntimeSession, method: Method, args: Array<out Any?>?): PackageInfo {
             val original = runCatching { invokeDelegate(method, args) as? PackageInfo }.getOrNull()
-            return (original ?: PackageInfo()).apply {
+            return (original?.let(::PackageInfo) ?: PackageInfo()).apply {
                 packageName = session.runtimePackage.packageName
-                applicationInfo = applicationInfo(session)
+                applicationInfo = applicationInfoFromOriginal(session, original?.applicationInfo)
                 @Suppress("DEPRECATION")
                 versionCode = session.runtimePackage.versionCode.toInt()
                 runCatching {
@@ -83,12 +83,17 @@ object RuntimePackageManagerBridge {
             }
         }
 
-        private fun applicationInfo(session: RuntimeSession): ApplicationInfo {
+        private fun applicationInfo(session: RuntimeSession, method: Method, args: Array<out Any?>?): ApplicationInfo {
+            val original = runCatching { invokeDelegate(method, args) as? ApplicationInfo }.getOrNull()
+            return applicationInfoFromOriginal(session, original)
+        }
+
+        private fun applicationInfoFromOriginal(session: RuntimeSession, original: ApplicationInfo?): ApplicationInfo {
             val pkg = session.runtimePackage
             val slotDir = (context as? MultiApplication)?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot)
                 ?: java.io.File(context.filesDir, "clone_engine")
             fun dir(name: String) = java.io.File(slotDir, name).apply { if (!exists()) mkdirs() }
-            return ApplicationInfo().apply {
+            return (original?.let(::ApplicationInfo) ?: ApplicationInfo()).apply {
                 packageName = pkg.packageName
                 className = pkg.applicationClass
                 uid = Process.myUid()
@@ -96,10 +101,11 @@ object RuntimePackageManagerBridge {
                 publicSourceDir = pkg.baseApk.absolutePath
                 splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray()
                 splitPublicSourceDirs = splitSourceDirs
+                if (android.os.Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
                 dataDir = dir("data").absolutePath
                 deviceProtectedDataDir = dir("device_data").absolutePath
                 nativeLibraryDir = dir("native").absolutePath
-                theme = pkg.appTheme
+                theme = if (pkg.appTheme != 0) pkg.appTheme else theme
                 targetSdkVersion = pkg.targetSdk
                 if (android.os.Build.VERSION.SDK_INT >= 24) minSdkVersion = pkg.minSdk
                 flags = pkg.appFlags
