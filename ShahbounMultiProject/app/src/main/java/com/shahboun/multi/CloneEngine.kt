@@ -171,6 +171,7 @@ class ShahbounCloneEngine : CloneEngine {
     override fun remove(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized()
         forceStop(packageName, slot).getOrThrow()
+        RuntimeClipboardBridge.clearClone(packageName, slot)
         deleteCloneSharedPreferences(packageName, slot)
         val dir = runtimeSlotDir(packageName, slot)
         if (dir.exists()) require(dir.deleteRecursively()) { "Unable to remove clone storage" }
@@ -179,6 +180,7 @@ class ShahbounCloneEngine : CloneEngine {
     override fun clearData(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized()
         forceStop(packageName, slot).getOrThrow()
+        RuntimeClipboardBridge.clearClone(packageName, slot)
         deleteCloneSharedPreferences(packageName, slot)
         val dir = runtimeSlotDir(packageName, slot)
         require(dir.isDirectory) { "Clone does not exist" }
