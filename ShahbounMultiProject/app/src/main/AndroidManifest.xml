@@ -96,6 +96,7 @@
         <activity android:name=".RuntimeStubActivity8" android:process=":clone8" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
         <activity android:name=".RuntimeStubActivity9" android:process=":clone9" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
 
+        <activity android:name=".CloneUpdatesActivity" android:exported="false" />
         <activity android:name=".DebugActivity" android:enabled="${debugActivityEnabled}" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
