@@ -187,11 +187,24 @@ open class RuntimeStubService : Service() {
             val service = clazz.getDeclaredConstructor().newInstance() as Service
             val hostApp = applicationContext as MultiApplication
             val guestContext = RuntimeGuestContext(baseContext, session, hostApp.engine.runtimeSlotDir(packageName, slot))
-            ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }.set(service, guestContext)
-            Service::class.java.getDeclaredField("mApplication").apply { isAccessible = true }.set(service, session.guestApplication ?: application)
+            attachGuestService(service, guestContext, session, serviceName)
             service.onCreate()
-            RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName process=${if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else packageName}")
+            RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName process=${if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else packageName} attached=true")
             GuestService(service, session)
+        }
+    }
+
+    private fun attachGuestService(service: Service, guestContext: Context, session: RuntimeSession, serviceName: String) {
+        ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }.set(service, guestContext)
+        val serviceClass = Service::class.java
+        fun field(name: String) = serviceClass.getDeclaredField(name).apply { isAccessible = true }
+        field("mApplication").set(service, session.guestApplication ?: application)
+        field("mClassName").set(service, serviceName)
+        listOf("mThread", "mToken", "mActivityManager", "mStartCompatibility").forEach { name ->
+            runCatching {
+                val f = field(name)
+                f.set(service, f.get(this))
+            }.onFailure { RuntimeDiagnostics.log("SERVICE", "attach field $name unavailable for $serviceName: ${it.javaClass.simpleName}") }
         }
     }
 
