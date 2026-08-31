@@ -2,9 +2,11 @@ package com.shahboun.multi
 
 import android.app.Activity
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
@@ -12,10 +14,12 @@ import android.content.res.Resources
 import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
 import android.os.Build
+import android.os.Handler
 import android.view.LayoutInflater
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 /** Context presented to guest components with clone-scoped identity, storage and component routing. */
 class RuntimeGuestContext(
@@ -23,6 +27,8 @@ class RuntimeGuestContext(
     private val session: RuntimeSession,
     private val slotDir: File
 ) : ContextWrapper(base) {
+    private val dynamicReceivers = ConcurrentHashMap<BroadcastReceiver, BroadcastReceiver>()
+
     private val guestTheme: Resources.Theme by lazy {
         session.resources.newTheme().apply {
             val appTheme = session.runtimePackage.appTheme
@@ -156,6 +162,43 @@ class RuntimeGuestContext(
     override fun sendBroadcast(intent: Intent) {
         if (session.componentHost?.dispatchExplicitReceiver(intent) == true) return
         super.sendBroadcast(intent)
+    }
+
+    override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter): Intent? {
+        if (receiver == null) return baseContext.registerReceiver(null, filter)
+        return baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter)
+    }
+
+    override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter, flags: Int): Intent? {
+        if (receiver == null) return baseContext.registerReceiver(null, filter, flags)
+        return baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, flags)
+    }
+
+    override fun registerReceiver(
+        receiver: BroadcastReceiver?,
+        filter: IntentFilter,
+        broadcastPermission: String?,
+        scheduler: Handler?
+    ): Intent? {
+        if (receiver == null) return baseContext.registerReceiver(null, filter, broadcastPermission, scheduler)
+        return baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, broadcastPermission, scheduler)
+    }
+
+    override fun unregisterReceiver(receiver: BroadcastReceiver) {
+        val wrapped = dynamicReceivers.remove(receiver) ?: receiver
+        baseContext.unregisterReceiver(wrapped)
+        RuntimeDiagnostics.log("RECEIVER", "dynamic unregistered ${session.runtimePackage.packageName}/${session.runtimePackage.slot} ${receiver.javaClass.name}")
+    }
+
+    private fun wrapDynamicReceiver(receiver: BroadcastReceiver): BroadcastReceiver {
+        return dynamicReceivers.getOrPut(receiver) {
+            object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    RuntimeDiagnostics.log("RECEIVER", "dynamic delivered ${session.runtimePackage.packageName}/${session.runtimePackage.slot} ${receiver.javaClass.name} action=${intent?.action}")
+                    receiver.onReceive(this@RuntimeGuestContext, intent)
+                }
+            }
+        }
     }
 
     override fun getSystemService(name: String): Any? {
