@@ -3,6 +3,7 @@ package com.shahboun.multi
 import android.app.Activity
 import android.app.Application
 import android.content.BroadcastReceiver
+import android.content.ContentResolver
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -36,6 +37,15 @@ class RuntimeGuestContext(
         }
     }
 
+    private val cloneContentResolver: ContentResolver by lazy {
+        val host = session.componentHost
+        if (host != null) {
+            RuntimeContentResolverBridge(session, host, baseContext.contentResolver).resolver
+        } else {
+            baseContext.contentResolver
+        }
+    }
+
     override fun getPackageName(): String = session.runtimePackage.packageName
     override fun getClassLoader(): ClassLoader = session.classLoader
     override fun getResources(): Resources = session.resources
@@ -45,6 +55,7 @@ class RuntimeGuestContext(
     override fun getApplicationContext(): Context = session.guestApplication ?: this
     override fun getPackageCodePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
+    override fun getContentResolver(): ContentResolver = cloneContentResolver
 
     override fun getApplicationInfo(): ApplicationInfo {
         val pkg = session.runtimePackage
