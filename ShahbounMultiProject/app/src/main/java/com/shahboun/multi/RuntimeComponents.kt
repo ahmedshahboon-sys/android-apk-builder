@@ -181,8 +181,9 @@ class RuntimeStubService : Service() {
         val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
         val serviceName = intent.getStringExtra(EXTRA_RUNTIME_SERVICE) ?: return null
         if (slot < 0) return null
-        val session = runCatching { RuntimeRegistry.get(packageName, slot) }.getOrElse {
-            RuntimeDiagnostics.log("SERVICE", "session missing $packageName/$slot")
+        val hostApp = applicationContext as? MultiApplication ?: return null
+        val session = runCatching { hostApp.engine.sessionFor(packageName, slot) }.getOrElse {
+            RuntimeDiagnostics.log("SERVICE", "session restore failed $packageName/$slot: ${it.stackTraceToString()}")
             return null
         }
         if (!session.runtimePackage.ownsService(serviceName)) {
