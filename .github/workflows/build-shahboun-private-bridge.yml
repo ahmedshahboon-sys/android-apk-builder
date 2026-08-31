@@ -45,22 +45,25 @@ jobs:
           mkdir -p .ci-signing
           if [ ! -s .ci-signing/shahboun-update.jks ] || [ ! -s .ci-signing/signing.properties ]; then
             PASS=$(openssl rand -hex 24)
+            echo "::add-mask::$PASS"
             keytool -genkeypair -v \
               -keystore .ci-signing/shahboun-update.jks \
               -storepass "$PASS" \
               -keypass "$PASS" \
               -alias shahboun-update \
               -keyalg RSA -keysize 4096 -validity 10000 \
-              -dname "CN=Ahmed Shahboun, OU=Mokarrer Apps, O=Shahboun, L=Tripoli, C=LY"
+              -dname "CN=Shahboun, OU=Mokarrer Apps, O=Shahboun, L=Tripoli, C=LY"
             printf 'store_password=%s\nkey_password=%s\nkey_alias=shahboun-update\n' "$PASS" "$PASS" > .ci-signing/signing.properties
             chmod 600 .ci-signing/shahboun-update.jks .ci-signing/signing.properties
           fi
 
-      - name: Export signing environment
+      - name: Export signing environment safely
         shell: bash
         run: |
           set -euo pipefail
           source <(sed 's/^/export /' .ci-signing/signing.properties)
+          echo "::add-mask::$store_password"
+          echo "::add-mask::$key_password"
           {
             echo "SHAHBOUN_KEYSTORE=$GITHUB_WORKSPACE/.ci-signing/shahboun-update.jks"
             echo "SHAHBOUN_STORE_PASSWORD=$store_password"
@@ -70,14 +73,14 @@ jobs:
 
       - name: Install Android 16 SDK
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Audit source boundaries
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           cd ShahbounMultiProject
           if grep -R -n -E 'top\.niunaijun|BlackBoxCore|Dobby|Black00Z|jmpews|VirtualApp|VirtualXposed' app/src --include='*.java' --include='*.kt' --include='*.xml'; then
             echo 'Third-party virtualization source reference found'; exit 1
@@ -88,13 +91,13 @@ jobs:
 
       - name: Build Shahboun APK
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           cd ShahbounMultiProject
           gradle --no-daemon :app:assembleDebug --stacktrace
 
       - name: Verify stable signature and APK
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
           test -n "$APK" && test -s "$APK"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" | tee /tmp/apk-signature.txt
