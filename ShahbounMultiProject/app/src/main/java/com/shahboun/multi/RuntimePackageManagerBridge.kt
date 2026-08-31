@@ -66,6 +66,7 @@ object RuntimePackageManagerBridge {
             return context.checkSelfPermission(permission)
         }
 
+        @Suppress("DEPRECATION")
         private fun packageInfo(session: RuntimeSession, method: Method, args: Array<out Any?>?): PackageInfo {
             val original = runCatching { invokeDelegate(method, args) as? PackageInfo }.getOrNull() ?: PackageInfo()
             original.packageName = session.runtimePackage.packageName
@@ -74,7 +75,7 @@ object RuntimePackageManagerBridge {
             original.services?.forEach { it.applicationInfo = original.applicationInfo }
             original.receivers?.forEach { it.applicationInfo = original.applicationInfo }
             original.providers?.forEach { it.applicationInfo = original.applicationInfo }
-            @Suppress("DEPRECATION") original.versionCode = session.runtimePackage.versionCode.toInt()
+            original.versionCode = session.runtimePackage.versionCode.toInt()
             runCatching { PackageInfo::class.java.getMethod("setLongVersionCode", Long::class.javaPrimitiveType).invoke(original, session.runtimePackage.versionCode) }
             return original
         }
