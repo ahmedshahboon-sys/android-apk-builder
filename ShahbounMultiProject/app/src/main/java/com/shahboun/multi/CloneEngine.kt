@@ -1,5 +1,7 @@
 package com.shahboun.multi
 
+import android.app.Application
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -43,7 +45,6 @@ class ShahbounCloneEngine : CloneEngine {
         require(packageName.isNotBlank()) { "Package name is empty" }
         require(slot >= 0) { "Invalid clone slot" }
         appContext.packageManager.getApplicationInfo(packageName, 0)
-
         val dir = runtimeSlotDir(packageName, slot)
         require(!dir.exists()) { "Clone already exists" }
         require(dir.mkdirs()) { "Unable to create isolated clone storage" }
@@ -51,14 +52,12 @@ class ShahbounCloneEngine : CloneEngine {
             listOf("data", "device_data", "cache", "files", "databases", "no_backup", "code_cache", "native", "external").forEach {
                 require(File(dir, it).mkdirs()) { "Unable to create clone directory: $it" }
             }
-            File(dir, "clone.meta").writeText(
-                buildString {
-                    appendLine("format=3")
-                    appendLine("package=$packageName")
-                    appendLine("slot=$slot")
-                    appendLine("created=${System.currentTimeMillis()}")
-                }
-            )
+            File(dir, "clone.meta").writeText(buildString {
+                appendLine("format=3")
+                appendLine("package=$packageName")
+                appendLine("slot=$slot")
+                appendLine("created=${System.currentTimeMillis()}")
+            })
             installer.snapshot(packageName, slot, dir)
         } catch (t: Throwable) {
             dir.deleteRecursively()
@@ -72,24 +71,20 @@ class ShahbounCloneEngine : CloneEngine {
         require(slot >= 0) { "Invalid clone slot" }
         appContext.packageManager.getApplicationInfo(packageName, 0)
         forceStop(packageName, slot).getOrThrow()
-
         val dir = runtimeSlotDir(packageName, slot)
         require(dir.isDirectory) { "Clone does not exist" }
         val apkDir = File(dir, "apk")
         val runtimeMeta = File(dir, "runtime.meta")
         require(apkDir.isDirectory && runtimeMeta.isFile) { "Clone runtime snapshot is incomplete" }
-
         val backupApk = File(dir, "apk.update-backup")
         val backupMeta = File(dir, "runtime.meta.update-backup")
         if (backupApk.exists()) backupApk.deleteRecursively()
         if (backupMeta.exists()) backupMeta.delete()
-
         require(apkDir.renameTo(backupApk)) { "Unable to prepare APK update backup" }
         require(runtimeMeta.renameTo(backupMeta)) {
             backupApk.renameTo(apkDir)
             "Unable to prepare metadata update backup"
         }
-
         try {
             val updated = installer.snapshot(packageName, slot, dir)
             installer.read(packageName, slot, dir)
@@ -117,24 +112,33 @@ class ShahbounCloneEngine : CloneEngine {
             appContext.packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.PackageInfoFlags.of(0))
         } else @Suppress("DEPRECATION") appContext.packageManager.getPackageInfo(packageName, 0)
         val installedVersion = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode else @Suppress("DEPRECATION") installed.versionCode.toLong()
-        val snapshot = installer.read(packageName, slot, runtimeSlotDir(packageName, slot))
+        val snapshot = runtimePackageFor(packageName, slot)
         installedVersion > snapshot.versionCode
     }.getOrDefault(false)
 
+    /** Reads immutable snapshot metadata only. Safe in the host process; it never loads guest code. */
+    fun runtimePackageFor(packageName: String, slot: Int): RuntimePackage {
+        requireInitialized()
+        val dir = runtimeSlotDir(packageName, slot)
+        require(dir.isDirectory) { "Clone does not exist" }
+        return installer.read(packageName, slot, dir)
+    }
+
+    /** Full guest sessions are deliberately created only inside the assigned :cloneN process. */
     fun sessionFor(packageName: String, slot: Int): RuntimeSession {
         requireInitialized()
+        requireCloneProcess(packageName, slot)
         RuntimeRegistry.getOrNull(packageName, slot)?.let { return it }
         synchronized(sessionLock) {
             RuntimeRegistry.getOrNull(packageName, slot)?.let { return it }
             val dir = runtimeSlotDir(packageName, slot)
-            require(dir.isDirectory) { "Clone does not exist" }
-            val pkg = installer.read(packageName, slot, dir)
+            val pkg = runtimePackageFor(packageName, slot)
             val session = sessionFactory.create(pkg, dir)
             RuntimeRegistry.put(session)
             try {
-                RuntimeDiagnostics.log("RUNTIME", "restoring guest session $packageName/$slot")
+                RuntimeDiagnostics.log("RUNTIME", "restoring guest session $packageName/$slot process=${currentProcessName()}")
                 session.ensureGuestApplication(appContext, dir)
-                RuntimeDiagnostics.log("RUNTIME", "restored guest session $packageName/$slot")
+                RuntimeDiagnostics.log("RUNTIME", "restored guest session $packageName/$slot process=${currentProcessName()}")
                 return session
             } catch (t: Throwable) {
                 RuntimeRegistry.remove(packageName, slot)
@@ -145,11 +149,26 @@ class ShahbounCloneEngine : CloneEngine {
 
     override fun launch(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized()
-        (appContext as? MultiApplication)?.requireRuntimeBridge()
-            ?: error("Shahboun application context غير صالح")
-        val session = sessionFor(packageName, slot)
-        val intent = RuntimeIntentRouter.launchIntent(appContext, session)
-        appContext.startActivity(intent)
+        (appContext as? MultiApplication)?.requireRuntimeBridge() ?: error("Shahboun application context غير صالح")
+        val pkg = runtimePackageFor(packageName, slot)
+        val requested = pkg.launchAlias ?: pkg.launchActivity
+        val original = Intent(Intent.ACTION_MAIN).apply {
+            component = ComponentName(pkg.packageName, requested)
+            addCategory(Intent.CATEGORY_LAUNCHER)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val stub = RuntimeProcessPool.activityStub(pkg.packageName, pkg.slot)
+        val wrapper = Intent(original).apply {
+            component = ComponentName(BuildConfig.APPLICATION_ID, stub.name)
+            `package` = BuildConfig.APPLICATION_ID
+            putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
+            putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
+            putExtra(EXTRA_RUNTIME_ACTIVITY, requested)
+            putExtra(EXTRA_RUNTIME_ORIGINAL_INTENT, Intent(original))
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        RuntimeDiagnostics.log("LAUNCH", "dispatch descriptor $packageName/$slot hostProcess=${currentProcessName()} targetProcess=:clone${RuntimeProcessPool.processIndex(packageName, slot)}")
+        appContext.startActivity(wrapper)
     }
 
     fun forceStop(packageName: String, slot: Int): Result<Unit> = runCatching {
@@ -217,12 +236,19 @@ class ShahbounCloneEngine : CloneEngine {
 
     fun runtimeSlotDir(packageName: String, slot: Int): File {
         requireInitialized()
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(packageName.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
-            .take(20)
+        val digest = MessageDigest.getInstance("SHA-256").digest(packageName.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }.take(20)
         return File(rootDir, "$digest/$slot")
     }
+
+    private fun requireCloneProcess(packageName: String, slot: Int) {
+        val expected = "${BuildConfig.APPLICATION_ID}:clone${RuntimeProcessPool.processIndex(packageName, slot)}"
+        val actual = currentProcessName()
+        check(actual == expected) {
+            "رفض إنشاء Guest Session خارج عملية النسخة: actual=$actual expected=$expected package=$packageName/$slot"
+        }
+    }
+
+    private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
 
     private fun recoverInterruptedUpdates() {
         rootDir.listFiles().orEmpty().filter { it.isDirectory }.forEach { packageHashDir ->
@@ -264,8 +290,6 @@ class ShahbounCloneEngine : CloneEngine {
     }
 
     private fun requireInitialized() {
-        check(::appContext.isInitialized && ::rootDir.isInitialized && ::installer.isInitialized && ::sessionFactory.isInitialized) {
-            "Engine not initialized"
-        }
+        check(::appContext.isInitialized && ::rootDir.isInitialized && ::installer.isInitialized && ::sessionFactory.isInitialized) { "Engine not initialized" }
     }
 }
