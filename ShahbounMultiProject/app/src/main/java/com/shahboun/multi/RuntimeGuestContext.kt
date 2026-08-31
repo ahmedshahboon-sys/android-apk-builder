@@ -2,6 +2,7 @@ package com.shahboun.multi
 
 import android.app.Activity
 import android.app.Application
+import android.content.AttributionSource
 import android.content.BroadcastReceiver
 import android.content.ContentResolver
 import android.content.Context
@@ -51,6 +52,12 @@ class RuntimeGuestContext(
     override fun getPackageCodePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getContentResolver(): ContentResolver = cloneContentResolver
+
+    /** System AppOps validates package name against the real host UID. Keep guest-visible packageName
+     * virtual while using the real host package for framework permission attribution. */
+    override fun getOpPackageName(): String = baseContext.opPackageName
+    override fun getAttributionTag(): String? = baseContext.attributionTag
+    override fun getAttributionSource(): AttributionSource = baseContext.attributionSource
 
     override fun getApplicationInfo(): ApplicationInfo {
         val pkg = session.runtimePackage
