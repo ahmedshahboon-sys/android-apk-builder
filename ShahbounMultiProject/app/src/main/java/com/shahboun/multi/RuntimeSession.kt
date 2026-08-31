@@ -3,7 +3,6 @@ package com.shahboun.multi
 import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.res.AssetManager
 import android.content.res.Resources
 import android.content.res.loader.ResourcesLoader
 import android.content.res.loader.ResourcesProvider
@@ -105,12 +104,15 @@ class RuntimeSessionFactory(private val context: Context) {
 
         val closeables = mutableListOf<Closeable>()
         val resources = if (Build.VERSION.SDK_INT >= 30) {
-            // IMPORTANT: start from a fresh AssetManager. Using the host AssetManager here
-            // puts two unrelated 0x7f package-id tables in one Resources object, which makes
-            // AppCompat/theme/layout IDs resolve to Shahboun host entries instead of the guest.
+            // Build a Resources object that starts with framework assets only. Starting from
+            // host resources would mix two unrelated app package-id 0x7f tables; constructing
+            // AssetManager directly is not part of the public SDK on Android 16.
             @Suppress("DEPRECATION")
-            val cleanAssets = AssetManager()
-            val guestResources = Resources(cleanAssets, context.resources.displayMetrics, context.resources.configuration)
+            val guestResources = Resources(
+                Resources.getSystem().assets,
+                context.resources.displayMetrics,
+                context.resources.configuration
+            )
             val resourceLoader = ResourcesLoader()
             allApks.forEach { apk ->
                 val pfd = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY)
