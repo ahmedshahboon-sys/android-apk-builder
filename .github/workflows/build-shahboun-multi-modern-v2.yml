@@ -3,6 +3,9 @@ name: Build Shahboun Multi Modern V2
 on:
   push:
     branches: [main]
+    paths:
+      - 'ShahbounMultiProject/**'
+      - '.github/workflows/build-shahboun-multi-modern-v2.yml'
   workflow_dispatch:
 
 permissions:
@@ -22,13 +25,13 @@ jobs:
           gradle-version: '8.13'
       - name: Install Android SDK 36
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "build-tools;36.0.0" "platforms;android-36"
       - name: Verify no external clone engine code
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           if grep -R -n -E 'BlackBox|Black00Z|Dobby|VirtualApp|VirtualXposed|niunaijun' ShahbounMultiProject --exclude-dir=build; then
             echo 'External clone engine reference found'; exit 1
           fi
@@ -39,7 +42,7 @@ jobs:
         run: gradle -p ShahbounMultiProject :app:assembleDebug --stacktrace
       - name: Package APK
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
           test -n "$APK" && test -s "$APK"
           cp "$APK" ShahbounMulti-Modern.apk
@@ -51,6 +54,9 @@ jobs:
           if-no-files-found: error
       - name: Publish APK
         run: |
+          set -euo pipefail
+          git fetch origin main
+          git reset --hard origin/main
           mkdir -p dist
           cp ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk
           sha256sum dist/ShahbounMulti-Modern.apk > dist/ShahbounMulti-Modern.apk.sha256
@@ -59,5 +65,5 @@ jobs:
           git add dist/ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk.sha256
           if ! git diff --cached --quiet; then
             git commit -m "Publish Shahboun Multi Modern V2 APK [skip ci]"
-            git push
+            git push origin HEAD:main
           fi
