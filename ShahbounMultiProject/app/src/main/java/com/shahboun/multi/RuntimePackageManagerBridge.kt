@@ -71,7 +71,7 @@ object RuntimePackageManagerBridge {
 
         private fun packageInfo(session: RuntimeSession, method: Method, args: Array<out Any?>?): PackageInfo {
             val original = runCatching { invokeDelegate(method, args) as? PackageInfo }.getOrNull()
-            return (original?.let(::PackageInfo) ?: PackageInfo()).apply {
+            return (original ?: PackageInfo()).apply {
                 packageName = session.runtimePackage.packageName
                 applicationInfo = applicationInfoFromOriginal(session, original?.applicationInfo)
                 @Suppress("DEPRECATION")
