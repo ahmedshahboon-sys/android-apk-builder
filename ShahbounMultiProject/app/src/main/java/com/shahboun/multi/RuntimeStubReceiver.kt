@@ -10,7 +10,7 @@ internal const val EXTRA_RUNTIME_RECEIVER = "shahboun.runtime.receiver"
 internal const val EXTRA_RUNTIME_ORIGINAL_RECEIVER_INTENT = "shahboun.runtime.original_receiver_intent"
 
 /** Host-declared receiver used by clone PendingIntents and alarms. */
-class RuntimeStubReceiver : BroadcastReceiver() {
+open class RuntimeStubReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return
         val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
@@ -27,12 +27,12 @@ class RuntimeStubReceiver : BroadcastReceiver() {
             return
         }
 
-        val original = readOriginal(intent)
-            ?: Intent().setComponent(ComponentName(packageName, receiverName))
+        val original = readOriginal(intent) ?: Intent().setComponent(ComponentName(packageName, receiverName))
         original.component = ComponentName(packageName, receiverName)
         RuntimeExecutionScope.withSession(session) {
             session.componentHost?.dispatchExplicitReceiver(original)
         }
+        RuntimeDiagnostics.log("RECEIVER", "restored $packageName/$slot $receiverName process=${if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else packageName}")
     }
 
     @Suppress("DEPRECATION")
@@ -40,3 +40,9 @@ class RuntimeStubReceiver : BroadcastReceiver() {
         wrapper.getParcelableExtra(EXTRA_RUNTIME_ORIGINAL_RECEIVER_INTENT, Intent::class.java)
     } else wrapper.getParcelableExtra(EXTRA_RUNTIME_ORIGINAL_RECEIVER_INTENT)
 }
+
+class RuntimeStubReceiver0 : RuntimeStubReceiver()
+class RuntimeStubReceiver1 : RuntimeStubReceiver()
+class RuntimeStubReceiver2 : RuntimeStubReceiver()
+class RuntimeStubReceiver3 : RuntimeStubReceiver()
+class RuntimeStubReceiver4 : RuntimeStubReceiver()
