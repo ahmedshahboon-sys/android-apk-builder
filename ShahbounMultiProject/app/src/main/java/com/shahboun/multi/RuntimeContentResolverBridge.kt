@@ -1,13 +1,18 @@
 package com.shahboun.multi
 
 import android.content.ContentProvider
+import android.content.ContentProviderOperation
+import android.content.ContentProviderResult
 import android.content.ContentResolver
 import android.content.ContentValues
+import android.content.OperationApplicationException
+import android.content.res.AssetFileDescriptor
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
+import java.util.ArrayList
 
 /**
  * Public-API ContentResolver bridge (API 29+) that keeps clone-owned authorities inside
@@ -30,6 +35,7 @@ class RuntimeContentResolverBridge(
         override fun onCreate(): Boolean = true
 
         private fun local(uri: Uri): ContentProvider? = host.providerForAuthority(uri.authority)
+        private fun local(authority: String?): ContentProvider? = host.providerForAuthority(authority)
 
         override fun query(
             uri: Uri,
@@ -88,12 +94,54 @@ class RuntimeContentResolverBridge(
         override fun update(uri: Uri, values: ContentValues?, extras: Bundle?): Int =
             scoped(uri) { it.update(uri, values, extras) } ?: system.update(uri, values, extras)
 
-        override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
-            return super.call(method, arg, extras)
+        @Throws(OperationApplicationException::class)
+        override fun applyBatch(
+            authority: String,
+            operations: ArrayList<ContentProviderOperation>
+        ): Array<ContentProviderResult> {
+            val provider = local(authority)
+            if (provider != null) {
+                RuntimeDiagnostics.log("CONTENT", "local batch $authority ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=${operations.size}")
+                return RuntimeExecutionScope.withSession(session) { provider.applyBatch(authority, operations) }
+            }
+            return system.applyBatch(authority, operations)
         }
+
+        override fun call(authority: String, method: String, arg: String?, extras: Bundle?): Bundle? {
+            val provider = local(authority)
+            if (provider != null) {
+                RuntimeDiagnostics.log("CONTENT", "local call $authority method=$method ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
+                return RuntimeExecutionScope.withSession(session) { provider.call(authority, method, arg, extras) }
+            }
+            return system.call(authority, method, arg, extras)
+        }
+
+        override fun call(method: String, arg: String?, extras: Bundle?): Bundle? =
+            super.call(method, arg, extras)
 
         override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? =
             scoped(uri) { it.openFile(uri, mode) } ?: system.openFileDescriptor(uri, mode)
+
+        override fun openFile(uri: Uri, mode: String, signal: CancellationSignal?): ParcelFileDescriptor? =
+            scoped(uri) { it.openFile(uri, mode, signal) } ?: system.openFileDescriptor(uri, mode, signal)
+
+        override fun openAssetFile(uri: Uri, mode: String): AssetFileDescriptor? =
+            scoped(uri) { it.openAssetFile(uri, mode) } ?: system.openAssetFileDescriptor(uri, mode)
+
+        override fun openAssetFile(uri: Uri, mode: String, signal: CancellationSignal?): AssetFileDescriptor? =
+            scoped(uri) { it.openAssetFile(uri, mode, signal) } ?: system.openAssetFileDescriptor(uri, mode, signal)
+
+        override fun openTypedAssetFile(uri: Uri, mimeTypeFilter: String, opts: Bundle?): AssetFileDescriptor? =
+            scoped(uri) { it.openTypedAssetFile(uri, mimeTypeFilter, opts) }
+                ?: system.openTypedAssetFileDescriptor(uri, mimeTypeFilter, opts)
+
+        override fun openTypedAssetFile(
+            uri: Uri,
+            mimeTypeFilter: String,
+            opts: Bundle?,
+            signal: CancellationSignal?
+        ): AssetFileDescriptor? = scoped(uri) { it.openTypedAssetFile(uri, mimeTypeFilter, opts, signal) }
+            ?: system.openTypedAssetFileDescriptor(uri, mimeTypeFilter, opts, signal)
 
         private fun <T> scoped(uri: Uri, block: (ContentProvider) -> T): T? {
             val provider = local(uri) ?: return null
