@@ -53,6 +53,7 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
 
     override fun callActivityOnCreate(activity: Activity, icicle: Bundle?) {
         RuntimeGuestContext.attachIfNeeded(activity)
+        RuntimeActivityResourceFix.prepare(activity)
         scoped(activity) { base.callActivityOnCreate(activity, icicle) }
     }
 
