@@ -1,0 +1,80 @@
+package com.shahboun.multi
+
+import android.app.AlarmManager
+import android.content.Context
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
+
+/**
+ * Keeps AlarmManager calls valid under the host UID while clone-visible identity stays virtual.
+ * PendingIntent routing remains owned by RuntimePendingIntentBridge, so alarms return to the right slot.
+ */
+object RuntimeAlarmBridge {
+    @Volatile private var installed = false
+
+    fun install(context: Context): Result<Unit> = runCatching {
+        if (installed) return@runCatching
+        val manager = context.getSystemService(AlarmManager::class.java) ?: error("AlarmManager غير متاح")
+        val field = findField(manager.javaClass, "mService") ?: error("AlarmManager.mService غير متاح")
+        field.isAccessible = true
+        val delegate = field.get(manager) ?: error("IAlarmManager غير متاح")
+        if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
+            installed = true
+            return@runCatching
+        }
+        val interfaces = collectInterfaces(delegate.javaClass)
+        require(interfaces.isNotEmpty()) { "واجهة IAlarmManager غير متاحة" }
+        field.set(manager, Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate, context.packageName)))
+        installed = true
+        RuntimeDiagnostics.log("ALARM", "clone-aware AlarmManager bridge installed")
+    }
+
+    private class Handler(private val delegate: Any, private val hostPackage: String) : InvocationHandler {
+        override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
+            if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
+            val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
+            val guestPackage = session.runtimePackage.packageName
+            val source = args ?: return invokeDelegate(method, args)
+            val mutable = Array<Any?>(source.size) { source[it] }
+            var changed = false
+            source.forEachIndexed { index, value ->
+                if (value is String && value == guestPackage) {
+                    mutable[index] = hostPackage
+                    changed = true
+                } else if (value is String && (method.name.contains("set", true) || method.name.contains("alarm", true)) && value.startsWith(guestPackage)) {
+                    mutable[index] = "shahboun:${guestPackage}:${session.runtimePackage.slot}:$value"
+                    changed = true
+                }
+            }
+            if (changed) RuntimeDiagnostics.log("ALARM", "${method.name} routed $guestPackage/${session.runtimePackage.slot}")
+            return invokeDelegate(method, mutable)
+        }
+
+        private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
+            method.invoke(delegate, *(args ?: emptyArray()))
+        } catch (e: InvocationTargetException) {
+            throw (e.targetException ?: e)
+        }
+    }
+
+    private fun findField(type: Class<*>, name: String): java.lang.reflect.Field? {
+        var current: Class<*>? = type
+        while (current != null) {
+            runCatching { current.getDeclaredField(name) }.getOrNull()?.let { return it }
+            current = current.superclass
+        }
+        return null
+    }
+
+    private fun collectInterfaces(type: Class<*>): Array<Class<*>> {
+        val out = LinkedHashSet<Class<*>>()
+        var current: Class<*>? = type
+        while (current != null) {
+            out.addAll(current.interfaces)
+            current = current.superclass
+        }
+        return out.toTypedArray()
+    }
+}
