@@ -9,7 +9,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
 
-/** Replays host-observable system events into manifest receivers owned by each clone snapshot. */
+/** Replays host-observable system events into the process assigned to each clone. */
 class RuntimeSystemReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         RuntimeSystemEvents.dispatch(context.applicationContext, intent)
@@ -21,6 +21,7 @@ object RuntimeSystemEvents {
 
     fun install(context: Context) {
         if (networkCallback != null) return
+        if (currentProcessName() != BuildConfig.APPLICATION_ID) return
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) = dispatchNetwork(context, true)
@@ -32,29 +33,34 @@ object RuntimeSystemEvents {
     }
 
     private fun dispatchNetwork(context: Context, available: Boolean) {
-        val action = "android.net.conn.CONNECTIVITY_CHANGE"
-        dispatch(context, Intent(action).putExtra("noConnectivity", !available))
+        dispatch(context, Intent("android.net.conn.CONNECTIVITY_CHANGE").putExtra("noConnectivity", !available))
     }
 
     fun dispatch(context: Context, original: Intent) {
-        val app = context as? MultiApplication ?: MultiApplication.current ?: return
+        if (currentProcessName() != BuildConfig.APPLICATION_ID) return
         val action = original.action ?: return
         val clones = CloneStore(context).list().filter { !it.frozen }
-        var delivered = 0
+        var routed = 0
         clones.forEach { clone ->
             val names = receiverNamesForAction(context, clone.packageName, original)
             if (names.isEmpty()) return@forEach
-            val session = runCatching { app.engine.sessionFor(clone.packageName, clone.slot) }.getOrElse {
-                RuntimeDiagnostics.log("SYSTEM", "session restore failed ${clone.packageName}/${clone.slot} action=$action: ${it.javaClass.simpleName}")
-                return@forEach
-            }
-            val host = session.componentHost ?: return@forEach
-            names.filter(session.runtimePackage::ownsReceiver).forEach { name ->
-                val routed = Intent(original).setComponent(ComponentName(clone.packageName, name)).setPackage(clone.packageName)
-                if (runCatching { host.dispatchExplicitReceiver(routed) }.getOrDefault(false)) delivered++
+            val stub = RuntimeProcessPool.receiverStub(clone.packageName, clone.slot)
+            names.forEach { receiverName ->
+                val wrapper = Intent(original).apply {
+                    component = ComponentName(BuildConfig.APPLICATION_ID, stub.name)
+                    `package` = BuildConfig.APPLICATION_ID
+                    putExtra(EXTRA_RUNTIME_PACKAGE, clone.packageName)
+                    putExtra(EXTRA_RUNTIME_SLOT, clone.slot)
+                    putExtra(EXTRA_RUNTIME_RECEIVER, receiverName)
+                    putExtra(EXTRA_RUNTIME_ORIGINAL_RECEIVER_INTENT, Intent(original).apply {
+                        component = ComponentName(clone.packageName, receiverName)
+                        `package` = clone.packageName
+                    })
+                }
+                if (runCatching { context.sendBroadcast(wrapper); true }.getOrDefault(false)) routed++
             }
         }
-        RuntimeDiagnostics.log("SYSTEM", "broadcast $action delivered=$delivered clones=${clones.size}")
+        RuntimeDiagnostics.log("SYSTEM", "broadcast $action routed=$routed clones=${clones.size} host=${currentProcessName()}")
     }
 
     private fun receiverNamesForAction(context: Context, packageName: String, original: Intent): Set<String> = runCatching {
@@ -66,4 +72,6 @@ object RuntimeSystemEvents {
         }
         resolved.mapNotNull { it.activityInfo?.takeIf { info -> info.packageName == packageName }?.name }.toSet()
     }.getOrDefault(emptySet())
+
+    private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else BuildConfig.APPLICATION_ID
 }
