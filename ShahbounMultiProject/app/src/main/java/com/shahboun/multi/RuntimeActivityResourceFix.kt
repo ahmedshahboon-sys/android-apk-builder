@@ -2,8 +2,6 @@ package com.shahboun.multi
 
 import android.app.Activity
 import android.content.ComponentName
-import android.content.Context
-import android.content.ContextThemeWrapper
 import android.content.pm.PackageManager
 import android.view.LayoutInflater
 
@@ -16,9 +14,9 @@ object RuntimeActivityResourceFix {
         val session = RuntimeActivityBindings.sessionFor(activity) ?: return
         val pkg = session.runtimePackage
 
-        clearField(activity, ContextThemeWrapper::class.java, "mResources")
-        clearField(activity, ContextThemeWrapper::class.java, "mTheme")
-        clearField(activity, ContextThemeWrapper::class.java, "mInflater")
+        clearField(activity, "mResources")
+        clearField(activity, "mTheme")
+        clearField(activity, "mInflater")
 
         val resolvedTheme = resolveActivityTheme(activity, session)
         if (resolvedTheme != 0) {
@@ -75,9 +73,9 @@ object RuntimeActivityResourceFix {
         return pkg.appTheme
     }
 
-    private fun clearField(instance: Any, ownerHint: Class<*>, name: String) {
+    private fun clearField(instance: Any, name: String) {
         runCatching {
-            val field = findField(instance.javaClass, name) ?: findField(ownerHint, name) ?: return
+            val field = findField(instance.javaClass, name) ?: return
             field.isAccessible = true
             field.set(instance, null)
         }.onFailure {
