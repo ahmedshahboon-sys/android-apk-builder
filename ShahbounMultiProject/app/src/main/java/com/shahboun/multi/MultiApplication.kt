@@ -50,6 +50,10 @@ class MultiApplication : Application() {
             .onSuccess { RuntimeDiagnostics.log("CLIP", "clipboard bridge ready") }
             .onFailure { RuntimeDiagnostics.log("CLIP", "clipboard bridge fallback: ${it.stackTraceToString()}") }
 
+        RuntimeIdentityServiceBridge.install(this)
+            .onSuccess { RuntimeDiagnostics.log("IDENTITY", "system identity compatibility ready") }
+            .onFailure { RuntimeDiagnostics.log("IDENTITY", "system identity compatibility fallback: ${it.stackTraceToString()}") }
+
         RuntimeSystemEvents.install(this)
 
         RuntimeInstrumentationInstaller.install()
