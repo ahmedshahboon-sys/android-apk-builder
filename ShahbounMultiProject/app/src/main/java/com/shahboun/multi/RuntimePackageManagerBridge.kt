@@ -10,10 +10,7 @@ import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
-/**
- * Clone-aware PackageManager bridge implemented only with reflection/proxy code owned here.
- * Installation is optional: devices that block a hidden field keep the existing runtime path.
- */
+/** Clone-aware PackageManager bridge. */
 object RuntimePackageManagerBridge {
     @Volatile private var installed = false
 
@@ -31,13 +28,11 @@ object RuntimePackageManagerBridge {
         require(interfaces.isNotEmpty()) { "واجهة IPackageManager غير متاحة" }
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate))
         pmField.set(pm, proxy)
-
         runCatching {
             val activityThread = Class.forName("android.app.ActivityThread")
             val staticField = activityThread.getDeclaredField("sPackageManager").apply { isAccessible = true }
             if (staticField.get(null) === delegate) staticField.set(null, proxy)
         }.onFailure { RuntimeDiagnostics.log("PM", "global package manager field unavailable: ${it.javaClass.simpleName}") }
-
         installed = true
         RuntimeDiagnostics.log("PM", "clone-aware PackageManager bridge installed")
     }
@@ -70,17 +65,14 @@ object RuntimePackageManagerBridge {
         }
 
         private fun packageInfo(session: RuntimeSession, method: Method, args: Array<out Any?>?): PackageInfo {
-            val original = runCatching { invokeDelegate(method, args) as? PackageInfo }.getOrNull()
-            return (original ?: PackageInfo()).apply {
-                packageName = session.runtimePackage.packageName
-                applicationInfo = applicationInfoFromOriginal(session, original?.applicationInfo)
-                @Suppress("DEPRECATION")
-                versionCode = session.runtimePackage.versionCode.toInt()
-                runCatching {
-                    PackageInfo::class.java.getMethod("setLongVersionCode", Long::class.javaPrimitiveType)
-                        .invoke(this, session.runtimePackage.versionCode)
-                }
+            val original = runCatching { invokeDelegate(method, args) as? PackageInfo }.getOrNull() ?: PackageInfo()
+            original.packageName = session.runtimePackage.packageName
+            original.applicationInfo = applicationInfoFromOriginal(session, original.applicationInfo)
+            @Suppress("DEPRECATION") original.versionCode = session.runtimePackage.versionCode.toInt()
+            runCatching {
+                PackageInfo::class.java.getMethod("setLongVersionCode", Long::class.javaPrimitiveType).invoke(original, session.runtimePackage.versionCode)
             }
+            return original
         }
 
         private fun applicationInfo(session: RuntimeSession, method: Method, args: Array<out Any?>?): ApplicationInfo {
