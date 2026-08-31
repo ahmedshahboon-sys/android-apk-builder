@@ -3,6 +3,7 @@ package com.shahboun.multi
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.os.Process
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
@@ -46,15 +47,26 @@ object RuntimePackageManagerBridge {
             if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
             val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
             val pkg = session.runtimePackage
-            val firstString = args?.firstOrNull { it is String } as? String
-            if (firstString != pkg.packageName) return invokeDelegate(method, args)
+            val values = args ?: emptyArray()
+            val packageMentioned = values.any { it == pkg.packageName }
+            val uidMentioned = values.any { it is Int && it == Process.myUid() }
 
             return when (method.name) {
-                "getApplicationInfo" -> applicationInfo(session)
-                "getPackageInfo" -> packageInfo(session, method, args)
-                "getPackageUid" -> Process.myUid()
+                "getApplicationInfo" -> if (packageMentioned) applicationInfo(session) else invokeDelegate(method, args)
+                "getPackageInfo" -> if (packageMentioned) packageInfo(session, method, args) else invokeDelegate(method, args)
+                "getPackageUid" -> if (packageMentioned) Process.myUid() else invokeDelegate(method, args)
+                "getPackagesForUid" -> if (uidMentioned) arrayOf(pkg.packageName) else invokeDelegate(method, args)
+                "getNameForUid", "getNameForUidSdkSandbox" -> if (uidMentioned) pkg.packageName else invokeDelegate(method, args)
+                "checkPermission" -> if (packageMentioned) checkGuestPermission(values) else invokeDelegate(method, args)
+                "checkUidPermission" -> if (uidMentioned) checkGuestPermission(values) else invokeDelegate(method, args)
                 else -> invokeDelegate(method, args)
             }
+        }
+
+        private fun checkGuestPermission(args: Array<out Any?>): Int {
+            val permission = args.firstOrNull { it is String && it != RuntimeExecutionScope.current()?.runtimePackage?.packageName } as? String
+                ?: return PackageManager.PERMISSION_DENIED
+            return context.checkSelfPermission(permission)
         }
 
         private fun packageInfo(session: RuntimeSession, method: Method, args: Array<out Any?>?): PackageInfo {
