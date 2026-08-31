@@ -3,6 +3,7 @@ package com.shahboun.multi
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.ComponentName
+import android.content.ContentProvider
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -23,7 +24,8 @@ class RuntimeComponentHost(
     private val slotDir: File
 ) : Closeable {
     private val guestContext by lazy { RuntimeGuestContext(hostContext, session, slotDir) }
-    private val providers = mutableListOf<android.content.ContentProvider>()
+    private val providers = mutableListOf<ContentProvider>()
+    private val providersByAuthority = ConcurrentHashMap<String, ContentProvider>()
 
     @Synchronized
     fun initializeProviders() {
@@ -33,8 +35,11 @@ class RuntimeComponentHost(
             runCatching {
                 RuntimeExecutionScope.withSession(session) {
                     val clazz = session.classLoader.loadClass(name)
-                    require(android.content.ContentProvider::class.java.isAssignableFrom(clazz)) { "Provider class غير صالح: $name" }
-                    val provider = clazz.getDeclaredConstructor().newInstance() as android.content.ContentProvider
+                    require(ContentProvider::class.java.isAssignableFrom(clazz)) { "Provider class غير صالح: $name" }
+                    val provider = clazz.getDeclaredConstructor().newInstance() as ContentProvider
+                    snapshot.authority.orEmpty().split(';').map { it.trim() }.filter { it.isNotBlank() }.forEach { authority ->
+                        providersByAuthority[authority] = provider
+                    }
                     val providerInfo = ProviderInfo().apply {
                         this.name = name
                         packageName = session.runtimePackage.packageName
@@ -48,11 +53,14 @@ class RuntimeComponentHost(
                 }
                 RuntimeDiagnostics.log("PROVIDER", "initialized snapshot ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
             }.onFailure {
+                snapshot.authority.orEmpty().split(';').forEach { providersByAuthority.remove(it.trim()) }
                 RuntimeDiagnostics.log("PROVIDER", "failed $name: ${it.stackTraceToString()}")
                 throw it
             }
         }
     }
+
+    fun providerForAuthority(authority: String?): ContentProvider? = authority?.let(providersByAuthority::get)
 
     fun dispatchExplicitReceiver(intent: Intent): Boolean {
         val component = intent.component ?: return false
@@ -103,6 +111,7 @@ class RuntimeComponentHost(
     }
 
     override fun close() {
+        providersByAuthority.clear()
         providers.clear()
     }
 }
@@ -122,9 +131,7 @@ class RuntimeStubService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val request = parseRequest(intent) ?: return START_NOT_STICKY
         val key = key(request.packageName, request.slot, request.serviceName)
-        val guest = running.getOrPut(key) {
-            createGuestService(request.session, request.serviceName, request.packageName, request.slot)
-        }
+        val guest = running.getOrPut(key) { createGuestService(request.session, request.serviceName, request.packageName, request.slot) }
         return runCatching {
             RuntimeExecutionScope.withSession(guest.session) { guest.service.onStartCommand(request.original, flags, startId) }
         }.onFailure { RuntimeDiagnostics.log("SERVICE", "onStartCommand failed $key: ${it.stackTraceToString()}") }
@@ -134,27 +141,22 @@ class RuntimeStubService : Service() {
     override fun onBind(intent: Intent?): IBinder? {
         val request = parseRequest(intent) ?: return null
         val key = key(request.packageName, request.slot, request.serviceName)
-        val guest = running.getOrPut(key) {
-            createGuestService(request.session, request.serviceName, request.packageName, request.slot)
-        }
+        val guest = running.getOrPut(key) { createGuestService(request.session, request.serviceName, request.packageName, request.slot) }
         return runCatching {
             RuntimeExecutionScope.withSession(guest.session) {
                 guest.service.onBind(request.original).also {
                     RuntimeDiagnostics.log("SERVICE", "bound ${request.packageName}/${request.slot} ${request.serviceName} binder=${if (it == null) "null" else "present"}")
                 }
             }
-        }.onFailure {
-            RuntimeDiagnostics.log("SERVICE", "onBind failed $key: ${it.stackTraceToString()}")
-        }.getOrNull()
+        }.onFailure { RuntimeDiagnostics.log("SERVICE", "onBind failed $key: ${it.stackTraceToString()}") }.getOrNull()
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         val request = parseRequest(intent) ?: return super.onUnbind(intent)
         val key = key(request.packageName, request.slot, request.serviceName)
         val guest = running[key] ?: return false
-        return runCatching {
-            RuntimeExecutionScope.withSession(guest.session) { guest.service.onUnbind(request.original) }
-        }.onFailure { RuntimeDiagnostics.log("SERVICE", "onUnbind failed $key: ${it.stackTraceToString()}") }
+        return runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onUnbind(request.original) } }
+            .onFailure { RuntimeDiagnostics.log("SERVICE", "onUnbind failed $key: ${it.stackTraceToString()}") }
             .getOrDefault(false)
     }
 
@@ -187,8 +189,7 @@ class RuntimeStubService : Service() {
             RuntimeDiagnostics.log("SERVICE", "rejected unknown component $packageName/$slot $serviceName")
             return null
         }
-        val original = readOriginalServiceIntent(intent)
-            ?: Intent().setComponent(ComponentName(packageName, serviceName))
+        val original = readOriginalServiceIntent(intent) ?: Intent().setComponent(ComponentName(packageName, serviceName))
         return ServiceRequest(packageName, slot, serviceName, session, original)
     }
 
