@@ -23,6 +23,7 @@ class ShahbounCloneEngine : CloneEngine {
     private lateinit var rootDir: File
     private lateinit var installer: RuntimePackageInstaller
     private lateinit var sessionFactory: RuntimeSessionFactory
+    private val sessionLock = Any()
 
     override fun isAvailable(): Boolean = true
 
@@ -108,28 +109,35 @@ class ShahbounCloneEngine : CloneEngine {
         }
     }
 
+    fun sessionFor(packageName: String, slot: Int): RuntimeSession {
+        requireInitialized()
+        RuntimeRegistry.getOrNull(packageName, slot)?.let { return it }
+        synchronized(sessionLock) {
+            RuntimeRegistry.getOrNull(packageName, slot)?.let { return it }
+            val dir = runtimeSlotDir(packageName, slot)
+            require(dir.isDirectory) { "Clone does not exist" }
+            val pkg = installer.read(packageName, slot, dir)
+            val session = sessionFactory.create(pkg, dir)
+            RuntimeRegistry.put(session)
+            try {
+                RuntimeDiagnostics.log("RUNTIME", "restoring guest session $packageName/$slot")
+                session.ensureGuestApplication(appContext, dir)
+                RuntimeDiagnostics.log("RUNTIME", "restored guest session $packageName/$slot")
+                return session
+            } catch (t: Throwable) {
+                RuntimeRegistry.remove(packageName, slot)
+                throw t
+            }
+        }
+    }
+
     override fun launch(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized()
         (appContext as? MultiApplication)?.requireRuntimeBridge()
             ?: error("Shahboun application context غير صالح")
-
-        val dir = runtimeSlotDir(packageName, slot)
-        require(dir.isDirectory) { "Clone does not exist" }
-        val pkg = installer.read(packageName, slot, dir)
-        val session = sessionFactory.create(pkg, dir)
-        RuntimeRegistry.put(session)
-
-        try {
-            RuntimeDiagnostics.log("RUNTIME", "initializing guest Application $packageName/$slot")
-            session.ensureGuestApplication(appContext, dir)
-            RuntimeDiagnostics.log("RUNTIME", "guest Application ready $packageName/$slot")
-
-            val intent = RuntimeIntentRouter.launchIntent(appContext, session)
-            appContext.startActivity(intent)
-        } catch (t: Throwable) {
-            RuntimeRegistry.remove(packageName, slot)
-            throw t
-        }
+        val session = sessionFor(packageName, slot)
+        val intent = RuntimeIntentRouter.launchIntent(appContext, session)
+        appContext.startActivity(intent)
     }
 
     override fun remove(packageName: String, slot: Int): Result<Unit> = runCatching {
