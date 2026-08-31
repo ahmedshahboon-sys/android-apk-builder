@@ -9,7 +9,7 @@ object RuntimeExecutionScope {
 
     fun current(): RuntimeSession? = local.get() ?: RuntimeRegistry.sessionForClassLoader(Thread.currentThread().contextClassLoader)
 
-    inline fun <T> withSession(session: RuntimeSession, block: () -> T): T {
+    fun <T> withSession(session: RuntimeSession, block: () -> T): T {
         val previous = current()
         val thread = Thread.currentThread()
         val previousLoader = thread.contextClassLoader
