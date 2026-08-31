@@ -1,6 +1,8 @@
 package com.shahboun.multi
 
 import android.app.Application
+import android.os.Build
+import android.webkit.WebView
 
 class MultiApplication : Application() {
     lateinit var engine: ShahbounCloneEngine
@@ -14,7 +16,8 @@ class MultiApplication : Application() {
         current = this
         RuntimeDiagnostics.initialize(this)
         RuntimeDiagnostics.installCrashHandler()
-        RuntimeDiagnostics.log("APP", "MultiApplication onCreate")
+        RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=${currentProcessName()}")
+        installWebViewIsolation()
         SystemBarsFitter.install(this)
 
         engine = ShahbounCloneEngine()
@@ -45,6 +48,17 @@ class MultiApplication : Application() {
                 RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge unavailable: ${it.stackTraceToString()}")
             }
     }
+
+    private fun installWebViewIsolation() {
+        if (Build.VERSION.SDK_INT < 28) return
+        val process = currentProcessName()
+        val slot = Regex(":clone([0-4])$").find(process)?.groupValues?.getOrNull(1) ?: return
+        runCatching { WebView.setDataDirectorySuffix("shahboun_slot_$slot") }
+            .onSuccess { RuntimeDiagnostics.log("WEBVIEW", "isolated data directory slot=$slot process=$process") }
+            .onFailure { RuntimeDiagnostics.log("WEBVIEW", "data directory isolation failed slot=$slot: ${it.stackTraceToString()}") }
+    }
+
+    private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName
 
     fun requireRuntimeBridge() {
         check(runtimeBridgeReady) {
