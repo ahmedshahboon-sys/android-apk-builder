@@ -36,7 +36,7 @@ object RuntimeCompatibilityAudit {
                 require(p.dexApks.isNotEmpty());session.classLoader.loadClass(p.launchActivity);"${p.dexApks.size} APK تحمل DEX • launcher قابل للتحميل"
             }
             check("Resources"){
-                val ai=session.guestApplication?.applicationInfo
+                session.guestApplication?.applicationInfo
                 require(session.resources.assets!=null);val theme=p.activityTheme(p.launchActivity).takeIf{it!=0}?:p.launchActivityTheme.takeIf{it!=0}?:p.appTheme
                 if(theme!=0){val v=TypedValue();session.resources.getValue(theme,v,true)}
                 "resource graph جاهز${if(theme!=0)" • theme=0x${theme.toString(16)}" else ""}"
@@ -71,7 +71,7 @@ object RuntimeCompatibilityAudit {
         }
         val processIndexes=(0..4).map{RuntimeProcessPool.processIndex(packageName,it)}
         out+=CompatibilityCheck("توزيع 5 نسخ",if(processIndexes.distinct().size==5)CompatibilityCheck.Status.PASS else CompatibilityCheck.Status.WARN,"slots 1–5 => ${processIndexes.joinToString{":clone$it"}}")
-        RuntimeDiagnostics.log("AUDIT",CompatibilityReport(packageName,slot,out).render().replace('\n',' | '))
+        RuntimeDiagnostics.log("AUDIT",CompatibilityReport(packageName,slot,out).render().replace("\n"," | "))
         return CompatibilityReport(packageName,slot,out)
     }
 }
