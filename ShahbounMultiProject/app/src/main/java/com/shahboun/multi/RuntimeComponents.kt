@@ -54,15 +54,16 @@ class RuntimeComponentHost(
 
     fun dispatchExplicitReceiver(intent: Intent): Boolean {
         val component = intent.component ?: return false
-        if (component.packageName != session.runtimePackage.packageName) return false
+        val pkg = session.runtimePackage
+        if (component.packageName != pkg.packageName || !pkg.ownsReceiver(component.className)) return false
         val name = component.className
         return runCatching {
             val clazz = session.classLoader.loadClass(name)
             require(BroadcastReceiver::class.java.isAssignableFrom(clazz)) { "Receiver class غير صالح: $name" }
             val receiver = clazz.getDeclaredConstructor().newInstance() as BroadcastReceiver
-            val guestIntent = Intent(intent).setComponent(ComponentName(session.runtimePackage.packageName, name))
+            val guestIntent = Intent(intent).setComponent(ComponentName(pkg.packageName, name))
             receiver.onReceive(guestContext, guestIntent)
-            RuntimeDiagnostics.log("RECEIVER", "delivered ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name")
+            RuntimeDiagnostics.log("RECEIVER", "delivered ${pkg.packageName}/${pkg.slot} $name")
             true
         }.getOrElse {
             RuntimeDiagnostics.log("RECEIVER", "failed $name: ${it.stackTraceToString()}")
@@ -81,17 +82,23 @@ class RuntimeComponentHost(
     }
 
     private fun resolveGuestService(intent: Intent): String? {
+        val pkg = session.runtimePackage
         intent.component?.let { component ->
-            return component.className.takeIf { component.packageName == session.runtimePackage.packageName }
+            if (component.packageName != pkg.packageName) return null
+            return component.className.takeIf(pkg::ownsService)
         }
-        if (intent.`package` != null && intent.`package` != session.runtimePackage.packageName) return null
-        val probe = Intent(intent).apply { `package` = session.runtimePackage.packageName }
+        if (intent.`package` != null && intent.`package` != pkg.packageName) return null
+
+        // Intent filters are resolved by Android while the original app is still installed.
+        // Once a concrete target is known, all lifecycle execution remains inside our runtime.
+        val probe = Intent(intent).apply { `package` = pkg.packageName }
         val resolved = if (Build.VERSION.SDK_INT >= 33) {
             hostContext.packageManager.resolveService(probe, PackageManager.ResolveInfoFlags.of(0))
         } else {
             @Suppress("DEPRECATION") hostContext.packageManager.resolveService(probe, 0)
         }
-        return resolved?.serviceInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.name
+        val name = resolved?.serviceInfo?.takeIf { it.packageName == pkg.packageName }?.name ?: return null
+        return name.takeIf(pkg::ownsService)
     }
 
     override fun close() {
@@ -169,6 +176,10 @@ class RuntimeStubService : Service() {
         if (slot < 0) return null
         val session = runCatching { RuntimeRegistry.get(packageName, slot) }.getOrElse {
             RuntimeDiagnostics.log("SERVICE", "session missing $packageName/$slot")
+            return null
+        }
+        if (!session.runtimePackage.ownsService(serviceName)) {
+            RuntimeDiagnostics.log("SERVICE", "rejected unknown component $packageName/$slot $serviceName")
             return null
         }
         val original = readOriginalServiceIntent(intent)
