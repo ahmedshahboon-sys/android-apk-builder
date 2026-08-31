@@ -46,6 +46,10 @@ class MultiApplication : Application() {
             .onSuccess { RuntimeDiagnostics.log("JOB", "JobScheduler bridge ready") }
             .onFailure { RuntimeDiagnostics.log("JOB", "JobScheduler bridge fallback: ${it.stackTraceToString()}") }
 
+        RuntimeClipboardBridge.install(this)
+            .onSuccess { RuntimeDiagnostics.log("CLIP", "clipboard bridge ready") }
+            .onFailure { RuntimeDiagnostics.log("CLIP", "clipboard bridge fallback: ${it.stackTraceToString()}") }
+
         RuntimeInstrumentationInstaller.install()
             .onSuccess {
                 runtimeBridgeReady = true
