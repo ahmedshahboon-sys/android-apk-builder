@@ -1,6 +1,7 @@
 package com.shahboun.multi
 
 import android.app.ActivityManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import java.lang.reflect.InvocationHandler
@@ -8,7 +9,7 @@ import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
-/** Routes guest PendingIntents back through host-declared components carrying package+slot. */
+/** Routes guest PendingIntents and guest Service token calls through host-declared components. */
 object RuntimePendingIntentBridge {
     private const val INTENT_SENDER_BROADCAST = 1
     private const val INTENT_SENDER_ACTIVITY = 2
@@ -33,14 +34,19 @@ object RuntimePendingIntentBridge {
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate))
         instanceField.set(singleton, proxy)
         installed = true
-        RuntimeDiagnostics.log("PENDING", "slot-aware PendingIntent bridge installed")
+        RuntimeDiagnostics.log("PENDING", "slot-aware ActivityManager/PendingIntent bridge installed")
     }
 
     private class Handler(private val context: Context, private val delegate: Any) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
             if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
-            if (!method.name.startsWith("getIntentSender")) return invokeDelegate(method, args)
-            val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
+            val session = RuntimeExecutionScope.current()
+
+            if (session != null && method.name in setOf("setServiceForeground", "stopServiceToken", "getForegroundServiceType")) {
+                return routeGuestServiceTokenCall(session, method, args)
+            }
+            if (!method.name.startsWith("getIntentSender") || session == null) return invokeDelegate(method, args)
+
             val source = args ?: emptyArray()
             val mutable = Array<Any?>(source.size) { source[it] }
             val senderType = mutable.firstOrNull { it is Int } as? Int ?: return invokeDelegate(method, args)
@@ -57,6 +63,19 @@ object RuntimePendingIntentBridge {
                 if (mutable[index] == guestPackage) mutable[index] = BuildConfig.APPLICATION_ID
             }
             RuntimeDiagnostics.log("PENDING", "routed type=$senderType $guestPackage/${session.runtimePackage.slot} count=${routed.size}")
+            return invokeDelegate(method, mutable)
+        }
+
+        private fun routeGuestServiceTokenCall(session: RuntimeSession, method: Method, args: Array<out Any?>?): Any? {
+            val source = args ?: emptyArray()
+            val mutable = Array<Any?>(source.size) { source[it] }
+            val pkg = session.runtimePackage
+            val hostComponent = ComponentName(BuildConfig.APPLICATION_ID, RuntimeProcessPool.serviceStub(pkg.packageName, pkg.slot).name)
+            mutable.indices.forEach { index ->
+                val component = mutable[index] as? ComponentName ?: return@forEach
+                if (component.packageName == pkg.packageName) mutable[index] = hostComponent
+            }
+            RuntimeDiagnostics.log("SERVICE", "AMS ${method.name} routed ${pkg.packageName}/${pkg.slot} -> ${hostComponent.className}")
             return invokeDelegate(method, mutable)
         }
 
