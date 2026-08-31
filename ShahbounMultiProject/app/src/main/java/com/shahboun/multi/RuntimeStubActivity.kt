@@ -1,7 +1,6 @@
 package com.shahboun.multi
 
 import android.app.Activity
-import android.app.Service
 import android.os.Bundle
 import android.widget.TextView
 
@@ -34,13 +33,5 @@ object RuntimeProcessPool {
     )
 
     fun activityStub(slot: Int): Class<out Activity> = activityStubs.getOrNull(slot) ?: RuntimeStubActivity::class.java
-    fun serviceStub(slot: Int): Class<out Service> = when (slot) {
-        0 -> RuntimeStubService0::class.java
-        1 -> RuntimeStubService1::class.java
-        2 -> RuntimeStubService2::class.java
-        3 -> RuntimeStubService3::class.java
-        4 -> RuntimeStubService4::class.java
-        else -> RuntimeStubService::class.java
-    }
     fun isActivityStubName(name: String?): Boolean = name == RuntimeStubActivity::class.java.name || activityStubs.any { it.name == name }
 }
