@@ -90,7 +90,7 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
         } else HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options)
     }
 
-    private inline fun <T> scoped(activity: Activity, block: () -> T): T {
+    private fun <T> scoped(activity: Activity, block: () -> T): T {
         val session = RuntimeActivityBindings.sessionFor(activity)
         return if (session != null) RuntimeExecutionScope.withSession(session, block) else block()
     }
