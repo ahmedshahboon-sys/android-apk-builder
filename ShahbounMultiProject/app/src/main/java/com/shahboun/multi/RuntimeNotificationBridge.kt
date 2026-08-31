@@ -35,7 +35,8 @@ object RuntimeNotificationBridge {
             if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
             val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
             val pkg = session.runtimePackage
-            val mutable = (args ?: emptyArray()).copyOf()
+            val source = args ?: emptyArray()
+            val mutable = Array<Any?>(source.size) { source[it] }
             var touched = false
 
             mutable.indices.forEach { index ->
@@ -50,7 +51,7 @@ object RuntimeNotificationBridge {
                     namespaceTag(method, mutable, pkg.slot, beforeNotification = true)
                     mutable.filterIsInstance<Notification>().forEach { notification ->
                         @Suppress("DEPRECATION")
-                        if (notification.icon == 0) notification.icon = com.shahboun.multi.R.drawable.ic_launcher_mokarrer
+                        notification.icon = com.shahboun.multi.R.drawable.ic_launcher_mokarrer
                     }
                     touched = true
                 }
@@ -59,7 +60,6 @@ object RuntimeNotificationBridge {
                     touched = true
                 }
                 method.name.contains("cancelAll", ignoreCase = true) -> {
-                    // A guest cancel-all must never erase notifications belonging to other slots.
                     RuntimeDiagnostics.log("NOTIFY", "blocked cross-slot cancelAll ${pkg.packageName}/${pkg.slot}")
                     return defaultValue(method.returnType)
                 }
@@ -73,11 +73,10 @@ object RuntimeNotificationBridge {
             val notificationIndex = if (beforeNotification) method.parameterTypes.indexOfFirst { Notification::class.java.isAssignableFrom(it) } else -1
             val upper = if (notificationIndex >= 0) notificationIndex else method.parameterTypes.size
             val candidates = (0 until upper).filter { method.parameterTypes[it] == String::class.java }
-            if (candidates.isEmpty()) return
-            // Binder signatures place tag after package/opPackage/attribution strings.
+            if (candidates.size < 2) return
             val tagIndex = candidates.last()
             val current = args[tagIndex] as? String
-            if (current == BuildConfig.APPLICATION_ID) return
+            if (current?.startsWith("shahboun.slot.$slot:") == true) return
             args[tagIndex] = "shahboun.slot.$slot:${current.orEmpty()}"
         }
 
