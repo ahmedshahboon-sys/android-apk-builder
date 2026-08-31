@@ -3,11 +3,9 @@ package com.shahboun.multi
 import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.ApplicationInfo
 import android.content.res.Resources
-import android.content.res.loader.ResourcesLoader
-import android.content.res.loader.ResourcesProvider
 import android.os.Build
-import android.os.ParcelFileDescriptor
 import android.system.Os
 import dalvik.system.DexClassLoader
 import java.io.Closeable
@@ -103,27 +101,24 @@ class RuntimeSessionFactory(private val context: Context) {
         RuntimeDiagnostics.log("DEX", "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}")
 
         val closeables = mutableListOf<Closeable>()
-        val resources = if (Build.VERSION.SDK_INT >= 30) {
-            @Suppress("DEPRECATION")
-            val guestResources = Resources(
-                Resources.getSystem().assets,
-                context.resources.displayMetrics,
-                context.resources.configuration
-            )
-            val resourceLoader = ResourcesLoader()
-            allApks.forEach { apk ->
-                val pfd = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY)
-                val provider = ResourcesProvider.loadFromApk(pfd)
-                resourceLoader.addProvider(provider)
-                closeables += provider
-                closeables += pfd
-            }
-            guestResources.addLoaders(resourceLoader)
-            RuntimeDiagnostics.log("RES", "isolated clone resource graph attached package=${pkg.packageName} apks=${allApks.size}")
-            guestResources
-        } else {
-            context.packageManager.getResourcesForApplication(pkg.packageName)
+        val archiveInfo = ApplicationInfo().apply {
+            packageName = pkg.packageName
+            sourceDir = pkg.baseApk.absolutePath
+            publicSourceDir = pkg.baseApk.absolutePath
+            splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray()
+            splitPublicSourceDirs = splitSourceDirs
+            dataDir = File(slotDir, "data").absolutePath
+            nativeLibraryDir = nativeDir.absolutePath
+            targetSdkVersion = pkg.targetSdk
+            if (Build.VERSION.SDK_INT >= 24) minSdkVersion = pkg.minSdk
+            flags = pkg.appFlags
+            theme = pkg.appTheme
         }
+        val resources = context.packageManager.getResourcesForApplication(archiveInfo)
+        RuntimeDiagnostics.log(
+            "RES",
+            "archive resource graph attached package=${pkg.packageName} apks=${allApks.size} assets=${resources.assets}"
+        )
 
         val launcher = loader.loadClass(pkg.launchActivity)
         require(android.app.Activity::class.java.isAssignableFrom(launcher)) { "شاشة تشغيل التطبيق ليست Activity صالحة" }
