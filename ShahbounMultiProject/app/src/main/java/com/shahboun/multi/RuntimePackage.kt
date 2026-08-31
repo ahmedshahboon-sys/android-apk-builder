@@ -16,7 +16,12 @@ data class RuntimePackage(
     val applicationClass: String?,
     val versionCode: Long,
     val sha256: String,
-    val splitSha256: List<String>
+    val splitSha256: List<String>,
+    val appTheme: Int,
+    val launchActivityTheme: Int,
+    val targetSdk: Int,
+    val minSdk: Int,
+    val appFlags: Int
 ) {
     val dexPath: String get() = (listOf(baseApk) + splitApks).joinToString(File.pathSeparator) { it.absolutePath }
 }
@@ -31,6 +36,8 @@ class RuntimePackageInstaller(private val context: Context) {
         val launchActivity = launch.component?.className
             ?: error("تعذر تحديد شاشة تشغيل التطبيق")
         val applicationClass = appInfo.className?.takeIf { it.isNotBlank() }
+        val activityInfo = runCatching { pm.getActivityInfo(launch.component!!, 0) }.getOrNull()
+        val launchActivityTheme = activityInfo?.theme ?: 0
 
         val apkDir = File(slotDir, "apk").apply {
             if (exists()) deleteRecursively()
@@ -57,7 +64,7 @@ class RuntimePackageInstaller(private val context: Context) {
         val splitDigests = splits.map(::sha256)
         File(slotDir, "runtime.meta").writeText(
             buildString {
-                appendLine("format=4")
+                appendLine("format=5")
                 appendLine("package=$packageName")
                 appendLine("slot=$slot")
                 appendLine("launchActivity=$launchActivity")
@@ -66,10 +73,20 @@ class RuntimePackageInstaller(private val context: Context) {
                 appendLine("sha256=$digest")
                 appendLine("splitCount=${splits.size}")
                 splitDigests.forEachIndexed { index, hash -> appendLine("splitSha256.$index=$hash") }
+                appendLine("appTheme=${appInfo.theme}")
+                appendLine("launchActivityTheme=$launchActivityTheme")
+                appendLine("targetSdk=${appInfo.targetSdkVersion}")
+                appendLine("minSdk=${if (android.os.Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1}")
+                appendLine("appFlags=${appInfo.flags}")
             }
         )
 
-        return RuntimePackage(packageName, slot, base, splits, launchActivity, applicationClass, versionCode, digest, splitDigests)
+        return RuntimePackage(
+            packageName, slot, base, splits, launchActivity, applicationClass,
+            versionCode, digest, splitDigests, appInfo.theme, launchActivityTheme,
+            appInfo.targetSdkVersion, if (android.os.Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1,
+            appInfo.flags
+        )
     }
 
     fun read(packageName: String, slot: Int, slotDir: File): RuntimePackage {
@@ -92,8 +109,6 @@ class RuntimePackageInstaller(private val context: Context) {
         val splitDigests = splits.mapIndexed { index, split ->
             val expectedSplit = values["splitSha256.$index"]
             if (expectedSplit == null) {
-                // Compatibility with clones created by format=3. Calculate now, but require all
-                // newly-created clones to persist and verify split hashes through format=4.
                 sha256(split)
             } else {
                 val actual = sha256(split)
@@ -102,6 +117,8 @@ class RuntimePackageInstaller(private val context: Context) {
             }
         }
 
+        // format<5 clones remain readable. Their identity fields are filled with safe defaults;
+        // recreating/updating that clone upgrades runtime.meta to format=5.
         return RuntimePackage(
             packageName = packageName,
             slot = slot,
@@ -111,7 +128,12 @@ class RuntimePackageInstaller(private val context: Context) {
             applicationClass = values["applicationClass"]?.takeIf { it.isNotBlank() },
             versionCode = values["versionCode"]?.toLongOrNull() ?: 0L,
             sha256 = expected,
-            splitSha256 = splitDigests
+            splitSha256 = splitDigests,
+            appTheme = values["appTheme"]?.toIntOrNull() ?: 0,
+            launchActivityTheme = values["launchActivityTheme"]?.toIntOrNull() ?: 0,
+            targetSdk = values["targetSdk"]?.toIntOrNull() ?: android.os.Build.VERSION.SDK_INT,
+            minSdk = values["minSdk"]?.toIntOrNull() ?: 1,
+            appFlags = values["appFlags"]?.toIntOrNull() ?: 0
         )
     }
 
