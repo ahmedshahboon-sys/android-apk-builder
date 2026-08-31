@@ -11,16 +11,22 @@ object RuntimePermissionBroker {
         add(Manifest.permission.RECORD_AUDIO)
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (Build.VERSION.SDK_INT >= 29) {
+            add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            add(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
         add(Manifest.permission.READ_CONTACTS)
         add(Manifest.permission.WRITE_CONTACTS)
         add(Manifest.permission.READ_CALENDAR)
         add(Manifest.permission.WRITE_CALENDAR)
         add(Manifest.permission.READ_PHONE_STATE)
+        add(Manifest.permission.READ_PHONE_NUMBERS)
         add(Manifest.permission.CALL_PHONE)
         add(Manifest.permission.BODY_SENSORS)
         if (Build.VERSION.SDK_INT >= 31) {
             add(Manifest.permission.BLUETOOTH_SCAN)
             add(Manifest.permission.BLUETOOTH_CONNECT)
+            add(Manifest.permission.BLUETOOTH_ADVERTISE)
         }
         if (Build.VERSION.SDK_INT >= 33) {
             add(Manifest.permission.POST_NOTIFICATIONS)
