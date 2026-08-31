@@ -37,9 +37,7 @@ class RuntimeComponentHost(
                     val clazz = session.classLoader.loadClass(name)
                     require(ContentProvider::class.java.isAssignableFrom(clazz)) { "Provider class غير صالح: $name" }
                     val provider = clazz.getDeclaredConstructor().newInstance() as ContentProvider
-                    snapshot.authority.orEmpty().split(';').map { it.trim() }.filter { it.isNotBlank() }.forEach { authority ->
-                        providersByAuthority[authority] = provider
-                    }
+                    snapshot.authority.orEmpty().split(';').map { it.trim() }.filter { it.isNotBlank() }.forEach { authority -> providersByAuthority[authority] = provider }
                     val providerInfo = ProviderInfo().apply {
                         this.name = name
                         packageName = session.runtimePackage.packageName
@@ -85,9 +83,11 @@ class RuntimeComponentHost(
 
     fun wrapServiceIntent(original: Intent): Intent? {
         val target = resolveGuestService(original) ?: return null
-        return Intent(hostContext, RuntimeStubService::class.java).apply {
-            putExtra(EXTRA_RUNTIME_PACKAGE, session.runtimePackage.packageName)
-            putExtra(EXTRA_RUNTIME_SLOT, session.runtimePackage.slot)
+        val pkg = session.runtimePackage
+        val stub = RuntimeProcessPool.serviceStub(pkg.packageName, pkg.slot)
+        return Intent(hostContext, stub).apply {
+            putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
+            putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
             putExtra(EXTRA_RUNTIME_SERVICE, target)
             putExtra(EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT, Intent(original))
         }
@@ -101,11 +101,8 @@ class RuntimeComponentHost(
         }
         if (intent.`package` != null && intent.`package` != pkg.packageName) return null
         val probe = Intent(intent).apply { `package` = pkg.packageName }
-        val resolved = if (Build.VERSION.SDK_INT >= 33) {
-            hostContext.packageManager.resolveService(probe, PackageManager.ResolveInfoFlags.of(0))
-        } else {
-            @Suppress("DEPRECATION") hostContext.packageManager.resolveService(probe, 0)
-        }
+        val resolved = if (Build.VERSION.SDK_INT >= 33) hostContext.packageManager.resolveService(probe, PackageManager.ResolveInfoFlags.of(0))
+        else @Suppress("DEPRECATION") hostContext.packageManager.resolveService(probe, 0)
         val name = resolved?.serviceInfo?.takeIf { it.packageName == pkg.packageName }?.name ?: return null
         return name.takeIf(pkg::ownsService)
     }
@@ -116,25 +113,17 @@ class RuntimeComponentHost(
     }
 }
 
-class RuntimeStubService : Service() {
+open class RuntimeStubService : Service() {
     private data class GuestService(val service: Service, val session: RuntimeSession)
-    private data class ServiceRequest(
-        val packageName: String,
-        val slot: Int,
-        val serviceName: String,
-        val session: RuntimeSession,
-        val original: Intent
-    )
-
+    private data class ServiceRequest(val packageName: String, val slot: Int, val serviceName: String, val session: RuntimeSession, val original: Intent)
     private val running = ConcurrentHashMap<String, GuestService>()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val request = parseRequest(intent) ?: return START_NOT_STICKY
         val key = key(request.packageName, request.slot, request.serviceName)
         val guest = running.getOrPut(key) { createGuestService(request.session, request.serviceName, request.packageName, request.slot) }
-        return runCatching {
-            RuntimeExecutionScope.withSession(guest.session) { guest.service.onStartCommand(request.original, flags, startId) }
-        }.onFailure { RuntimeDiagnostics.log("SERVICE", "onStartCommand failed $key: ${it.stackTraceToString()}") }
+        return runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onStartCommand(request.original, flags, startId) } }
+            .onFailure { RuntimeDiagnostics.log("SERVICE", "onStartCommand failed $key: ${it.stackTraceToString()}") }
             .getOrDefault(START_NOT_STICKY)
     }
 
@@ -144,9 +133,7 @@ class RuntimeStubService : Service() {
         val guest = running.getOrPut(key) { createGuestService(request.session, request.serviceName, request.packageName, request.slot) }
         return runCatching {
             RuntimeExecutionScope.withSession(guest.session) {
-                guest.service.onBind(request.original).also {
-                    RuntimeDiagnostics.log("SERVICE", "bound ${request.packageName}/${request.slot} ${request.serviceName} binder=${if (it == null) "null" else "present"}")
-                }
+                guest.service.onBind(request.original).also { RuntimeDiagnostics.log("SERVICE", "bound ${request.packageName}/${request.slot} ${request.serviceName} binder=${if (it == null) "null" else "present"}") }
             }
         }.onFailure { RuntimeDiagnostics.log("SERVICE", "onBind failed $key: ${it.stackTraceToString()}") }.getOrNull()
     }
@@ -156,8 +143,7 @@ class RuntimeStubService : Service() {
         val key = key(request.packageName, request.slot, request.serviceName)
         val guest = running[key] ?: return false
         return runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onUnbind(request.original) } }
-            .onFailure { RuntimeDiagnostics.log("SERVICE", "onUnbind failed $key: ${it.stackTraceToString()}") }
-            .getOrDefault(false)
+            .onFailure { RuntimeDiagnostics.log("SERVICE", "onUnbind failed $key: ${it.stackTraceToString()}") }.getOrDefault(false)
     }
 
     override fun onRebind(intent: Intent?) {
@@ -201,12 +187,10 @@ class RuntimeStubService : Service() {
             val service = clazz.getDeclaredConstructor().newInstance() as Service
             val hostApp = applicationContext as MultiApplication
             val guestContext = RuntimeGuestContext(baseContext, session, hostApp.engine.runtimeSlotDir(packageName, slot))
-            val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
-            baseField.set(service, guestContext)
-            val applicationField = Service::class.java.getDeclaredField("mApplication").apply { isAccessible = true }
-            applicationField.set(service, session.guestApplication ?: application)
+            ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }.set(service, guestContext)
+            Service::class.java.getDeclaredField("mApplication").apply { isAccessible = true }.set(service, session.guestApplication ?: application)
             service.onCreate()
-            RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName")
+            RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName process=${if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else packageName}")
             GuestService(service, session)
         }
     }
@@ -214,7 +198,12 @@ class RuntimeStubService : Service() {
     private fun key(packageName: String, slot: Int, serviceName: String) = "$packageName#$slot#$serviceName"
 
     @Suppress("DEPRECATION")
-    private fun readOriginalServiceIntent(wrapper: Intent): Intent? = if (Build.VERSION.SDK_INT >= 33) {
-        wrapper.getParcelableExtra(EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT, Intent::class.java)
-    } else wrapper.getParcelableExtra(EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT)
+    private fun readOriginalServiceIntent(wrapper: Intent): Intent? = if (Build.VERSION.SDK_INT >= 33) wrapper.getParcelableExtra(EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT, Intent::class.java)
+    else wrapper.getParcelableExtra(EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT)
 }
+
+class RuntimeStubService0 : RuntimeStubService()
+class RuntimeStubService1 : RuntimeStubService()
+class RuntimeStubService2 : RuntimeStubService()
+class RuntimeStubService3 : RuntimeStubService()
+class RuntimeStubService4 : RuntimeStubService()
