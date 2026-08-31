@@ -3,6 +3,7 @@ package com.shahboun.multi
 import android.app.Activity
 import android.os.Bundle
 import android.widget.TextView
+import kotlin.math.floorMod
 
 /** Declared host Activity token target. Guest activities replace it through ShahbounInstrumentation. */
 open class RuntimeStubActivity : Activity() {
@@ -22,7 +23,7 @@ class RuntimeStubActivity2 : RuntimeStubActivity()
 class RuntimeStubActivity3 : RuntimeStubActivity()
 class RuntimeStubActivity4 : RuntimeStubActivity()
 
-/** Fixed process selector. Slots 0..4 are isolated; higher slots safely use the shared fallback. */
+/** Five fixed host processes. package+slot is mapped deterministically so copies of one app spread across the pool. */
 object RuntimeProcessPool {
     private val activityStubs: Array<Class<out Activity>> = arrayOf(
         RuntimeStubActivity0::class.java,
@@ -32,6 +33,7 @@ object RuntimeProcessPool {
         RuntimeStubActivity4::class.java
     )
 
-    fun activityStub(slot: Int): Class<out Activity> = activityStubs.getOrNull(slot) ?: RuntimeStubActivity::class.java
+    fun processIndex(packageName: String, slot: Int): Int = Math.floorMod(31 * packageName.hashCode() + slot, activityStubs.size)
+    fun activityStub(packageName: String, slot: Int): Class<out Activity> = activityStubs[processIndex(packageName, slot)]
     fun isActivityStubName(name: String?): Boolean = name == RuntimeStubActivity::class.java.name || activityStubs.any { it.name == name }
 }
