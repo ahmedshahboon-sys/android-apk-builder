@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
+import android.content.res.Configuration
 import android.content.res.Resources
 import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
@@ -66,6 +67,7 @@ class RuntimeGuestContext(
             publicSourceDir = pkg.baseApk.absolutePath
             splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray()
             splitPublicSourceDirs = splitSourceDirs
+            splitNames = pkg.splitNames.toTypedArray()
             dataDir = cloneDir("data").absolutePath
             deviceProtectedDataDir = cloneDir("device_data").absolutePath
             nativeLibraryDir = cloneDir("native").absolutePath
@@ -78,6 +80,18 @@ class RuntimeGuestContext(
 
     override fun createPackageContext(packageName: String, flags: Int): Context {
         return if (packageName == session.runtimePackage.packageName) this else super.createPackageContext(packageName, flags)
+    }
+
+    override fun createConfigurationContext(overrideConfiguration: Configuration): Context {
+        // ContextWrapper would otherwise delegate to the host context and silently restore host Resources.
+        // Preserve clone identity/resources while still carrying the requested framework configuration base.
+        val configuredBase = baseContext.createConfigurationContext(overrideConfiguration)
+        return RuntimeGuestContext(configuredBase, session, slotDir)
+    }
+
+    override fun createDeviceProtectedStorageContext(): Context {
+        val protectedBase = baseContext.createDeviceProtectedStorageContext()
+        return RuntimeGuestContext(protectedBase, session, slotDir)
     }
 
     override fun getDataDir(): File = cloneDir("data")
@@ -256,9 +270,8 @@ class RuntimeGuestContext(
         }
 
         private fun applyGuestTheme(activity: Activity, pkg: RuntimePackage, activityName: String) {
-            val themeId = if (activityName == pkg.launchActivity && pkg.launchActivityTheme != 0) {
-                pkg.launchActivityTheme
-            } else pkg.appTheme
+            val themeId = pkg.activityTheme(activityName).takeIf { it != 0 }
+                ?: if (activityName == pkg.launchActivity && pkg.launchActivityTheme != 0) pkg.launchActivityTheme else pkg.appTheme
 
             if (themeId != 0) {
                 runCatching { activity.setTheme(themeId) }
