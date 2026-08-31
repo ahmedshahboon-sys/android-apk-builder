@@ -19,6 +19,15 @@ internal object RuntimeActivityBindings {
     fun bind(activity: Activity, packageName: String, slot: Int) { bindings[activity] = Key(packageName, slot); RuntimeDiagnostics.log("RUNTIME", "activity bound $packageName/$slot activity=${activity.javaClass.name}") }
     fun sessionFor(activity: Activity): RuntimeSession? { val key = bindings[activity] ?: return null; return RuntimeRegistry.getOrNull(key.packageName, key.slot) ?: runCatching { MultiApplication.current?.engine?.sessionFor(key.packageName, key.slot) }.getOrNull() }
     fun unbind(activity: Activity) { bindings.remove(activity) }
+
+    fun finishClone(packageName: String, slot: Int): Int {
+        val targets = synchronized(bindings) { bindings.entries.filter { it.value.packageName == packageName && it.value.slot == slot }.map { it.key } }
+        targets.forEach { activity ->
+            runCatching { activity.runOnUiThread { if (!activity.isFinishing) activity.finishAndRemoveTask() } }
+        }
+        RuntimeDiagnostics.log("RUNTIME", "finish activities $packageName/$slot count=${targets.size}")
+        return targets.size
+    }
 }
 
 class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentation() {
