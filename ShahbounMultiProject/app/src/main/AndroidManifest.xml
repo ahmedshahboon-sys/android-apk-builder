@@ -30,6 +30,11 @@
 
     <application android:name=".MultiApplication" android:allowBackup="true" android:label="مكرّر التطبيقات" android:icon="@drawable/ic_launcher_mokarrer" android:roundIcon="@drawable/ic_launcher_mokarrer" android:theme="@style/Theme.ShahbounMulti">
         <service android:name=".RuntimeStubService" android:exported="false" android:stopWithTask="false" />
+        <service android:name=".RuntimeStubService0" android:process=":clone0" android:exported="false" android:stopWithTask="false" />
+        <service android:name=".RuntimeStubService1" android:process=":clone1" android:exported="false" android:stopWithTask="false" />
+        <service android:name=".RuntimeStubService2" android:process=":clone2" android:exported="false" android:stopWithTask="false" />
+        <service android:name=".RuntimeStubService3" android:process=":clone3" android:exported="false" android:stopWithTask="false" />
+        <service android:name=".RuntimeStubService4" android:process=":clone4" android:exported="false" android:stopWithTask="false" />
         <receiver android:name=".RuntimeStubReceiver" android:exported="false" />
 
         <activity android:name=".RuntimeStubActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
