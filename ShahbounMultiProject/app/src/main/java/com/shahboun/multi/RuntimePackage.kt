@@ -16,7 +16,8 @@ data class RuntimeProviderInfo(
 
 data class RuntimeComponentInfo(
     val name: String,
-    val exported: Boolean
+    val exported: Boolean,
+    val theme: Int = 0
 )
 
 data class RuntimePackage(
@@ -43,6 +44,7 @@ data class RuntimePackage(
     fun ownsActivity(name: String): Boolean = name == launchActivity || activities.any { it.name == name }
     fun ownsService(name: String): Boolean = services.any { it.name == name }
     fun ownsReceiver(name: String): Boolean = receivers.any { it.name == name }
+    fun activityTheme(name: String): Int = activities.firstOrNull { it.name == name }?.theme ?: 0
 }
 
 class RuntimePackageInstaller(private val context: Context) {
@@ -81,7 +83,7 @@ class RuntimePackageInstaller(private val context: Context) {
         }
         val activities = pkg.activities.orEmpty().mapNotNull { info ->
             val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RuntimeComponentInfo(name, info.exported)
+            RuntimeComponentInfo(name, info.exported, info.theme)
         }
         val services = pkg.services.orEmpty().mapNotNull { info ->
             val name = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -95,7 +97,7 @@ class RuntimePackageInstaller(private val context: Context) {
         val digest = sha256(base)
         val splitDigests = splits.map(::sha256)
         File(slotDir, "runtime.meta").writeText(buildString {
-            appendLine("format=7")
+            appendLine("format=8")
             appendLine("package=$packageName")
             appendLine("slot=$slot")
             appendLine("launchActivity=$launchActivity")
@@ -186,6 +188,7 @@ class RuntimePackageInstaller(private val context: Context) {
         items.forEachIndexed { index, component ->
             appendLine("$prefix.$index.name=${component.name}")
             appendLine("$prefix.$index.exported=${component.exported}")
+            if (component.theme != 0) appendLine("$prefix.$index.theme=${component.theme}")
         }
     }
 
@@ -206,7 +209,11 @@ class RuntimePackageInstaller(private val context: Context) {
         val count = values["${prefix}Count"]?.toIntOrNull() ?: 0
         return (0 until count).mapNotNull { index ->
             val name = values["$prefix.$index.name"]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            RuntimeComponentInfo(name, values["$prefix.$index.exported"].toBoolean())
+            RuntimeComponentInfo(
+                name = name,
+                exported = values["$prefix.$index.exported"].toBoolean(),
+                theme = values["$prefix.$index.theme"]?.toIntOrNull() ?: 0
+            )
         }
     }
 
