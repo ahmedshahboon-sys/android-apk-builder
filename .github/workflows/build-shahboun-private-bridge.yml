@@ -1,6 +1,5 @@
 name: Build Shahboun Multi Native
 
-# Stable signing baseline v1 - storage isolation fix
 on:
   push:
     branches: [main]
@@ -12,10 +11,13 @@ on:
 permissions:
   contents: read
 
+env:
+  EXPECTED_CERT_SHA256: 4be48acd1f4a7ac730f7068bb3289c174c283e7ae28c5cc593ec59259ef1de53
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout Shahboun source
@@ -38,24 +40,12 @@ jobs:
           path: .ci-signing
           key: shahboun-multi-signing-v1
 
-      - name: Create stable signing material if missing
+      - name: Require the established update key
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .ci-signing
-          if [ ! -s .ci-signing/shahboun-update.jks ] || [ ! -s .ci-signing/signing.properties ]; then
-            PASS=$(openssl rand -hex 24)
-            echo "::add-mask::$PASS"
-            keytool -genkeypair -v \
-              -keystore .ci-signing/shahboun-update.jks \
-              -storepass "$PASS" \
-              -keypass "$PASS" \
-              -alias shahboun-update \
-              -keyalg RSA -keysize 4096 -validity 10000 \
-              -dname "CN=Shahboun, OU=Mokarrer Apps, O=Shahboun, L=Tripoli, C=LY"
-            printf 'store_password=%s\nkey_password=%s\nkey_alias=shahboun-update\n' "$PASS" "$PASS" > .ci-signing/signing.properties
-            chmod 600 .ci-signing/shahboun-update.jks .ci-signing/signing.properties
-          fi
+          test -s .ci-signing/shahboun-update.jks || { echo 'Stable Shahboun update keystore is missing; refusing to rotate signing identity.'; exit 1; }
+          test -s .ci-signing/signing.properties || { echo 'Stable Shahboun signing properties are missing; refusing to rotate signing identity.'; exit 1; }
 
       - name: Export signing environment safely
         shell: bash
@@ -76,7 +66,7 @@ jobs:
           set -euo pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "cmdline-tools;latest"
 
       - name: Audit source boundaries
         run: |
@@ -89,27 +79,55 @@ jobs:
             echo 'Unexpected prebuilt binary found'; exit 1
           fi
 
-      - name: Build Shahboun APK
+      - name: Build Debug and Release
         run: |
           set -euo pipefail
           cd ShahbounMultiProject
-          gradle --no-daemon :app:assembleDebug --stacktrace
+          gradle --no-daemon :app:assembleDebug :app:assembleRelease --stacktrace
 
-      - name: Verify stable signature and APK
+      - name: Verify Release gate and stable certificate
+        shell: bash
         run: |
           set -euo pipefail
-          APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
-          test -n "$APK" && test -s "$APK"
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" | tee /tmp/apk-signature.txt
-          grep -Eq 'Verified using v(2|3) scheme \(APK Signature Scheme v(2|3)\): true' /tmp/apk-signature.txt
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          DEBUG_APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
+          RELEASE_APK=$(find ShahbounMultiProject/app/build/outputs/apk/release -type f -name '*.apk' | head -1)
+          test -s "$DEBUG_APK"
+          test -s "$RELEASE_APK"
+
+          verify_one() {
+            local apk="$1" label="$2" out="$3"
+            "$APKSIGNER" verify --verbose --print-certs "$apk" | tee "$out"
+            grep -Eq 'Verified using v(2|3) scheme \(APK Signature Scheme v(2|3)\): true' "$out"
+            local cert
+            cert=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$out" | head -1 | tr '[:upper:]' '[:lower:]')
+            test "$cert" = "$EXPECTED_CERT_SHA256" || { echo "$label certificate changed: $cert"; exit 1; }
+            unzip -t "$apk" >/dev/null
+          }
+
+          verify_one "$DEBUG_APK" Debug /tmp/debug-signature.txt
+          verify_one "$RELEASE_APK" Release /tmp/release-signature.txt
+
+          APKS_DIR="$ANDROID_HOME/cmdline-tools/latest/bin"
+          if [ -x "$APKS_DIR/apkanalyzer" ]; then
+            DEBUGGABLE=$($APKS_DIR/apkanalyzer manifest debuggable "$RELEASE_APK" | tr -d '\r')
+            test "$DEBUGGABLE" = "false" || { echo "Release APK is debuggable: $DEBUGGABLE"; exit 1; }
+          else
+            echo 'apkanalyzer unavailable; checking merged release manifest instead'
+            ! grep -R 'android:debuggable="true"' ShahbounMultiProject/app/build/intermediates/merged_manifests/release || exit 1
+          fi
+
           mkdir -p output
-          cp "$APK" output/ShahbounMulti.apk
-          sha256sum output/ShahbounMulti.apk > output/ShahbounMulti.apk.sha256
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs output/ShahbounMulti.apk > output/ShahbounMulti.signature.txt
-          unzip -t output/ShahbounMulti.apk >/dev/null
+          cp "$DEBUG_APK" output/ShahbounMulti-Debug.apk
+          cp "$RELEASE_APK" output/ShahbounMulti-Release.apk
+          sha256sum output/ShahbounMulti-Debug.apk > output/ShahbounMulti-Debug.apk.sha256
+          sha256sum output/ShahbounMulti-Release.apk > output/ShahbounMulti-Release.apk.sha256
+          cp /tmp/debug-signature.txt output/ShahbounMulti-Debug.signature.txt
+          cp /tmp/release-signature.txt output/ShahbounMulti-Release.signature.txt
+          printf '%s\n' "$EXPECTED_CERT_SHA256" > output/expected-certificate.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ShahbounMulti-Native-APK
+          name: ShahbounMulti-Native-Debug-Release
           path: output/
           if-no-files-found: error
