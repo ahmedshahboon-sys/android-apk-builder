@@ -24,7 +24,8 @@ internal object RuntimeActivityBindings {
 
     fun sessionFor(activity: Activity): RuntimeSession? {
         val key = bindings[activity] ?: return null
-        return runCatching { RuntimeRegistry.get(key.packageName, key.slot) }.getOrNull()
+        return RuntimeRegistry.getOrNull(key.packageName, key.slot)
+            ?: runCatching { MultiApplication.current?.engine?.sessionFor(key.packageName, key.slot) }.getOrNull()
     }
 
     fun unbind(activity: Activity) {
@@ -39,7 +40,9 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
             val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
             val guestActivity = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY)
             if (!packageName.isNullOrBlank() && slot >= 0 && !guestActivity.isNullOrBlank()) {
-                val session = RuntimeRegistry.get(packageName, slot)
+                val app = MultiApplication.current ?: error("Shahboun application runtime غير متاح")
+                val session = app.engine.sessionFor(packageName, slot)
+                require(session.runtimePackage.ownsActivity(guestActivity)) { "Activity غير مسجلة في Snapshot النسخة" }
                 return RuntimeExecutionScope.withSession(session) {
                     base.newActivity(session.classLoader, guestActivity, intent)
                 }
