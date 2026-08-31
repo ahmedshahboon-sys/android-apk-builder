@@ -30,6 +30,10 @@ class MultiApplication : Application() {
             .onSuccess { RuntimeDiagnostics.log("NOTIFY", "notification bridge ready") }
             .onFailure { RuntimeDiagnostics.log("NOTIFY", "notification bridge fallback: ${it.stackTraceToString()}") }
 
+        RuntimePendingIntentBridge.install(this)
+            .onSuccess { RuntimeDiagnostics.log("PENDING", "PendingIntent bridge ready") }
+            .onFailure { RuntimeDiagnostics.log("PENDING", "PendingIntent bridge fallback: ${it.stackTraceToString()}") }
+
         RuntimeInstrumentationInstaller.install()
             .onSuccess {
                 runtimeBridgeReady = true
