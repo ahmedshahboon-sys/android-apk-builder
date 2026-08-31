@@ -195,7 +195,9 @@ class RuntimeGuestContext(
             object : BroadcastReceiver() {
                 override fun onReceive(context: Context?, intent: Intent?) {
                     RuntimeDiagnostics.log("RECEIVER", "dynamic delivered ${session.runtimePackage.packageName}/${session.runtimePackage.slot} ${receiver.javaClass.name} action=${intent?.action}")
-                    receiver.onReceive(this@RuntimeGuestContext, intent)
+                    RuntimeExecutionScope.withSession(session) {
+                        receiver.onReceive(this@RuntimeGuestContext, intent)
+                    }
                 }
             }
         }
