@@ -50,6 +50,8 @@ class MultiApplication : Application() {
             .onSuccess { RuntimeDiagnostics.log("CLIP", "clipboard bridge ready") }
             .onFailure { RuntimeDiagnostics.log("CLIP", "clipboard bridge fallback: ${it.stackTraceToString()}") }
 
+        RuntimeSystemEvents.install(this)
+
         RuntimeInstrumentationInstaller.install()
             .onSuccess {
                 runtimeBridgeReady = true
