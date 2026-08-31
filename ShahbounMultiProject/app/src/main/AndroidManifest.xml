@@ -35,7 +35,13 @@
         <service android:name=".RuntimeStubService2" android:process=":clone2" android:exported="false" android:stopWithTask="false" />
         <service android:name=".RuntimeStubService3" android:process=":clone3" android:exported="false" android:stopWithTask="false" />
         <service android:name=".RuntimeStubService4" android:process=":clone4" android:exported="false" android:stopWithTask="false" />
+
         <receiver android:name=".RuntimeStubReceiver" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver0" android:process=":clone0" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver1" android:process=":clone1" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver2" android:process=":clone2" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver3" android:process=":clone3" android:exported="false" />
+        <receiver android:name=".RuntimeStubReceiver4" android:process=":clone4" android:exported="false" />
 
         <activity android:name=".RuntimeStubActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
         <activity android:name=".RuntimeStubActivity0" android:process=":clone0" android:exported="false" android:excludeFromRecents="true" android:launchMode="standard" />
