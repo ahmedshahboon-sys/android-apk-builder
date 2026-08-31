@@ -2,6 +2,7 @@ package com.shahboun.multi
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.content.pm.ComponentInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Process
@@ -49,6 +50,7 @@ object RuntimePackageManagerBridge {
             return when (method.name) {
                 "getApplicationInfo" -> if (packageMentioned) applicationInfo(session, method, args) else invokeDelegate(method, args)
                 "getPackageInfo" -> if (packageMentioned) packageInfo(session, method, args) else invokeDelegate(method, args)
+                "getActivityInfo", "getServiceInfo", "getReceiverInfo", "getProviderInfo" -> patchComponentInfo(session, invokeDelegate(method, args))
                 "getPackageUid" -> if (packageMentioned) Process.myUid() else invokeDelegate(method, args)
                 "getPackagesForUid" -> if (uidMentioned) arrayOf(pkg.packageName) else invokeDelegate(method, args)
                 "getNameForUid", "getNameForUidSdkSandbox" -> if (uidMentioned) pkg.packageName else invokeDelegate(method, args)
@@ -68,16 +70,24 @@ object RuntimePackageManagerBridge {
             val original = runCatching { invokeDelegate(method, args) as? PackageInfo }.getOrNull() ?: PackageInfo()
             original.packageName = session.runtimePackage.packageName
             original.applicationInfo = applicationInfoFromOriginal(session, original.applicationInfo)
+            original.activities?.forEach { it.applicationInfo = original.applicationInfo }
+            original.services?.forEach { it.applicationInfo = original.applicationInfo }
+            original.receivers?.forEach { it.applicationInfo = original.applicationInfo }
+            original.providers?.forEach { it.applicationInfo = original.applicationInfo }
             @Suppress("DEPRECATION") original.versionCode = session.runtimePackage.versionCode.toInt()
-            runCatching {
-                PackageInfo::class.java.getMethod("setLongVersionCode", Long::class.javaPrimitiveType).invoke(original, session.runtimePackage.versionCode)
-            }
+            runCatching { PackageInfo::class.java.getMethod("setLongVersionCode", Long::class.javaPrimitiveType).invoke(original, session.runtimePackage.versionCode) }
             return original
         }
 
         private fun applicationInfo(session: RuntimeSession, method: Method, args: Array<out Any?>?): ApplicationInfo {
             val original = runCatching { invokeDelegate(method, args) as? ApplicationInfo }.getOrNull()
             return applicationInfoFromOriginal(session, original)
+        }
+
+        private fun patchComponentInfo(session: RuntimeSession, result: Any?): Any? {
+            val component = result as? ComponentInfo ?: return result
+            component.applicationInfo = applicationInfoFromOriginal(session, component.applicationInfo)
+            return component
         }
 
         private fun applicationInfoFromOriginal(session: RuntimeSession, original: ApplicationInfo?): ApplicationInfo {
