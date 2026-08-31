@@ -22,6 +22,10 @@ class MultiApplication : Application() {
             .onFailure { RuntimeDiagnostics.log("ENGINE", "initialize failed: ${it.stackTraceToString()}") }
             .getOrThrow()
 
+        RuntimePackageManagerBridge.install(this)
+            .onSuccess { RuntimeDiagnostics.log("PM", "package manager bridge ready") }
+            .onFailure { RuntimeDiagnostics.log("PM", "package manager bridge fallback: ${it.stackTraceToString()}") }
+
         RuntimeInstrumentationInstaller.install()
             .onSuccess {
                 runtimeBridgeReady = true
