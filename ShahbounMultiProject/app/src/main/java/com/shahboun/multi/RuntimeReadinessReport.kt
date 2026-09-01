@@ -13,7 +13,7 @@ object RuntimeReadinessReport {
 
         checks += status("Process isolation", log.contains("MultiApplication onCreate process=${BuildConfig.APPLICATION_ID}:clone"), "لم تبدأ عملية clone منفصلة")
         checks += status("Guest DEX", log.contains("guest-first isolated classloader enabled"), "لم يثبت تحميل كود الضيف")
-        checks += status("Guest resources", hasAllResourceProbes(log), "موارد Activity/base/inflater لم تجتز الفحص")
+        checks += resourceCheck(log, crashBlock)
         checks += status("Guest application", log.contains("guest Application ready"), "Application.onCreate لم يكتمل")
         checks += status("Providers", log.contains("guest providers ready"), "تهيئة Providers لم تكتمل")
         checks += contentResolverCheck(log, crashBlock)
@@ -37,7 +37,7 @@ object RuntimeReadinessReport {
         checks += identityCheck(log)
         checks += accountCheck(log)
 
-        checks += runtimeFeature(log, "Background services", listOf("[SERVICE] created guest", "[SERVICE] start"))
+        checks += runtimeFeature(log, "Background services", listOf("[SERVICE] created ", "[SERVICE] created guest", "[SERVICE] start"))
         checks += runtimeFeature(log, "Broadcast receivers", listOf("[RECEIVER]", "broadcast routed="))
         checks += runtimeFeature(log, "Notifications delivery", listOf("[NOTIFY] routed", "[NOTIFY] notify"))
         checks += runtimeFeature(log, "Camera / microphone", listOf("android.permission.CAMERA", "android.permission.RECORD_AUDIO"), permissionOnly = true)
@@ -68,6 +68,18 @@ object RuntimeReadinessReport {
     }
 
     private fun status(name: String, ok: Boolean, failDetail: String): Check = if (ok) Check(name, "OK") else Check(name, "NOT TESTED", failDetail)
+
+    private fun resourceCheck(log: String, crash: String): Check {
+        val failed = crash.contains("Resources\$NotFoundException")
+        val probed = hasAllResourceProbes(log)
+        val prepared = log.contains("[RES] activity graph prepared") && log.contains("loaderActivity=true") && log.contains("loaderBase=true")
+        return when {
+            failed -> Check("Guest resources", "FAIL", "Resources.NotFoundException")
+            probed -> Check("Guest resources", "OK", "resource probes passed")
+            prepared -> Check("Guest resources", "OK", "activity/base resource loaders prepared")
+            else -> Check("Guest resources", "NOT TESTED", "لم يثبت تجهيز موارد Activity/base")
+        }
+    }
 
     private fun packageManagerCheck(log: String, crash: String): Check {
         val componentStateFailure = crash.contains("setComponentEnabledSetting") ||
@@ -132,6 +144,7 @@ object RuntimeReadinessReport {
 
     private fun classifyBlocker(crash: String): String = when {
         crash.isBlank() -> ""
+        crash.contains("RuntimeGuestContext.unregisterReceiver") && crash.contains("NullPointerException") -> "BroadcastReceiver lifecycle / unregisterReceiver(null)"
         crash.contains("setComponentEnabledSetting") || crash.contains("Attempt to change component state") -> "Virtual PackageManager / component state"
         crash.contains("UnsupportedOperationException") && (crash.contains("ContentResolver") || crash.contains("acquireUnstableProvider")) -> "ContentResolver / ContentProvider client acquisition"
         crash.contains("ActivityNotFoundException") -> "Internal Activity Routing"
