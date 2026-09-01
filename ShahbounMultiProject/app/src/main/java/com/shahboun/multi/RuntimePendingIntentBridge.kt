@@ -7,6 +7,7 @@ import android.content.Intent
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 
 /** Routes guest PendingIntents and guest Service token calls through host-declared components. */
@@ -20,21 +21,35 @@ object RuntimePendingIntentBridge {
     fun install(context: Context): Result<Unit> = runCatching {
         if (installed) return@runCatching
         runCatching { ActivityManager::class.java.getDeclaredMethod("getService").apply { isAccessible = true }.invoke(null) }
-        val singletonField = ActivityManager::class.java.getDeclaredField("IActivityManagerSingleton").apply { isAccessible = true }
-        val singleton = singletonField.get(null) ?: error("ActivityManager singleton غير متاح")
-        val instanceField = findField(singleton.javaClass, "mInstance") ?: error("ActivityManager instance غير متاح")
-        instanceField.isAccessible = true
-        val delegate = instanceField.get(singleton) ?: error("IActivityManager غير متاح")
+
+        val singletonField = RuntimeCompatibility.findField(
+            ActivityManager::class.java,
+            "IActivityManagerSingleton", "sActivityManagerSingleton", "gDefault"
+        ) ?: error("ActivityManager singleton غير متاح")
+        singletonField.isAccessible = true
+        val singletonOwner: Any? = if (Modifier.isStatic(singletonField.modifiers)) null else ActivityManager::class.java
+        val singleton = singletonField.get(singletonOwner) ?: error("ActivityManager singleton فارغ")
+
+        val handle = RuntimeCompatibility.findService(
+            singleton,
+            interfaceHints = listOf("IActivityManager", "ActivityManagerService"),
+            candidateNames = listOf("mInstance", "mService")
+        ) ?: error("IActivityManager غير متاح")
+        val instanceField = handle.field
+        val delegate = handle.delegate
         if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
             installed = true
             return@runCatching
         }
-        val interfaces = collectInterfaces(delegate.javaClass)
+        val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة IActivityManager غير متاحة" }
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate))
-        instanceField.set(singleton, proxy)
+        require(RuntimeCompatibility.write(instanceField, singleton, proxy)) { "تعذر تثبيت IActivityManager proxy" }
         installed = true
-        RuntimeDiagnostics.log("PENDING", "slot-aware ActivityManager/PendingIntent bridge installed")
+        RuntimeDiagnostics.log(
+            "PENDING",
+            "slot-aware ActivityManager/PendingIntent bridge installed singleton=${singletonField.name} field=${instanceField.name}"
+        )
     }
 
     private class Handler(private val context: Context, private val delegate: Any) : InvocationHandler {
@@ -49,7 +64,7 @@ object RuntimePendingIntentBridge {
 
             val source = args ?: emptyArray()
             val mutable = Array<Any?>(source.size) { source[it] }
-            val senderType = mutable.firstOrNull { it is Int } as? Int ?: return invokeDelegate(method, args)
+            val senderType = findSenderType(method, mutable) ?: return invokeDelegate(method, args)
             if (senderType !in setOf(INTENT_SENDER_BROADCAST, INTENT_SENDER_ACTIVITY, INTENT_SENDER_SERVICE, INTENT_SENDER_FOREGROUND_SERVICE)) return invokeDelegate(method, args)
 
             val intentsIndex = method.parameterTypes.indexOfFirst { it.isArray && it.componentType == Intent::class.java }
@@ -62,8 +77,20 @@ object RuntimePendingIntentBridge {
             method.parameterTypes.indices.filter { method.parameterTypes[it] == String::class.java }.forEach { index ->
                 if (mutable[index] == guestPackage) mutable[index] = BuildConfig.APPLICATION_ID
             }
-            RuntimeDiagnostics.log("PENDING", "routed type=$senderType $guestPackage/${session.runtimePackage.slot} count=${routed.size}")
+            RuntimeDiagnostics.log("PENDING", "routed method=${method.name} type=$senderType $guestPackage/${session.runtimePackage.slot} count=${routed.size}")
             return invokeDelegate(method, mutable)
+        }
+
+        private fun findSenderType(method: Method, args: Array<Any?>): Int? {
+            // getIntentSender* historically starts with int type, but OEM/API variants can add
+            // leading binder/user fields. Pick the first Int that is one of the known sender types.
+            method.parameterTypes.indices.forEach { index ->
+                if (method.parameterTypes[index] == Int::class.javaPrimitiveType) {
+                    val value = args.getOrNull(index) as? Int
+                    if (value in setOf(INTENT_SENDER_BROADCAST, INTENT_SENDER_ACTIVITY, INTENT_SENDER_SERVICE, INTENT_SENDER_FOREGROUND_SERVICE)) return value
+                }
+            }
+            return null
         }
 
         private fun routeGuestServiceTokenCall(session: RuntimeSession, method: Method, args: Array<out Any?>?): Any? {
@@ -116,24 +143,5 @@ object RuntimePendingIntentBridge {
         } catch (e: InvocationTargetException) {
             throw (e.targetException ?: e)
         }
-    }
-
-    private fun findField(type: Class<*>, name: String): java.lang.reflect.Field? {
-        var current: Class<*>? = type
-        while (current != null) {
-            runCatching { current.getDeclaredField(name) }.getOrNull()?.let { return it }
-            current = current.superclass
-        }
-        return null
-    }
-
-    private fun collectInterfaces(type: Class<*>): Array<Class<*>> {
-        val all = LinkedHashSet<Class<*>>()
-        var current: Class<*>? = type
-        while (current != null) {
-            all.addAll(current.interfaces)
-            current = current.superclass
-        }
-        return all.toTypedArray()
     }
 }
