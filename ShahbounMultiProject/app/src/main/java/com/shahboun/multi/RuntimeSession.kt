@@ -88,9 +88,9 @@ class RuntimeSession(
 private class GuestDexClassLoader(
     dexPath: String,
     optimizedDirectory: String?,
-    librarySearchPath: String?,
+    private val guestNativeDir: File,
     parent: ClassLoader
-) : DexClassLoader(dexPath, optimizedDirectory, librarySearchPath, parent) {
+) : DexClassLoader(dexPath, optimizedDirectory, guestNativeDir.absolutePath, parent) {
     private val parentFirstPrefixes = arrayOf(
         "java.", "javax.", "android.", "dalvik.", "sun.",
         "org.xml.", "org.w3c."
@@ -104,6 +104,21 @@ private class GuestDexClassLoader(
         if (resolve) resolveClass(loaded)
         return loaded
     }
+
+    override fun findLibrary(name: String): String? {
+        val mapped = System.mapLibraryName(name)
+        val direct = File(guestNativeDir, mapped)
+        if (direct.isFile && direct.canRead()) {
+            RuntimeDiagnostics.log("NATIVE", "resolved library name=$name file=${direct.name} size=${direct.length()}")
+            return direct.absolutePath
+        }
+        val inherited = super.findLibrary(name)
+        RuntimeDiagnostics.log(
+            "NATIVE",
+            "library lookup name=$name mapped=$mapped direct=${direct.exists()} inherited=${inherited ?: "missing"} dir=${guestNativeDir.absolutePath}"
+        )
+        return inherited
+    }
 }
 
 class RuntimeSessionFactory(private val context: Context) {
@@ -112,7 +127,12 @@ class RuntimeSessionFactory(private val context: Context) {
         RuntimeCodeSecurity.prepareApks(allApks)
         val codeCache = File(slotDir, "code_cache").apply { require(exists() || mkdirs()) }
         val nativeDir = File(slotDir, "native").apply { if (exists()) deleteRecursively(); require(mkdirs()) }
-        NativeLibraryExtractor.extract(allApks, nativeDir)
+        val nativeResult = NativeLibraryExtractor.extract(allApks, nativeDir)
+        RuntimeDiagnostics.log(
+            "NATIVE",
+            "extract package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} libraries=${nativeResult.files.size} " +
+                "names=${nativeResult.files.joinToString { it.name }}"
+        )
         RuntimeDiagnostics.log("DEX", "loading package=${pkg.packageName} slot=${pkg.slot} apks=${allApks.size} " + allApks.joinToString { "${it.name}:r=${it.canRead()}:w=${it.canWrite()}:size=${it.length()}" })
 
         val codeApks = allApks.filter(::containsDexCode)
@@ -122,7 +142,7 @@ class RuntimeSessionFactory(private val context: Context) {
 
         val hostLoader = context.classLoader
         val platformParent = hostLoader.parent ?: ClassLoader.getSystemClassLoader().parent ?: ClassLoader.getSystemClassLoader()
-        val loader = GuestDexClassLoader(dexPath, codeCache.absolutePath, nativeDir.absolutePath, platformParent)
+        val loader = GuestDexClassLoader(dexPath, codeCache.absolutePath, nativeDir, platformParent)
         RuntimeDiagnostics.log("DEX", "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}")
 
         val effectivePkg = resolveLauncherTarget(pkg, loader)
@@ -229,22 +249,39 @@ private object RuntimeCodeSecurity {
 }
 
 private object NativeLibraryExtractor {
-    fun extract(apks: List<File>, targetDir: File) {
+    data class Result(val abi: String?, val files: List<File>)
+
+    fun extract(apks: List<File>, targetDir: File): Result {
         val supported = Build.SUPPORTED_ABIS.toList()
-        var selectedAbi: String? = null
-        for (abi in supported) if (apks.any { containsAbi(it, abi) }) { selectedAbi = abi; break }
-        val abi = selectedAbi ?: return
-        apks.forEach { apk -> extractAbi(apk, abi, targetDir) }
+        val abi = supported.firstOrNull { candidate -> apks.any { containsAbi(it, candidate) } }
+            ?: return Result(null, emptyList())
+        val extracted = LinkedHashMap<String, File>()
+        apks.forEach { apk -> extractAbi(apk, abi, targetDir, extracted) }
+        extracted.values.forEach { file ->
+            require(file.isFile && file.length() > 0 && file.canRead()) { "مكتبة Native غير صالحة: ${file.name}" }
+            runCatching { Os.chmod(file.absolutePath, 0b101101101) }
+        }
+        return Result(abi, extracted.values.toList())
     }
-    private fun containsAbi(apk: File, abi: String): Boolean = ZipFile(apk).use { zip -> zip.entries().asSequence().any { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") } }
-    private fun extractAbi(apk: File, abi: String, targetDir: File) {
+
+    private fun containsAbi(apk: File, abi: String): Boolean = ZipFile(apk).use { zip ->
+        zip.entries().asSequence().any { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") }
+    }
+
+    private fun extractAbi(apk: File, abi: String, targetDir: File, extracted: MutableMap<String, File>) {
         ZipFile(apk).use { zip ->
             zip.entries().asSequence().filter { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") }.forEach { entry ->
                 val fileName = entry.name.substringAfterLast('/')
                 require(fileName.isNotBlank() && !fileName.contains("..")) { "اسم مكتبة Native غير صالح" }
                 val out = File(targetDir, fileName)
-                zip.getInputStream(entry).use { input -> FileOutputStream(out).use { output -> input.copyTo(output) } }
-                require(out.isFile && out.length() > 0) { "فشل استخراج مكتبة Native" }
+                // Later split APKs may contain the canonical/config-specific copy. Replace atomically
+                // rather than silently keeping a stale library from a previous archive.
+                val temp = File(targetDir, ".$fileName.tmp")
+                zip.getInputStream(entry).use { input -> FileOutputStream(temp).use { output -> input.copyTo(output) } }
+                require(temp.isFile && temp.length() > 0) { "فشل استخراج مكتبة Native" }
+                if (out.exists()) out.delete()
+                require(temp.renameTo(out)) { "فشل تثبيت مكتبة Native: $fileName" }
+                extracted[fileName] = out
             }
         }
     }
