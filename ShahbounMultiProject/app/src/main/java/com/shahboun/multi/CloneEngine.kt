@@ -20,7 +20,7 @@ interface CloneEngine {
 
 /** Shahboun-owned runtime and clone lifecycle. */
 class ShahbounCloneEngine : CloneEngine {
-    override val name: String = "Shahboun Clone Engine 2.0"
+    override val name: String = "Shahboun Clone Engine 2.1"
 
     private lateinit var appContext: Context
     private lateinit var rootDir: File
@@ -59,7 +59,7 @@ class ShahbounCloneEngine : CloneEngine {
             })
             installer.snapshot(packageName, slot, dir)
             val processIndex = RuntimeProcessPool.allocateProcess(packageName, slot)
-            RuntimeDiagnostics.log("CLONE", "created $packageName/$slot process=:clone$processIndex engine=2")
+            RuntimeDiagnostics.log("CLONE", "created $packageName/$slot process=:clone$processIndex engine=2.1")
         } catch (t: Throwable) {
             RuntimeProcessPool.releaseProcess(packageName, slot)
             dir.deleteRecursively()
@@ -139,8 +139,20 @@ class ShahbounCloneEngine : CloneEngine {
             val session = sessionFactory.create(pkg, dir)
             RuntimeRegistry.put(session)
             try {
+                // Large apps initialize package/process state inside Application constructors,
+                // attachBaseContext and ContentProviders. Bind the process + LoadedApk BEFORE any
+                // guest lifecycle code so those early reads see the virtual package consistently.
+                RuntimeGuestProcessIdentity.pin(session)
+                RuntimeExecutionScope.bindProcessSession(session)
+                RuntimeLoadedApkBridge.bind(appContext, session).getOrThrow()
+                RuntimeDiagnostics.log("RUNTIME", "prebound guest framework $packageName/$slot process=${currentProcessName()}")
+
                 RuntimeDiagnostics.log("RUNTIME", "restoring guest session $packageName/$slot process=${currentProcessName()}")
                 session.ensureGuestApplication(appContext, dir)
+
+                // Re-apply after Application creation so LoadedApk.mApplication references the real
+                // guest Application instead of the pre-bootstrap null placeholder.
+                RuntimeLoadedApkBridge.bind(appContext, session).getOrThrow()
                 RuntimeDiagnostics.log("RUNTIME", "restored guest session $packageName/$slot process=${currentProcessName()}")
                 return session
             } catch (t: Throwable) {
