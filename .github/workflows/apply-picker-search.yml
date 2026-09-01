@@ -63,3 +63,4 @@ jobs:
           git add ShahbounMultiProject/app/src/main/java/com/shahboun/multi/MainActivity.kt
           git commit -m 'Add search to installed app picker'
           git push
+# one-shot migration trigger
