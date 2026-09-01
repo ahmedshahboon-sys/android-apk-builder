@@ -1,8 +1,5 @@
 package com.shahboun.multi
 
-import android.app.Application
-import android.os.Build
-
 /**
  * Tracks which clone owns execution. Thread scope is precise during callbacks; isolated clone
  * processes keep one immutable process-level owner so async Handlers/listeners never inherit a
@@ -22,10 +19,14 @@ object RuntimeExecutionScope {
             val existing = processSession
             if (existing == null) {
                 processSession = session
+                RuntimeGuestProcessIdentity.pin(session)
                 RuntimeDiagnostics.log("RUNTIME", "process identity bound ${identity(session)} process=${processName()}")
                 return
             }
-            if (sameIdentity(existing, session)) return
+            if (sameIdentity(existing, session)) {
+                RuntimeGuestProcessIdentity.pin(session)
+                return
+            }
 
             RuntimeDiagnostics.log(
                 "RUNTIME",
@@ -71,5 +72,5 @@ object RuntimeExecutionScope {
         "${session.runtimePackage.packageName}/${session.runtimePackage.slot}"
 
     private fun isCloneProcess(): Boolean = processName().contains(":clone")
-    private fun processName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
+    private fun processName(): String = RuntimeGuestProcessIdentity.hostProcessName()
 }
