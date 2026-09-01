@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 17
-        versionName = "0.5.2"
+        versionCode = 18
+        versionName = "0.5.3-devdiag"
         manifestPlaceholders["debugActivityEnabled"] = "true"
     }
 
@@ -49,10 +49,12 @@ android {
             if (hasStableSigning) signingConfig = signingConfigs.getByName("shahbounStable")
         }
         release {
-            isDebuggable = false
+            // Development baseline: one updateable APK with diagnostics built in.
+            // This stays enabled until the user explicitly asks for the final no-diagnostics build.
+            isDebuggable = true
             isMinifyEnabled = false
             isShrinkResources = false
-            manifestPlaceholders["debugActivityEnabled"] = "false"
+            manifestPlaceholders["debugActivityEnabled"] = "true"
             if (hasStableSigning) signingConfig = signingConfigs.getByName("shahbounStable")
         }
     }
