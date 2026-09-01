@@ -35,6 +35,7 @@ object RuntimeReadinessReport {
         checks += bridge(log, "JobScheduler", "jobs")
         checks += bridge(log, "Clipboard", "clipboard")
         checks += identityCheck(log)
+        checks += accountCheck(log)
 
         checks += runtimeFeature(log, "Background services", listOf("[SERVICE] created guest", "[SERVICE] start"))
         checks += runtimeFeature(log, "Broadcast receivers", listOf("[RECEIVER]", "broadcast routed="))
@@ -97,6 +98,13 @@ object RuntimeReadinessReport {
             log.contains("[BRIDGE] identity=ready") -> Check("Framework identity", "OK")
             else -> Check("Framework identity", "NOT TESTED")
         }
+    }
+
+    private fun accountCheck(log: String): Check = when {
+        log.contains("ACCOUNT identity proxy installed") -> Check("AccountManager", "OK")
+        log.contains("ACCOUNT binder service unavailable") -> Check("AccountManager", "FALLBACK", "IAccountManager binder غير متاح")
+        log.contains("ACCOUNT manager unavailable") -> Check("AccountManager", "FALLBACK", "AccountManager غير متاح")
+        else -> Check("AccountManager", "NOT TESTED")
     }
 
     private fun runtimeFeature(log: String, name: String, markers: List<String>, permissionOnly: Boolean = false): Check {
