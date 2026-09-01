@@ -7,7 +7,7 @@ import android.os.Build
 
 internal const val EXTRA_RUNTIME_ORIGINAL_INTENT = "shahboun.runtime.original_intent"
 
-/** Routes only intents that target the current guest package back through our declared host stub. */
+/** Routes intents owned by the current guest back through the declared host stub. */
 object RuntimeIntentRouter {
     fun wrap(context: Context, session: RuntimeSession, original: Intent): Intent {
         if (original.hasExtra(EXTRA_RUNTIME_PACKAGE)) return original
@@ -15,14 +15,19 @@ object RuntimeIntentRouter {
         val target = resolveGuestActivity(context, pkg, original) ?: return original
         val hostPackage = BuildConfig.APPLICATION_ID
         val stub = RuntimeProcessPool.activityStub(pkg.packageName, pkg.slot)
-        return Intent(original).apply {
+        val wrapped = Intent(original).apply {
             component = ComponentName(hostPackage, stub.name)
             `package` = hostPackage
             putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
             putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
             putExtra(EXTRA_RUNTIME_ACTIVITY, target)
-            putExtra(EXTRA_RUNTIME_ORIGINAL_INTENT, Intent(original))
+            putExtra(EXTRA_RUNTIME_ORIGINAL_INTENT, normalizePublicIntent(pkg, target, original))
         }
+        RuntimeDiagnostics.log(
+            "ROUTE",
+            "activity ${pkg.packageName}/${pkg.slot} target=$target from=${original.component?.flattenToShortString() ?: original.action} via=${wrapped.component?.flattenToShortString()}"
+        )
+        return wrapped
     }
 
     fun launchIntent(context: Context, session: RuntimeSession): Intent {
@@ -42,11 +47,27 @@ object RuntimeIntentRouter {
 
     private fun resolveGuestActivity(context: Context, pkg: RuntimePackage, intent: Intent): String? {
         intent.component?.let { component ->
+            val className = component.className
+            // Android-created guest Activities may still expose the host package through their
+            // framework Context. Intent(this, GuestActivity::class.java) therefore becomes
+            // hostPackage/guestClass. Treat it as guest-owned when the class is in the snapshot.
+            if (pkg.ownsActivity(className) &&
+                (component.packageName == pkg.packageName || component.packageName == BuildConfig.APPLICATION_ID)
+            ) return className
             if (component.packageName != pkg.packageName) return null
-            return component.className.takeIf(pkg::ownsActivity)
+            return className.takeIf(pkg::ownsActivity)
         }
-        if (intent.`package` != null && intent.`package` != pkg.packageName) return null
-        val probe = Intent(intent).apply { `package` = pkg.packageName }
+
+        val requestedPackage = intent.`package`
+        if (requestedPackage != null &&
+            requestedPackage != pkg.packageName &&
+            requestedPackage != BuildConfig.APPLICATION_ID
+        ) return null
+
+        val probe = Intent(intent).apply {
+            `package` = pkg.packageName
+            component = null
+        }
         val info = if (Build.VERSION.SDK_INT >= 33) {
             context.packageManager.resolveActivity(probe, android.content.pm.PackageManager.ResolveInfoFlags.of(0))
         } else {
@@ -55,4 +76,10 @@ object RuntimeIntentRouter {
         val name = info?.activityInfo?.takeIf { it.packageName == pkg.packageName }?.name ?: return null
         return name.takeIf(pkg::ownsActivity)
     }
+
+    private fun normalizePublicIntent(pkg: RuntimePackage, target: String, source: Intent): Intent =
+        Intent(source).apply {
+            component = ComponentName(pkg.packageName, target)
+            if (`package` == BuildConfig.APPLICATION_ID) `package` = pkg.packageName
+        }
 }
