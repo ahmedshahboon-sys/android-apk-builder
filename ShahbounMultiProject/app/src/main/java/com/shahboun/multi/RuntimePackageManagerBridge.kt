@@ -1,10 +1,12 @@
 package com.shahboun.multi
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.ComponentInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.ResolveInfo
 import android.os.Process
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
@@ -18,24 +20,29 @@ object RuntimePackageManagerBridge {
     fun install(context: Context): Result<Unit> = runCatching {
         if (installed) return@runCatching
         val pm = context.packageManager
-        val pmField = findField(pm.javaClass, "mPM") ?: error("ApplicationPackageManager.mPM غير متاح")
-        pmField.isAccessible = true
-        val delegate = pmField.get(pm) ?: error("IPackageManager غير متاح")
+        val handle = RuntimeCompatibility.findService(
+            pm,
+            interfaceHints = listOf("IPackageManager", "PackageManagerService"),
+            candidateNames = listOf("mPM")
+        ) ?: error("ApplicationPackageManager.mPM غير متاح")
+        val field = handle.field
+        val delegate = handle.delegate
         if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
             installed = true
             return@runCatching
         }
-        val interfaces = collectInterfaces(delegate.javaClass)
+        val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة IPackageManager غير متاحة" }
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate))
-        pmField.set(pm, proxy)
+        require(RuntimeCompatibility.write(field, pm, proxy)) { "تعذر تثبيت PackageManager proxy" }
         runCatching {
             val activityThread = Class.forName("android.app.ActivityThread")
-            val staticField = activityThread.getDeclaredField("sPackageManager").apply { isAccessible = true }
+            val staticField = RuntimeCompatibility.findField(activityThread, "sPackageManager") ?: return@runCatching
+            staticField.isAccessible = true
             if (staticField.get(null) === delegate) staticField.set(null, proxy)
         }.onFailure { RuntimeDiagnostics.log("PM", "global package manager field unavailable: ${it.javaClass.simpleName}") }
         installed = true
-        RuntimeDiagnostics.log("PM", "clone-aware PackageManager bridge installed")
+        RuntimeDiagnostics.log("PM", "clone-aware PackageManager bridge installed field=${field.name}")
     }
 
     private class Handler(private val context: Context, private val delegate: Any) : InvocationHandler {
@@ -45,12 +52,18 @@ object RuntimePackageManagerBridge {
             val pkg = session.runtimePackage
             val values = args ?: emptyArray()
             val packageMentioned = values.any { it == pkg.packageName }
+            val componentMentioned = values.filterIsInstance<ComponentName>().any { it.packageName == pkg.packageName }
             val uidMentioned = values.any { it is Int && it == Process.myUid() }
 
             return when (method.name) {
                 "getApplicationInfo" -> if (packageMentioned) applicationInfo(session, method, args) else invokeDelegate(method, args)
-                "getPackageInfo" -> if (packageMentioned) packageInfo(session, method, args) else invokeDelegate(method, args)
-                "getActivityInfo", "getServiceInfo", "getReceiverInfo", "getProviderInfo" -> patchComponentInfo(session, invokeDelegate(method, args))
+                "getPackageInfo", "getPackageInfoVersioned" -> if (packageMentioned) packageInfo(session, method, args) else invokeDelegate(method, args)
+                "getActivityInfo", "getServiceInfo", "getReceiverInfo", "getProviderInfo" -> {
+                    val result = invokeDelegate(method, args)
+                    if (componentMentioned) patchComponentInfo(session, result) else result
+                }
+                "resolveIntent", "resolveService" -> patchResolveInfo(session, invokeDelegate(method, args))
+                "queryIntentActivities", "queryIntentServices", "queryIntentReceivers", "queryIntentContentProviders" -> patchResolveCollection(session, invokeDelegate(method, args))
                 "getPackageUid" -> if (packageMentioned) Process.myUid() else invokeDelegate(method, args)
                 "getPackagesForUid" -> if (uidMentioned) arrayOf(pkg.packageName) else invokeDelegate(method, args)
                 "getNameForUid", "getNameForUidSdkSandbox" -> if (uidMentioned) pkg.packageName else invokeDelegate(method, args)
@@ -61,8 +74,8 @@ object RuntimePackageManagerBridge {
         }
 
         private fun checkGuestPermission(args: Array<out Any?>): Int {
-            val permission = args.firstOrNull { it is String && it != RuntimeExecutionScope.current()?.runtimePackage?.packageName } as? String
-                ?: return PackageManager.PERMISSION_DENIED
+            val guest = RuntimeExecutionScope.current()?.runtimePackage?.packageName
+            val permission = args.firstOrNull { it is String && it != guest } as? String ?: return PackageManager.PERMISSION_DENIED
             return context.checkSelfPermission(permission)
         }
 
@@ -87,8 +100,37 @@ object RuntimePackageManagerBridge {
 
         private fun patchComponentInfo(session: RuntimeSession, result: Any?): Any? {
             val component = result as? ComponentInfo ?: return result
+            if (component.packageName != session.runtimePackage.packageName) return result
             component.applicationInfo = applicationInfoFromOriginal(session, component.applicationInfo)
             return component
+        }
+
+        private fun patchResolveInfo(session: RuntimeSession, result: Any?): Any? {
+            val resolve = result as? ResolveInfo ?: return result
+            patchResolveEntry(session, resolve)
+            return resolve
+        }
+
+        private fun patchResolveCollection(session: RuntimeSession, result: Any?): Any? {
+            when (result) {
+                is List<*> -> result.filterIsInstance<ResolveInfo>().forEach { patchResolveEntry(session, it) }
+                is Array<*> -> result.filterIsInstance<ResolveInfo>().forEach { patchResolveEntry(session, it) }
+            }
+            // Android ParceledListSlice is intentionally left intact; its contained objects are
+            // normally materialized by ApplicationPackageManager after this Binder boundary.
+            return result
+        }
+
+        private fun patchResolveEntry(session: RuntimeSession, resolve: ResolveInfo) {
+            resolve.activityInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let {
+                it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo)
+            }
+            resolve.serviceInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let {
+                it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo)
+            }
+            resolve.providerInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let {
+                it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo)
+            }
         }
 
         private fun applicationInfoFromOriginal(session: RuntimeSession, original: ApplicationInfo?): ApplicationInfo {
@@ -120,24 +162,5 @@ object RuntimePackageManagerBridge {
         } catch (e: InvocationTargetException) {
             throw (e.targetException ?: e)
         }
-    }
-
-    private fun findField(type: Class<*>, name: String): java.lang.reflect.Field? {
-        var current: Class<*>? = type
-        while (current != null) {
-            runCatching { current.getDeclaredField(name) }.getOrNull()?.let { return it }
-            current = current.superclass
-        }
-        return null
-    }
-
-    private fun collectInterfaces(type: Class<*>): Array<Class<*>> {
-        val all = LinkedHashSet<Class<*>>()
-        var current: Class<*>? = type
-        while (current != null) {
-            all.addAll(current.interfaces)
-            current = current.superclass
-        }
-        return all.toTypedArray()
     }
 }
