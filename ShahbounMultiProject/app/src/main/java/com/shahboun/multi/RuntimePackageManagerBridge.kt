@@ -20,17 +20,11 @@ object RuntimePackageManagerBridge {
     fun install(context: Context): Result<Unit> = runCatching {
         if (installed) return@runCatching
         val pm = context.packageManager
-        val handle = RuntimeCompatibility.findService(
-            pm,
-            interfaceHints = listOf("IPackageManager", "PackageManagerService"),
-            candidateNames = listOf("mPM")
-        ) ?: error("ApplicationPackageManager.mPM غير متاح")
+        val handle = RuntimeCompatibility.findService(pm, listOf("IPackageManager", "PackageManagerService"), listOf("mPM"))
+            ?: error("ApplicationPackageManager.mPM غير متاح")
         val field = handle.field
         val delegate = handle.delegate
-        if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
-            installed = true
-            return@runCatching
-        }
+        if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) { installed = true; return@runCatching }
         val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة IPackageManager غير متاحة" }
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate))
@@ -46,13 +40,16 @@ object RuntimePackageManagerBridge {
     }
 
     private class Handler(private val context: Context, private val delegate: Any) : InvocationHandler {
+        private val componentStates = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
             if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
             val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
             val pkg = session.runtimePackage
             val values = args ?: emptyArray()
             val packageMentioned = values.any { it == pkg.packageName }
-            val componentMentioned = values.filterIsInstance<ComponentName>().any { it.packageName == pkg.packageName }
+            val guestComponents = values.filterIsInstance<ComponentName>().filter { it.packageName == pkg.packageName }
+            val componentMentioned = guestComponents.isNotEmpty()
             val uidMentioned = values.any { it is Int && it == Process.myUid() }
 
             return when (method.name) {
@@ -69,8 +66,44 @@ object RuntimePackageManagerBridge {
                 "getNameForUid", "getNameForUidSdkSandbox" -> if (uidMentioned) pkg.packageName else invokeDelegate(method, args)
                 "checkPermission" -> if (packageMentioned) checkGuestPermission(values) else invokeDelegate(method, args)
                 "checkUidPermission" -> if (uidMentioned) checkGuestPermission(values) else invokeDelegate(method, args)
+                "setComponentEnabledSetting" -> if (componentMentioned) setVirtualComponentState(guestComponents.first(), values) else invokeDelegate(method, args)
+                "setComponentEnabledSettings" -> if (containsGuestEnabledSetting(values, pkg.packageName)) setVirtualComponentStates(values, pkg.packageName) else invokeDelegate(method, args)
+                "getComponentEnabledSetting" -> if (componentMentioned) componentStates[guestComponents.first().flattenToString()] ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT else invokeDelegate(method, args)
                 else -> invokeDelegate(method, args)
             }
+        }
+
+        private fun setVirtualComponentState(component: ComponentName, args: Array<out Any?>): Any? {
+            val state = args.drop(1).firstOrNull { it is Int } as? Int ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+            componentStates[component.flattenToString()] = state
+            RuntimeDiagnostics.log("PM", "virtual component state ${component.flattenToShortString()}=$state")
+            return null
+        }
+
+        private fun containsGuestEnabledSetting(args: Array<out Any?>, guest: String): Boolean =
+            args.any { value ->
+                (value as? List<*>)?.any { setting -> enabledSettingComponent(setting)?.packageName == guest } == true
+            }
+
+        private fun setVirtualComponentStates(args: Array<out Any?>, guest: String): Any? {
+            args.forEach { value ->
+                (value as? List<*>)?.forEach { setting ->
+                    val component = enabledSettingComponent(setting) ?: return@forEach
+                    if (component.packageName != guest) return@forEach
+                    val state = runCatching { setting!!.javaClass.getMethod("getEnabledState").invoke(setting) as Int }.getOrElse {
+                        runCatching { setting!!.javaClass.getMethod("getNewState").invoke(setting) as Int }.getOrDefault(PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
+                    }
+                    componentStates[component.flattenToString()] = state
+                    RuntimeDiagnostics.log("PM", "virtual component state ${component.flattenToShortString()}=$state batch")
+                }
+            }
+            return null
+        }
+
+        private fun enabledSettingComponent(setting: Any?): ComponentName? {
+            if (setting == null) return null
+            return runCatching { setting.javaClass.getMethod("getComponentName").invoke(setting) as? ComponentName }.getOrNull()
+                ?: runCatching { RuntimeCompatibility.findField(setting.javaClass, "mComponentName", "componentName")?.let { f -> f.isAccessible = true; f.get(setting) as? ComponentName } }.getOrNull()
         }
 
         private fun checkGuestPermission(args: Array<out Any?>): Int {
@@ -105,62 +138,27 @@ object RuntimePackageManagerBridge {
             return component
         }
 
-        private fun patchResolveInfo(session: RuntimeSession, result: Any?): Any? {
-            val resolve = result as? ResolveInfo ?: return result
-            patchResolveEntry(session, resolve)
-            return resolve
-        }
-
-        private fun patchResolveCollection(session: RuntimeSession, result: Any?): Any? {
-            when (result) {
-                is List<*> -> result.filterIsInstance<ResolveInfo>().forEach { patchResolveEntry(session, it) }
-                is Array<*> -> result.filterIsInstance<ResolveInfo>().forEach { patchResolveEntry(session, it) }
-            }
-            // Android ParceledListSlice is intentionally left intact; its contained objects are
-            // normally materialized by ApplicationPackageManager after this Binder boundary.
-            return result
-        }
-
+        private fun patchResolveInfo(session: RuntimeSession, result: Any?): Any? { val resolve = result as? ResolveInfo ?: return result; patchResolveEntry(session, resolve); return resolve }
+        private fun patchResolveCollection(session: RuntimeSession, result: Any?): Any? { when (result) { is List<*> -> result.filterIsInstance<ResolveInfo>().forEach { patchResolveEntry(session, it) }; is Array<*> -> result.filterIsInstance<ResolveInfo>().forEach { patchResolveEntry(session, it) } }; return result }
         private fun patchResolveEntry(session: RuntimeSession, resolve: ResolveInfo) {
-            resolve.activityInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let {
-                it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo)
-            }
-            resolve.serviceInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let {
-                it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo)
-            }
-            resolve.providerInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let {
-                it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo)
-            }
+            resolve.activityInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let { it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo) }
+            resolve.serviceInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let { it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo) }
+            resolve.providerInfo?.takeIf { it.packageName == session.runtimePackage.packageName }?.let { it.applicationInfo = applicationInfoFromOriginal(session, it.applicationInfo) }
         }
 
         private fun applicationInfoFromOriginal(session: RuntimeSession, original: ApplicationInfo?): ApplicationInfo {
             val pkg = session.runtimePackage
-            val slotDir = (context as? MultiApplication)?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot)
-                ?: java.io.File(context.filesDir, "clone_engine")
+            val slotDir = (context as? MultiApplication)?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot) ?: java.io.File(context.filesDir, "clone_engine")
             fun dir(name: String) = java.io.File(slotDir, name).apply { if (!exists()) mkdirs() }
             return (original?.let(::ApplicationInfo) ?: ApplicationInfo()).apply {
-                packageName = pkg.packageName
-                className = pkg.applicationClass
-                uid = Process.myUid()
-                sourceDir = pkg.baseApk.absolutePath
-                publicSourceDir = pkg.baseApk.absolutePath
-                splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray()
-                splitPublicSourceDirs = splitSourceDirs
+                packageName = pkg.packageName; className = pkg.applicationClass; uid = Process.myUid(); sourceDir = pkg.baseApk.absolutePath; publicSourceDir = pkg.baseApk.absolutePath
+                splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray(); splitPublicSourceDirs = splitSourceDirs
                 if (android.os.Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
-                dataDir = dir("data").absolutePath
-                deviceProtectedDataDir = dir("device_data").absolutePath
-                nativeLibraryDir = dir("native").absolutePath
-                theme = if (pkg.appTheme != 0) pkg.appTheme else theme
-                targetSdkVersion = pkg.targetSdk
-                if (android.os.Build.VERSION.SDK_INT >= 24) minSdkVersion = pkg.minSdk
-                flags = pkg.appFlags
+                dataDir = dir("data").absolutePath; deviceProtectedDataDir = dir("device_data").absolutePath; nativeLibraryDir = dir("native").absolutePath
+                theme = if (pkg.appTheme != 0) pkg.appTheme else theme; targetSdkVersion = pkg.targetSdk; if (android.os.Build.VERSION.SDK_INT >= 24) minSdkVersion = pkg.minSdk; flags = pkg.appFlags
             }
         }
 
-        private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
-            method.invoke(delegate, *(args ?: emptyArray()))
-        } catch (e: InvocationTargetException) {
-            throw (e.targetException ?: e)
-        }
+        private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try { method.invoke(delegate, *(args ?: emptyArray())) } catch (e: InvocationTargetException) { throw (e.targetException ?: e) }
     }
 }
