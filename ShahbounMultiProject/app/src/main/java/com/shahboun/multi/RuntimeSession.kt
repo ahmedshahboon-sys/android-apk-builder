@@ -89,8 +89,9 @@ private class GuestDexClassLoader(
     dexPath: String,
     optimizedDirectory: String?,
     private val guestNativeDir: File,
+    nativeSearchPath: String,
     parent: ClassLoader
-) : DexClassLoader(dexPath, optimizedDirectory, guestNativeDir.absolutePath, parent) {
+) : DexClassLoader(dexPath, optimizedDirectory, nativeSearchPath, parent) {
     private val parentFirstPrefixes = arrayOf(
         "java.", "javax.", "android.", "dalvik.", "sun.",
         "org.xml.", "org.w3c."
@@ -142,7 +143,10 @@ class RuntimeSessionFactory(private val context: Context) {
 
         val hostLoader = context.classLoader
         val platformParent = hostLoader.parent ?: ClassLoader.getSystemClassLoader().parent ?: ClassLoader.getSystemClassLoader()
-        val loader = GuestDexClassLoader(dexPath, codeCache.absolutePath, nativeDir, platformParent)
+        val apkNativePaths = nativeResult.abi?.let { abi -> allApks.map { "${it.absolutePath}!/lib/$abi" } }.orEmpty()
+        val nativeSearchPath = (listOf(nativeDir.absolutePath) + apkNativePaths).distinct().joinToString(File.pathSeparator)
+        val loader = GuestDexClassLoader(dexPath, codeCache.absolutePath, nativeDir, nativeSearchPath, platformParent)
+        RuntimeDiagnostics.log("NATIVE", "search-path package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} entries=${1 + apkNativePaths.size}")
         RuntimeDiagnostics.log("DEX", "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}")
 
         val effectivePkg = resolveLauncherTarget(pkg, loader)
@@ -274,8 +278,6 @@ private object NativeLibraryExtractor {
                 val fileName = entry.name.substringAfterLast('/')
                 require(fileName.isNotBlank() && !fileName.contains("..")) { "اسم مكتبة Native غير صالح" }
                 val out = File(targetDir, fileName)
-                // Later split APKs may contain the canonical/config-specific copy. Replace atomically
-                // rather than silently keeping a stale library from a previous archive.
                 val temp = File(targetDir, ".$fileName.tmp")
                 zip.getInputStream(entry).use { input -> FileOutputStream(temp).use { output -> input.copyTo(output) } }
                 require(temp.isFile && temp.length() > 0) { "فشل استخراج مكتبة Native" }
