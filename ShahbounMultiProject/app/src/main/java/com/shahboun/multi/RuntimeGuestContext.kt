@@ -53,8 +53,6 @@ class RuntimeGuestContext(
     override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getContentResolver(): ContentResolver = cloneContentResolver
 
-    /** System AppOps validates package name against the real host UID. Keep guest-visible packageName
-     * virtual while using the real host package for framework permission attribution. */
     override fun getOpPackageName(): String = baseContext.opPackageName
     override fun getAttributionTag(): String? = baseContext.attributionTag
     override fun getAttributionSource(): AttributionSource = baseContext.attributionSource
@@ -127,7 +125,15 @@ class RuntimeGuestContext(
     override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter): Intent? = if (receiver == null) baseContext.registerReceiver(null, filter) else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter)
     override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter, flags: Int): Intent? = if (receiver == null) baseContext.registerReceiver(null, filter, flags) else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, flags)
     override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter, broadcastPermission: String?, scheduler: Handler?): Intent? = if (receiver == null) baseContext.registerReceiver(null, filter, broadcastPermission, scheduler) else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, broadcastPermission, scheduler)
-    override fun unregisterReceiver(receiver: BroadcastReceiver) { baseContext.unregisterReceiver(dynamicReceivers.remove(receiver) ?: receiver) }
+    override fun unregisterReceiver(receiver: BroadcastReceiver?) {
+        if (receiver == null) {
+            RuntimeDiagnostics.log("RECEIVER", "ignored unregisterReceiver(null) ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
+            return
+        }
+        val wrapped = dynamicReceivers.remove(receiver) ?: receiver
+        runCatching { baseContext.unregisterReceiver(wrapped) }
+            .onFailure { RuntimeDiagnostics.log("RECEIVER", "unregister fallback ${session.runtimePackage.packageName}/${session.runtimePackage.slot}: ${it.javaClass.simpleName}: ${it.message}") }
+    }
 
     private fun wrapDynamicReceiver(receiver: BroadcastReceiver): BroadcastReceiver = dynamicReceivers.getOrPut(receiver) {
         object : BroadcastReceiver() { override fun onReceive(context: Context?, intent: Intent?) { RuntimeExecutionScope.withSession(session) { receiver.onReceive(this@RuntimeGuestContext, intent) } } }
