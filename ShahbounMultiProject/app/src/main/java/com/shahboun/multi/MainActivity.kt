@@ -155,8 +155,13 @@ class MainActivity : AppCompatActivity() {
             val labels=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.END};labels.addView(tv(a.label,15f,1).apply{gravity=Gravity.END});labels.addView(tv(a.packageName,10.5f,0,textSecondary).apply{gravity=Gravity.END;setPadding(0,dp(3),0,0)});row.addView(labels,LinearLayout.LayoutParams(0,-2,1f));container.addView(row,LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,dp(3),0,dp(3))});rows+=row to a
         }
         val scroll=ScrollView(this).apply{isFillViewport=false;addView(container,ViewGroup.LayoutParams(-1,-2))}
-        val dialog=showStyled(MaterialAlertDialogBuilder(this).setTitle("اختر تطبيقًا مثبتًا").setView(scroll).setNegativeButton("إلغاء",null))
-        scroll.layoutParams=scroll.layoutParams.apply{height=(resources.displayMetrics.heightPixels*.68f).toInt()}
+        val search=TextInputEditText(this).apply{hint="ابحث باسم التطبيق أو الحزمة";setSingleLine(true);setTextColor(textPrimary);setHintTextColor(textSecondary);typeface=arabicBody;gravity=Gravity.CENTER_VERTICAL or Gravity.END;layoutDirection=View.LAYOUT_DIRECTION_RTL;background=rounded(surface2,14,Color.rgb(48,43,62));setPadding(dp(14),0,dp(14),0)}
+        val noResults=tv("ما فيش نتائج مطابقة",13f,1,textSecondary).apply{gravity=Gravity.CENTER;visibility=View.GONE;setPadding(0,dp(16),0,dp(10))}
+        val pickerRoot=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setPadding(dp(8),dp(4),dp(8),0)}
+        pickerRoot.addView(search,LinearLayout.LayoutParams(-1,dp(50)).apply{setMargins(0,0,0,dp(8))});pickerRoot.addView(noResults,LinearLayout.LayoutParams(-1,-2));pickerRoot.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        val dialog=showStyled(MaterialAlertDialogBuilder(this).setTitle("اختر تطبيقًا مثبتًا").setView(pickerRoot).setNegativeButton("إلغاء",null))
+        pickerRoot.layoutParams=pickerRoot.layoutParams.apply{height=(resources.displayMetrics.heightPixels*.72f).toInt()}
+        search.addTextChangedListener(object:android.text.TextWatcher{override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){};override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){val q=s?.toString()?.trim()?.lowercase().orEmpty();var shown=0;rows.forEach{(row,a)->val match=q.isBlank()||a.label.lowercase().contains(q)||a.packageName.lowercase().contains(q);row.visibility=if(match)View.VISIBLE else View.GONE;if(match)shown++};noResults.visibility=if(shown==0)View.VISIBLE else View.GONE};override fun afterTextChanged(s:android.text.Editable?){}})
         rows.forEach{(row,a)->row.setOnClickListener{RuntimeDiagnostics.log("UI","app selected ${a.packageName}");dialog.dismiss();createDialog(a)}}
         dialog.window?.decorView?.let{CairoFontManager.applyTo(it,this)}
     }
