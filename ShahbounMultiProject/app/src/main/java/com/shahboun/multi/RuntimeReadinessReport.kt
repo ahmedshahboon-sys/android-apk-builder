@@ -32,8 +32,8 @@ object RuntimeReadinessReport {
         checks += bridge(log, "Notifications", "notifications")
         checks += bridge(log, "PendingIntent / ActivityManager", "activity-manager-pending-intent")
         checks += bridge(log, "AlarmManager", "alarm")
-        checks += bridge(log, "JobScheduler", "jobs")
-        checks += bridge(log, "Clipboard", "clipboard")
+        checks += bridge(log, "JobScheduler", "jobs", "public-api JobScheduler facade active")
+        checks += bridge(log, "Clipboard", "clipboard", "public-api clipboard compatibility active")
         checks += identityCheck(log)
         checks += accountCheck(log)
 
@@ -102,11 +102,14 @@ object RuntimeReadinessReport {
         }
     }
 
-    private fun bridge(log: String, name: String, key: String): Check {
+    private fun bridge(log: String, name: String, key: String, compatibilityMarker: String? = null): Check {
         val ready = log.contains("[BRIDGE] $key=ready")
+        val compatible = compatibilityMarker?.let(log::contains) == true
         val fallbackLine = log.lineSequence().lastOrNull { it.contains("[BRIDGE] $key=fallback") }
         return when {
+            ready && compatible -> Check(name, "OK", "Android public API compatibility")
             ready -> Check(name, "OK")
+            compatible -> Check(name, "OK", "Android public API compatibility")
             fallbackLine != null -> Check(name, "FALLBACK", fallbackLine.substringAfter("fallback ").take(180))
             else -> Check(name, "NOT TESTED")
         }
@@ -124,6 +127,7 @@ object RuntimeReadinessReport {
 
     private fun accountCheck(log: String): Check = when {
         log.contains("ACCOUNT identity proxy installed") -> Check("AccountManager", "OK")
+        log.contains("ACCOUNT public-api passthrough active") || log.contains("ACCOUNT public-api service") -> Check("AccountManager", "OK", "Android public API compatibility")
         log.contains("ACCOUNT binder service unavailable") -> Check("AccountManager", "FALLBACK", "IAccountManager binder غير متاح")
         log.contains("ACCOUNT manager unavailable") -> Check("AccountManager", "FALLBACK", "AccountManager غير متاح")
         else -> Check("AccountManager", "NOT TESTED")
@@ -150,6 +154,7 @@ object RuntimeReadinessReport {
         crash.contains("ActivityNotFoundException") -> "Internal Activity Routing"
         crash.contains("Resources\$NotFoundException") -> "Guest Resources"
         crash.contains("does not belong to") -> "Framework package/UID identity"
+        crash.contains("UnsatisfiedLinkError") -> "Guest Native Libraries / JNI"
         crash.contains("ClassNotFoundException") -> "DEX / component resolution"
         crash.contains("Theme.AppCompat") -> "Activity theme virtualization"
         crash.contains("SecurityException") -> "Android framework identity / permission"
