@@ -30,7 +30,7 @@ class RuntimeStubActivity7 : RuntimeStubActivity()
 class RuntimeStubActivity8 : RuntimeStubActivity()
 class RuntimeStubActivity9 : RuntimeStubActivity()
 
-/** Ten fixed host processes. Consecutive slots of one package map to distinct processes. */
+/** Ten declared host processes with persistent per-clone allocation. */
 object RuntimeProcessPool {
     private val activityStubs: Array<Class<out Activity>> = arrayOf(
         RuntimeStubActivity0::class.java, RuntimeStubActivity1::class.java, RuntimeStubActivity2::class.java,
@@ -57,7 +57,23 @@ object RuntimeProcessPool {
         RuntimeJobService9::class.java
     )
 
-    fun processIndex(packageName: String, slot: Int): Int = Math.floorMod(31 * packageName.hashCode() + slot, activityStubs.size)
+    val size: Int get() = activityStubs.size
+
+    fun allocateProcess(packageName: String, slot: Int): Int {
+        val app = MultiApplication.current ?: return RuntimeProcessAllocator.legacyIndex(packageName, slot, size)
+        return RuntimeProcessAllocator.allocate(app, packageName, slot, size)
+    }
+
+    fun processIndex(packageName: String, slot: Int): Int {
+        val app = MultiApplication.current
+        return RuntimeProcessAllocator.lookup(app, packageName, slot, size)
+            ?: RuntimeProcessAllocator.legacyIndex(packageName, slot, size)
+    }
+
+    fun releaseProcess(packageName: String, slot: Int) {
+        MultiApplication.current?.let { RuntimeProcessAllocator.release(it, packageName, slot) }
+    }
+
     fun activityStub(packageName: String, slot: Int): Class<out Activity> = activityStubs[processIndex(packageName, slot)]
     fun serviceStub(packageName: String, slot: Int): Class<out Service> = serviceStubs[processIndex(packageName, slot)]
     fun receiverStub(packageName: String, slot: Int): Class<out BroadcastReceiver> = receiverStubs[processIndex(packageName, slot)]
