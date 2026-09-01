@@ -5,7 +5,8 @@ import android.os.Build
 
 /**
  * Tracks which clone owns execution. Thread scope is precise during callbacks; isolated clone
- * processes also keep a process-level identity so async Handlers/listeners do not fall back to host identity.
+ * processes keep one immutable process-level owner so async Handlers/listeners never inherit a
+ * different clone identity. A process must never host two distinct clone identities concurrently.
  */
 object RuntimeExecutionScope {
     private val local = object : InheritableThreadLocal<RuntimeSession?>() {}
@@ -17,19 +18,36 @@ object RuntimeExecutionScope {
 
     fun bindProcessSession(session: RuntimeSession) {
         if (!isCloneProcess()) return
-        val existing = processSession
-        if (existing == null || (existing.runtimePackage.packageName == session.runtimePackage.packageName && existing.runtimePackage.slot == session.runtimePackage.slot)) {
-            processSession = session
-            RuntimeDiagnostics.log("RUNTIME", "process identity bound ${session.runtimePackage.packageName}/${session.runtimePackage.slot} process=${processName()}")
-        } else {
-            RuntimeDiagnostics.log("RUNTIME", "process identity switched ${existing.runtimePackage.packageName}/${existing.runtimePackage.slot} -> ${session.runtimePackage.packageName}/${session.runtimePackage.slot} process=${processName()}")
-            processSession = session
+        synchronized(this) {
+            val existing = processSession
+            if (existing == null) {
+                processSession = session
+                RuntimeDiagnostics.log("RUNTIME", "process identity bound ${identity(session)} process=${processName()}")
+                return
+            }
+            if (sameIdentity(existing, session)) return
+
+            RuntimeDiagnostics.log(
+                "RUNTIME",
+                "PROCESS COLLISION rejected existing=${identity(existing)} incoming=${identity(session)} process=${processName()}"
+            )
+            error(
+                "رفض خلط نسختين داخل نفس عملية التشغيل: process=${processName()} " +
+                    "existing=${identity(existing)} incoming=${identity(session)}"
+            )
         }
     }
 
     fun clearProcessSession(session: RuntimeSession) {
-        if (processSession === session) processSession = null
+        synchronized(this) {
+            if (processSession === session || processSession?.let { sameIdentity(it, session) } == true) {
+                RuntimeDiagnostics.log("RUNTIME", "process identity released ${identity(session)} process=${processName()}")
+                processSession = null
+            }
+        }
     }
+
+    fun processOwner(): Pair<String, Int>? = processSession?.let { it.runtimePackage.packageName to it.runtimePackage.slot }
 
     fun <T> withSession(session: RuntimeSession, block: () -> T): T {
         bindProcessSession(session)
@@ -45,6 +63,12 @@ object RuntimeExecutionScope {
             if (previous == null) local.remove() else local.set(previous)
         }
     }
+
+    private fun sameIdentity(a: RuntimeSession, b: RuntimeSession): Boolean =
+        a.runtimePackage.packageName == b.runtimePackage.packageName && a.runtimePackage.slot == b.runtimePackage.slot
+
+    private fun identity(session: RuntimeSession): String =
+        "${session.runtimePackage.packageName}/${session.runtimePackage.slot}"
 
     private fun isCloneProcess(): Boolean = processName().contains(":clone")
     private fun processName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
