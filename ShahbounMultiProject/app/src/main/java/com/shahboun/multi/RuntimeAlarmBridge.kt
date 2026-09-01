@@ -17,18 +17,23 @@ object RuntimeAlarmBridge {
     fun install(context: Context): Result<Unit> = runCatching {
         if (installed) return@runCatching
         val manager = context.getSystemService(AlarmManager::class.java) ?: error("AlarmManager غير متاح")
-        val field = findField(manager.javaClass, "mService") ?: error("AlarmManager.mService غير متاح")
-        field.isAccessible = true
-        val delegate = field.get(manager) ?: error("IAlarmManager غير متاح")
+        val handle = RuntimeCompatibility.findService(
+            manager,
+            interfaceHints = listOf("IAlarmManager", "AlarmManagerService"),
+            candidateNames = listOf("mService", "sService")
+        ) ?: error("IAlarmManager غير متاح")
+        val field = handle.field
+        val delegate = handle.delegate
         if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
             installed = true
             return@runCatching
         }
-        val interfaces = collectInterfaces(delegate.javaClass)
+        val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة IAlarmManager غير متاحة" }
-        field.set(manager, Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate, context.packageName)))
+        val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate, context.packageName))
+        require(RuntimeCompatibility.write(field, manager, proxy)) { "تعذر تثبيت AlarmManager proxy" }
         installed = true
-        RuntimeDiagnostics.log("ALARM", "clone-aware AlarmManager bridge installed")
+        RuntimeDiagnostics.log("ALARM", "clone-aware AlarmManager bridge installed field=${field.name} owner=${field.declaringClass.name}")
     }
 
     private class Handler(private val delegate: Any, private val hostPackage: String) : InvocationHandler {
@@ -57,24 +62,5 @@ object RuntimeAlarmBridge {
         } catch (e: InvocationTargetException) {
             throw (e.targetException ?: e)
         }
-    }
-
-    private fun findField(type: Class<*>, name: String): java.lang.reflect.Field? {
-        var current: Class<*>? = type
-        while (current != null) {
-            runCatching { current.getDeclaredField(name) }.getOrNull()?.let { return it }
-            current = current.superclass
-        }
-        return null
-    }
-
-    private fun collectInterfaces(type: Class<*>): Array<Class<*>> {
-        val out = LinkedHashSet<Class<*>>()
-        var current: Class<*>? = type
-        while (current != null) {
-            out.addAll(current.interfaces)
-            current = current.superclass
-        }
-        return out.toTypedArray()
     }
 }
