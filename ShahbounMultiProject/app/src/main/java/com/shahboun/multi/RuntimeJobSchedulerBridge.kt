@@ -26,18 +26,21 @@ object RuntimeJobSchedulerBridge {
         if (installed) return@runCatching
         appContext = context.applicationContext
         val scheduler = context.getSystemService(JobScheduler::class.java) ?: error("JobScheduler غير متاح")
-        val pair = findServiceField(scheduler, "IJobScheduler") ?: error("IJobScheduler binder غير متاح")
-        val field = pair.first
-        val delegate = pair.second
+        val handle = RuntimeCompatibility.findService(
+            scheduler,
+            interfaceHints = listOf("IJobScheduler", "JobSchedulerService"),
+            candidateNames = listOf("mBinder", "mService", "mScheduler", "mJobScheduler")
+        ) ?: error("IJobScheduler binder غير متاح")
+        val field = handle.field
+        val delegate = handle.delegate
         if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
             installed = true
             return@runCatching
         }
-        val interfaces = collectInterfaces(delegate.javaClass)
+        val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة IJobScheduler غير متاحة" }
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate))
-        field.isAccessible = true
-        field.set(scheduler, proxy)
+        require(RuntimeCompatibility.write(field, scheduler, proxy)) { "تعذر تثبيت JobScheduler proxy" }
         installed = true
         RuntimeDiagnostics.log("JOB", "clone-aware JobScheduler bridge installed field=${field.name} owner=${field.declaringClass.name}")
     }
@@ -149,8 +152,8 @@ object RuntimeJobSchedulerBridge {
     private fun cloneAndPatchJob(original: JobInfo, hostId: Int, hostService: ComponentName): Result<JobInfo> = runCatching {
         val parcel = android.os.Parcel.obtain()
         val clone = try { original.writeToParcel(parcel, 0); parcel.setDataPosition(0); JobInfo.CREATOR.createFromParcel(parcel) } finally { parcel.recycle() }
-        val idField = findField(JobInfo::class.java, "jobId") ?: error("JobInfo.jobId غير متاح")
-        val serviceField = findField(JobInfo::class.java, "service") ?: error("JobInfo.service غير متاح")
+        val idField = RuntimeCompatibility.findField(JobInfo::class.java, "jobId", "mJobId") ?: error("JobInfo.jobId غير متاح")
+        val serviceField = RuntimeCompatibility.findField(JobInfo::class.java, "service", "mService") ?: error("JobInfo.service غير متاح")
         idField.isAccessible = true; serviceField.isAccessible = true
         idField.setInt(clone, hostId); serviceField.set(clone, hostService)
         clone
@@ -168,26 +171,6 @@ object RuntimeJobSchedulerBridge {
         lookup(id)?.takeIf { it.packageName == packageName && it.slot == slot }
     }
     private fun nullFor(type: Class<*>): Any? = when (type) { Boolean::class.javaPrimitiveType -> false; Int::class.javaPrimitiveType -> 0; Long::class.javaPrimitiveType -> 0L; else -> null }
-
-    private fun findServiceField(instance: Any, hint: String): Pair<java.lang.reflect.Field, Any>? {
-        var c: Class<*>? = instance.javaClass
-        while (c != null) {
-            for (field in c.declaredFields) {
-                val value = runCatching { field.isAccessible = true; field.get(instance) }.getOrNull() ?: continue
-                val names = buildList {
-                    add(value.javaClass.name); add(field.type.name)
-                    value.javaClass.interfaces.forEach { add(it.name) }
-                    field.type.interfaces.forEach { add(it.name) }
-                }
-                if (names.any { it.contains(hint, ignoreCase = true) }) return field to value
-            }
-            c = c.superclass
-        }
-        return null
-    }
-
-    private fun findField(type: Class<*>, name: String): java.lang.reflect.Field? { var current:Class<*>?=type; while(current!=null){runCatching{current.getDeclaredField(name)}.getOrNull()?.let{return it};current=current.superclass};return null }
-    private fun collectInterfaces(type: Class<*>): Array<Class<*>> { val all=LinkedHashSet<Class<*>>();var current:Class<*>?=type;while(current!=null){all.addAll(current.interfaces);current=current.superclass};return all.toTypedArray() }
 }
 
 open class RuntimeJobService : JobService() {
