@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 23
-        versionName = "0.5.8-deepdiag"
+        versionCode = 24
+        versionName = "0.5.9-deepdiag"
         manifestPlaceholders["debugActivityEnabled"] = "true"
     }
 
