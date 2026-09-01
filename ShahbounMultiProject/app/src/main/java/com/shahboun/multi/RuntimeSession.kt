@@ -6,7 +6,10 @@ import android.content.ContextWrapper
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.Resources
+import android.content.res.loader.ResourcesLoader
+import android.content.res.loader.ResourcesProvider
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.system.Os
 import android.util.TypedValue
 import dalvik.system.DexClassLoader
@@ -20,6 +23,8 @@ class RuntimeSession(
     val runtimePackage: RuntimePackage,
     val classLoader: DexClassLoader,
     val resources: Resources,
+    val resourcesLoader: ResourcesLoader?,
+    private val loaderHostResources: Resources?,
     private val closeables: List<Closeable>
 ) : Closeable {
     @Volatile var guestApplication: Application? = null
@@ -59,10 +64,23 @@ class RuntimeSession(
         return app
     }
 
+    fun attachLoaderTo(target: Resources): Boolean {
+        val loader = resourcesLoader ?: return false
+        return runCatching {
+            if (!target.loaders.contains(loader)) target.addLoaders(loader)
+            true
+        }.onFailure {
+            RuntimeDiagnostics.log("RES", "attach loader failed ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}: ${it.message}")
+        }.getOrDefault(false)
+    }
+
     override fun close() {
         runCatching { componentHost?.close() }
         componentHost = null
         guestApplication = null
+        val loader = resourcesLoader
+        val host = loaderHostResources
+        if (loader != null && host != null) runCatching { host.removeLoaders(loader) }
         closeables.asReversed().forEach { runCatching { it.close() } }
     }
 }
@@ -130,6 +148,32 @@ class RuntimeSessionFactory(private val context: Context) {
             "archive resource graph attached package=${effectivePkg.packageName} apks=${allApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets}"
         )
 
+        // Android 16 ActivityThread copies Application ResourcesLoader(s) into the activity base
+        // context after Instrumentation.newActivity() and before Activity.attach(). Install the guest
+        // APK resource graph here so the framework creates the Activity with guest-aware Resources
+        // instead of trying to replace private Activity caches after attach.
+        var runtimeResourcesLoader: ResourcesLoader? = null
+        var loaderHostResources: Resources? = null
+        if (Build.VERSION.SDK_INT >= 30) {
+            runCatching {
+                val resLoader = ResourcesLoader()
+                allApks.forEach { apk ->
+                    val provider = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                        ResourcesProvider.loadFromApk(pfd)
+                    }
+                    resLoader.addProvider(provider)
+                    closeables += provider
+                }
+                val hostResources = context.applicationContext.resources
+                hostResources.addLoaders(resLoader)
+                runtimeResourcesLoader = resLoader
+                loaderHostResources = hostResources
+                RuntimeDiagnostics.log("RES", "application loader installed ${effectivePkg.packageName}/${effectivePkg.slot} providers=${allApks.size} process=${Application.getProcessName()}")
+            }.onFailure {
+                RuntimeDiagnostics.log("RES", "application loader fallback ${effectivePkg.packageName}/${effectivePkg.slot}: ${it.javaClass.simpleName}: ${it.message}")
+            }
+        }
+
         if (effectivePkg.packageName == "com.whatsapp") {
             val probe = 0x7f0e1351
             runCatching {
@@ -144,7 +188,7 @@ class RuntimeSessionFactory(private val context: Context) {
         val launcher = loader.loadClass(effectivePkg.launchActivity)
         require(android.app.Activity::class.java.isAssignableFrom(launcher)) { "شاشة تشغيل التطبيق ليست Activity صالحة" }
         effectivePkg.applicationClass?.let { name -> require(Application::class.java.isAssignableFrom(loader.loadClass(name))) { "Application class غير صالح" } }
-        return RuntimeSession(effectivePkg, loader, resources, closeables)
+        return RuntimeSession(effectivePkg, loader, resources, runtimeResourcesLoader, loaderHostResources, closeables)
     }
 
     private fun resolveLauncherTarget(pkg: RuntimePackage, loader: ClassLoader): RuntimePackage {
