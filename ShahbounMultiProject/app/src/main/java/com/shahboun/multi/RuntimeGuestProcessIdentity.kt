@@ -7,10 +7,9 @@ import android.os.Build
  * Exposes a stable guest main-process identity inside an isolated Shahboun clone process.
  *
  * Each :cloneN process is permanently owned by exactly one clone session. Large multi-process apps
- * cache Application.getProcessName()/ActivityThread.currentProcessName() during static init and on
- * background threads, so a temporary callback-only override is not sufficient. We therefore pin
- * ActivityThread's local bound-process name for the lifetime of the clone process while keeping the
- * real host process name cached for Shahboun's own routing/validation.
+ * cache Application.getProcessName()/ActivityThread.currentProcessName() during class initialization,
+ * attachBaseContext and background bootstrap. A callback-only override is therefore too late. The
+ * identity is pinned before RuntimeSession/Application creation and stays pinned for the process life.
  */
 object RuntimeGuestProcessIdentity {
     private val lock = Any()
@@ -21,12 +20,13 @@ object RuntimeGuestProcessIdentity {
 
     fun hostProcessName(): String = realHostProcessName
 
-    fun pin(session: RuntimeSession) = synchronized(lock) {
-        val guestName = session.runtimePackage.packageName
+    fun pin(session: RuntimeSession) = pinPackage(session.runtimePackage.packageName, session.runtimePackage.slot)
+
+    fun pinPackage(packageName: String, slot: Int) = synchronized(lock) {
         val existing = pinnedGuest
-        if (existing == guestName) return@synchronized
+        if (existing == packageName) return@synchronized
         require(existing == null) {
-            "رفض تغيير هوية عملية clone من $existing إلى $guestName"
+            "رفض تغيير هوية عملية clone من $existing إلى $packageName"
         }
 
         val threadClass = Class.forName("android.app.ActivityThread")
@@ -40,11 +40,11 @@ object RuntimeGuestProcessIdentity {
             ?: error("AppBindData.processName غير متاح")
         processField.isAccessible = true
         val old = runCatching { processField.get(bound) as? String }.getOrNull()
-        processField.set(bound, guestName)
-        pinnedGuest = guestName
+        processField.set(bound, packageName)
+        pinnedGuest = packageName
         RuntimeDiagnostics.log(
             "IDENTITY",
-            "guest process identity pinned ${session.runtimePackage.packageName}/${session.runtimePackage.slot} real=$realHostProcessName old=$old guest=$guestName"
+            "guest process identity pinned $packageName/$slot real=$realHostProcessName old=$old guest=$packageName"
         )
     }
 
