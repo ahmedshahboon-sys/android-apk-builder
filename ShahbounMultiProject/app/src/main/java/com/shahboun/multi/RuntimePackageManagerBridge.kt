@@ -44,7 +44,7 @@ object RuntimePackageManagerBridge {
 
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
             if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
-            val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
+            val session = RuntimeSessionResolver.current(context, args) ?: return invokeDelegate(method, args)
             val pkg = session.runtimePackage
             val values = args ?: emptyArray()
             val packageMentioned = values.any { it == pkg.packageName }
@@ -66,18 +66,31 @@ object RuntimePackageManagerBridge {
                 "getNameForUid", "getNameForUidSdkSandbox" -> if (uidMentioned) pkg.packageName else invokeDelegate(method, args)
                 "checkPermission" -> if (packageMentioned) checkGuestPermission(values) else invokeDelegate(method, args)
                 "checkUidPermission" -> if (uidMentioned) checkGuestPermission(values) else invokeDelegate(method, args)
-                "setComponentEnabledSetting" -> if (componentMentioned) setVirtualComponentState(guestComponents.first(), values) else invokeDelegate(method, args)
-                "setComponentEnabledSettings" -> if (containsGuestEnabledSetting(values, pkg.packageName)) setVirtualComponentStates(values, pkg.packageName) else invokeDelegate(method, args)
-                "getComponentEnabledSetting" -> if (componentMentioned) componentStates[guestComponents.first().flattenToString()] ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT else invokeDelegate(method, args)
+                "setComponentEnabledSetting" -> if (componentMentioned) setVirtualComponentState(session, guestComponents.first(), values) else invokeDelegate(method, args)
+                "setComponentEnabledSettings" -> if (containsGuestEnabledSetting(values, pkg.packageName)) setVirtualComponentStates(session, values, pkg.packageName) else invokeDelegate(method, args)
+                "getComponentEnabledSetting" -> if (componentMentioned) virtualComponentState(session, guestComponents.first()) else invokeDelegate(method, args)
                 else -> invokeDelegate(method, args)
             }
         }
 
-        private fun setVirtualComponentState(component: ComponentName, args: Array<out Any?>): Any? {
+        private fun stateKey(session: RuntimeSession, component: ComponentName): String =
+            "${session.runtimePackage.packageName}#${session.runtimePackage.slot}:${component.flattenToString()}"
+
+        private fun setVirtualComponentState(session: RuntimeSession, component: ComponentName, args: Array<out Any?>): Any? {
             val state = args.drop(1).firstOrNull { it is Int } as? Int ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
-            componentStates[component.flattenToString()] = state
-            RuntimeDiagnostics.log("PM", "virtual component state ${component.flattenToShortString()}=$state")
+            componentStates[stateKey(session, component)] = state
+            context.getSharedPreferences("shahboun_component_states", Context.MODE_PRIVATE).edit()
+                .putInt(stateKey(session, component), state).apply()
+            RuntimeDiagnostics.log("PM", "virtual component state ${component.flattenToShortString()}=$state clone=${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
             return null
+        }
+
+        private fun virtualComponentState(session: RuntimeSession, component: ComponentName): Int {
+            val key = stateKey(session, component)
+            componentStates[key]?.let { return it }
+            return context.getSharedPreferences("shahboun_component_states", Context.MODE_PRIVATE)
+                .getInt(key, PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
+                .also { componentStates[key] = it }
         }
 
         private fun containsGuestEnabledSetting(args: Array<out Any?>, guest: String): Boolean =
@@ -85,7 +98,7 @@ object RuntimePackageManagerBridge {
                 (value as? List<*>)?.any { setting -> enabledSettingComponent(setting)?.packageName == guest } == true
             }
 
-        private fun setVirtualComponentStates(args: Array<out Any?>, guest: String): Any? {
+        private fun setVirtualComponentStates(session: RuntimeSession, args: Array<out Any?>, guest: String): Any? {
             args.forEach { value ->
                 (value as? List<*>)?.forEach { setting ->
                     val component = enabledSettingComponent(setting) ?: return@forEach
@@ -93,8 +106,10 @@ object RuntimePackageManagerBridge {
                     val state = runCatching { setting!!.javaClass.getMethod("getEnabledState").invoke(setting) as Int }.getOrElse {
                         runCatching { setting!!.javaClass.getMethod("getNewState").invoke(setting) as Int }.getOrDefault(PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
                     }
-                    componentStates[component.flattenToString()] = state
-                    RuntimeDiagnostics.log("PM", "virtual component state ${component.flattenToShortString()}=$state batch")
+                    componentStates[stateKey(session, component)] = state
+                    context.getSharedPreferences("shahboun_component_states", Context.MODE_PRIVATE).edit()
+                        .putInt(stateKey(session, component), state).apply()
+                    RuntimeDiagnostics.log("PM", "virtual component state ${component.flattenToShortString()}=$state batch clone=${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
                 }
             }
             return null
@@ -107,7 +122,7 @@ object RuntimePackageManagerBridge {
         }
 
         private fun checkGuestPermission(args: Array<out Any?>): Int {
-            val guest = RuntimeExecutionScope.current()?.runtimePackage?.packageName
+            val guest = RuntimeSessionResolver.current(context, args)?.runtimePackage?.packageName
             val permission = args.firstOrNull { it is String && it != guest } as? String ?: return PackageManager.PERMISSION_DENIED
             return context.checkSelfPermission(permission)
         }
