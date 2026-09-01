@@ -29,7 +29,7 @@ object RuntimeJobSchedulerBridge {
         val handle = RuntimeCompatibility.findService(
             scheduler,
             interfaceHints = listOf("IJobScheduler", "JobSchedulerService"),
-            candidateNames = listOf("mBinder", "mService", "mScheduler", "mJobScheduler")
+            candidateNames = listOf("mBinder", "mService", "mScheduler", "mJobScheduler", "mBinderService")
         ) ?: error("IJobScheduler binder غير متاح")
         val field = handle.field
         val delegate = handle.delegate
@@ -226,3 +226,8 @@ class RuntimeJobService1 : RuntimeJobService()
 class RuntimeJobService2 : RuntimeJobService()
 class RuntimeJobService3 : RuntimeJobService()
 class RuntimeJobService4 : RuntimeJobService()
+class RuntimeJobService5 : RuntimeJobService()
+class RuntimeJobService6 : RuntimeJobService()
+class RuntimeJobService7 : RuntimeJobService()
+class RuntimeJobService8 : RuntimeJobService()
+class RuntimeJobService9 : RuntimeJobService()
