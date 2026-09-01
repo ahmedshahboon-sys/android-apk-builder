@@ -48,7 +48,9 @@ object RuntimeLoadedApkBridge {
     fun release(session: RuntimeSession) {
         val pkg = session.runtimePackage
         val loadedApk = bound.remove(key(pkg.packageName, pkg.slot)) ?: return
-        RuntimeCompatibility.findField(loadedApk.javaClass, "mApplication")?.let { RuntimeCompatibility.write(it, loadedApk, null) }
+        RuntimeCompatibility.findField(loadedApk.javaClass, "mApplication")?.let {
+            RuntimeCompatibility.write(it, loadedApk, null)
+        }
         RuntimeDiagnostics.log("LOADEDAPK", "released ${pkg.packageName}/${pkg.slot} process=${currentProcessName()}")
     }
 
@@ -58,7 +60,10 @@ object RuntimeLoadedApkBridge {
         val original = runCatching {
             val component = ComponentName(pkg.packageName, resolved)
             if (Build.VERSION.SDK_INT >= 33) {
-                context.packageManager.getActivityInfo(component, PackageManager.ComponentInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
+                context.packageManager.getActivityInfo(
+                    component,
+                    PackageManager.ComponentInfoFlags.of(PackageManager.GET_META_DATA.toLong())
+                )
             } else {
                 @Suppress("DEPRECATION")
                 context.packageManager.getActivityInfo(component, PackageManager.GET_META_DATA)
@@ -75,7 +80,9 @@ object RuntimeLoadedApkBridge {
                 ?: pkg.launchActivityTheme.takeIf { it != 0 }
                 ?: pkg.appTheme
             if (t != 0) theme = t
-            exported = pkg.activities.firstOrNull { it.name == requested || it.name == resolved || it.targetActivity == resolved }?.exported ?: exported
+            exported = pkg.activities.firstOrNull {
+                it.name == requested || it.name == resolved || it.targetActivity == resolved
+            }?.exported ?: exported
             targetActivity = null
         }
     }
@@ -84,7 +91,10 @@ object RuntimeLoadedApkBridge {
         val pkg = session.runtimePackage
         val original = runCatching {
             if (Build.VERSION.SDK_INT >= 33) {
-                context.packageManager.getApplicationInfo(pkg.packageName, PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
+                context.packageManager.getApplicationInfo(
+                    pkg.packageName,
+                    PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong())
+                )
             } else {
                 @Suppress("DEPRECATION")
                 context.packageManager.getApplicationInfo(pkg.packageName, PackageManager.GET_META_DATA)
@@ -105,7 +115,6 @@ object RuntimeLoadedApkBridge {
             if (Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
             dataDir = dir("data").absolutePath
             deviceProtectedDataDir = dir("device_data").absolutePath
-            if (Build.VERSION.SDK_INT >= 24) credentialProtectedDataDir = dataDir
             nativeLibraryDir = dir("native").absolutePath
             processName = currentProcessName()
             theme = pkg.appTheme
@@ -162,14 +171,20 @@ object RuntimeLoadedApkBridge {
     private fun patchLoadedApk(loadedApk: Any, session: RuntimeSession, appInfo: ApplicationInfo) {
         val pkg = session.runtimePackage
         val setter = (loadedApk.javaClass.declaredMethods.toList() + loadedApk.javaClass.methods.toList())
-            .firstOrNull { it.name == "setApplicationInfo" && it.parameterTypes.contentEquals(arrayOf(ApplicationInfo::class.java)) }
+            .firstOrNull {
+                it.name == "setApplicationInfo" &&
+                    it.parameterTypes.contentEquals(arrayOf(ApplicationInfo::class.java))
+            }
         val appInfoApplied = runCatching {
             requireNotNull(setter) { "LoadedApk.setApplicationInfo غير متاح" }
             setter.isAccessible = true
             setter.invoke(loadedApk, appInfo)
             true
         }.onFailure {
-            RuntimeDiagnostics.log("LOADEDAPK", "setApplicationInfo fallback ${pkg.packageName}/${pkg.slot}: ${it.javaClass.simpleName}: ${it.message}")
+            RuntimeDiagnostics.log(
+                "LOADEDAPK",
+                "setApplicationInfo fallback ${pkg.packageName}/${pkg.slot}: ${it.javaClass.simpleName}: ${it.message}"
+            )
         }.getOrDefault(false)
 
         if (!appInfoApplied) {
@@ -179,11 +194,28 @@ object RuntimeLoadedApkBridge {
             writeField(loadedApk, session, arrayOf("mResDir"), appInfo.publicSourceDir ?: appInfo.sourceDir)
             writeField(loadedApk, session, arrayOf("mSplitNames"), appInfo.splitNames)
             writeField(loadedApk, session, arrayOf("mSplitAppDirs"), appInfo.splitSourceDirs)
-            writeField(loadedApk, session, arrayOf("mSplitResDirs"), appInfo.splitPublicSourceDirs ?: appInfo.splitSourceDirs)
+            writeField(
+                loadedApk,
+                session,
+                arrayOf("mSplitResDirs"),
+                appInfo.splitPublicSourceDirs ?: appInfo.splitSourceDirs
+            )
             writeField(loadedApk, session, arrayOf("mDataDir"), appInfo.dataDir)
-            writeField(loadedApk, session, arrayOf("mDataDirFile"), appInfo.dataDir?.let(::File))
-            writeField(loadedApk, session, arrayOf("mDeviceProtectedDataDirFile"), appInfo.deviceProtectedDataDir?.let(::File))
-            writeField(loadedApk, session, arrayOf("mCredentialProtectedDataDirFile"), appInfo.credentialProtectedDataDir?.let(::File))
+            writeField(loadedApk, session, arrayOf("mDataDirFile"), appInfo.dataDir?.let { File(it) })
+            writeField(
+                loadedApk,
+                session,
+                arrayOf("mDeviceProtectedDataDirFile"),
+                appInfo.deviceProtectedDataDir?.let { File(it) }
+            )
+            // ApplicationInfo does not expose credentialProtectedDataDir in all compile SDK surfaces.
+            // Our clone credential-protected storage is the regular isolated dataDir.
+            writeField(
+                loadedApk,
+                session,
+                arrayOf("mCredentialProtectedDataDirFile"),
+                appInfo.dataDir?.let { File(it) }
+            )
             writeField(loadedApk, session, arrayOf("mLibDir"), appInfo.nativeLibraryDir)
         }
 
@@ -198,23 +230,39 @@ object RuntimeLoadedApkBridge {
         )
     }
 
-    private fun writeField(loadedApk: Any, session: RuntimeSession, names: Array<out String>, value: Any?) {
+    private fun writeField(
+        loadedApk: Any,
+        session: RuntimeSession,
+        names: Array<out String>,
+        value: Any?
+    ) {
         RuntimeCompatibility.findField(loadedApk.javaClass, *names)?.let { field ->
             if (!RuntimeCompatibility.write(field, loadedApk, value)) {
-                RuntimeDiagnostics.log("LOADEDAPK", "field write failed ${field.name} ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
+                RuntimeDiagnostics.log(
+                    "LOADEDAPK",
+                    "field write failed ${field.name} ${session.runtimePackage.packageName}/${session.runtimePackage.slot}"
+                )
             }
         }
     }
 
     private fun registerPackage(activityThread: Any, packageName: String, loadedApk: Any) {
         val packagesField = RuntimeCompatibility.findField(activityThread.javaClass, "mPackages") ?: return
-        val packages = runCatching { packagesField.get(activityThread) as? MutableMap<Any?, Any?> }.getOrNull() ?: return
+        val packages = runCatching {
+            @Suppress("UNCHECKED_CAST")
+            packagesField.get(activityThread) as? MutableMap<Any?, Any?>
+        }.getOrNull() ?: return
         synchronized(packages) {
             packages[packageName] = WeakReference(loadedApk)
         }
     }
 
     private fun key(packageName: String, slot: Int) = "$packageName#$slot"
-    private fun signature(method: Method) = method.name + method.parameterTypes.joinToString(prefix = "(", postfix = ")") { it.name }
-    private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
+    private fun signature(method: Method) = method.name + method.parameterTypes.joinToString(
+        prefix = "(",
+        postfix = ")"
+    ) { it.name }
+
+    private fun currentProcessName(): String =
+        if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
 }
