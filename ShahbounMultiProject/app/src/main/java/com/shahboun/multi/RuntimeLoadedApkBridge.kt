@@ -189,7 +189,6 @@ object RuntimeLoadedApkBridge {
 
         if (!appInfoApplied) {
             writeField(loadedApk, session, arrayOf("mApplicationInfo"), appInfo)
-            writeField(loadedApk, session, arrayOf("mPackageName"), appInfo.packageName)
             writeField(loadedApk, session, arrayOf("mAppDir"), appInfo.sourceDir)
             writeField(loadedApk, session, arrayOf("mResDir"), appInfo.publicSourceDir ?: appInfo.sourceDir)
             writeField(loadedApk, session, arrayOf("mSplitNames"), appInfo.splitNames)
@@ -208,8 +207,6 @@ object RuntimeLoadedApkBridge {
                 arrayOf("mDeviceProtectedDataDirFile"),
                 appInfo.deviceProtectedDataDir?.let { File(it) }
             )
-            // ApplicationInfo does not expose credentialProtectedDataDir in all compile SDK surfaces.
-            // Our clone credential-protected storage is the regular isolated dataDir.
             writeField(
                 loadedApk,
                 session,
@@ -219,6 +216,11 @@ object RuntimeLoadedApkBridge {
             writeField(loadedApk, session, arrayOf("mLibDir"), appInfo.nativeLibraryDir)
         }
 
+        // Android 13-16 ContextImpl derives mBasePackageName/mOpPackageName from LoadedApk.mPackageName
+        // before Activity.attach(). Keep that framework-facing identity as the real host package so
+        // SettingsProvider/AppOps package+UID validation succeeds. Guest-visible package identity is
+        // restored by RuntimeGuestContext before guest onCreate().
+        writeField(loadedApk, session, arrayOf("mPackageName"), BuildConfig.APPLICATION_ID)
         writeField(loadedApk, session, arrayOf("mClassLoader"), session.classLoader)
         writeField(loadedApk, session, arrayOf("mResources"), session.resources)
         writeField(loadedApk, session, arrayOf("mApplication"), session.guestApplication)
@@ -226,7 +228,7 @@ object RuntimeLoadedApkBridge {
 
         RuntimeDiagnostics.log(
             "LOADEDAPK",
-            "patched ${pkg.packageName}/${pkg.slot} appInfoPath=${if (appInfoApplied) "framework" else "field-fallback"} data=${appInfo.dataDir}"
+            "patched ${pkg.packageName}/${pkg.slot} appInfoPath=${if (appInfoApplied) "framework" else "field-fallback"} frameworkPackage=${BuildConfig.APPLICATION_ID} guestPackage=${pkg.packageName} data=${appInfo.dataDir}"
         )
     }
 
