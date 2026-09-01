@@ -49,11 +49,11 @@ android {
             if (hasStableSigning) signingConfig = signingConfigs.getByName("shahbounStable")
         }
         release {
-            // Development baseline: one updateable APK with diagnostics built in.
-            // This stays enabled until the user explicitly asks for the final no-diagnostics build.
-            isDebuggable = true
+            isDebuggable = false
             isMinifyEnabled = false
             isShrinkResources = false
+            // Diagnostics remain available from the app UI during development,
+            // while the APK itself stays a normal non-debuggable release build.
             manifestPlaceholders["debugActivityEnabled"] = "true"
             if (hasStableSigning) signingConfig = signingConfigs.getByName("shahbounStable")
         }
