@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 object RuntimeJobSchedulerBridge {
     @Volatile private var installed = false
+    @Volatile private var facadeOnly = false
     private lateinit var appContext: Context
     private const val PREFS = "shahboun_runtime_jobs"
 
@@ -30,22 +31,45 @@ object RuntimeJobSchedulerBridge {
             scheduler,
             interfaceHints = listOf("IJobScheduler", "JobSchedulerService"),
             candidateNames = listOf("mBinder", "mService", "mScheduler", "mJobScheduler", "mBinderService")
-        ) ?: error("IJobScheduler binder غير متاح")
+        )
+        if (handle == null) {
+            activateFacade("hidden IJobScheduler binder unavailable")
+            return@runCatching
+        }
         val field = handle.field
         val delegate = handle.delegate
         if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
             installed = true
+            facadeOnly = false
             return@runCatching
         }
         val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
-        require(interfaces.isNotEmpty()) { "واجهة IJobScheduler غير متاحة" }
+        if (interfaces.isEmpty()) {
+            activateFacade("hidden IJobScheduler interface unavailable")
+            return@runCatching
+        }
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate))
-        require(RuntimeCompatibility.write(field, scheduler, proxy)) { "تعذر تثبيت JobScheduler proxy" }
+        if (!RuntimeCompatibility.write(field, scheduler, proxy)) {
+            activateFacade("hidden IJobScheduler proxy write blocked")
+            return@runCatching
+        }
         installed = true
+        facadeOnly = false
         RuntimeDiagnostics.log("JOB", "clone-aware JobScheduler bridge installed field=${field.name} owner=${field.declaringClass.name}")
     }
 
+    fun usesPublicFacade(): Boolean = facadeOnly
+
+    fun facadeFor(context: Context, session: RuntimeSession): JobScheduler = RuntimeGuestJobScheduler(context.applicationContext, session)
+
+    private fun activateFacade(reason: String) {
+        installed = true
+        facadeOnly = true
+        RuntimeDiagnostics.log("JOB", "public-api JobScheduler facade active reason=$reason")
+    }
+
     fun lookup(hostJobId: Int): JobRecord? {
+        if (!::appContext.isInitialized) return null
         val raw = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("job.$hostJobId", null) ?: return null
         val parts = raw.split('|', limit = 4)
         if (parts.size != 4) return null
@@ -189,7 +213,7 @@ open class RuntimeJobService : JobService() {
     }
 
     override fun onStopJob(params: JobParameters): Boolean {
-        val record = RuntimeJobSchedulerBridge.lookup(params.jobId) ?: return false
+        RuntimeJobSchedulerBridge.lookup(params.jobId) ?: return false
         val guest = running[params.jobId] ?: return false
         return runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onStopJob(params) } }.getOrDefault(false)
     }
