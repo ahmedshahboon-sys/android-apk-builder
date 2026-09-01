@@ -21,7 +21,7 @@ interface CloneEngine {
 
 /** Shahboun-owned runtime and clone lifecycle. */
 class ShahbounCloneEngine : CloneEngine {
-    override val name: String = "Shahboun Clone Engine"
+    override val name: String = "Shahboun Clone Engine 2.0"
 
     private lateinit var appContext: Context
     private lateinit var rootDir: File
@@ -53,13 +53,16 @@ class ShahbounCloneEngine : CloneEngine {
                 require(File(dir, it).mkdirs()) { "Unable to create clone directory: $it" }
             }
             File(dir, "clone.meta").writeText(buildString {
-                appendLine("format=3")
+                appendLine("format=4")
                 appendLine("package=$packageName")
                 appendLine("slot=$slot")
                 appendLine("created=${System.currentTimeMillis()}")
             })
             installer.snapshot(packageName, slot, dir)
+            val processIndex = RuntimeProcessPool.allocateProcess(packageName, slot)
+            RuntimeDiagnostics.log("CLONE", "created $packageName/$slot process=:clone$processIndex engine=2")
         } catch (t: Throwable) {
+            RuntimeProcessPool.releaseProcess(packageName, slot)
             dir.deleteRecursively()
             throw t
         }
@@ -71,6 +74,7 @@ class ShahbounCloneEngine : CloneEngine {
         require(slot >= 0) { "Invalid clone slot" }
         appContext.packageManager.getApplicationInfo(packageName, 0)
         forceStop(packageName, slot).getOrThrow()
+        RuntimeProcessPool.allocateProcess(packageName, slot)
         val dir = runtimeSlotDir(packageName, slot)
         require(dir.isDirectory) { "Clone does not exist" }
         val apkDir = File(dir, "apk")
@@ -151,6 +155,7 @@ class ShahbounCloneEngine : CloneEngine {
         requireInitialized()
         (appContext as? MultiApplication)?.requireRuntimeBridge() ?: error("Shahboun application context غير صالح")
         val pkg = runtimePackageFor(packageName, slot)
+        val processIndex = RuntimeProcessPool.allocateProcess(pkg.packageName, pkg.slot)
         val requested = pkg.launchAlias ?: pkg.launchActivity
         val original = Intent(Intent.ACTION_MAIN).apply {
             component = ComponentName(pkg.packageName, requested)
@@ -167,7 +172,7 @@ class ShahbounCloneEngine : CloneEngine {
             putExtra(EXTRA_RUNTIME_ORIGINAL_INTENT, Intent(original))
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        RuntimeDiagnostics.log("LAUNCH", "dispatch descriptor $packageName/$slot hostProcess=${currentProcessName()} targetProcess=:clone${RuntimeProcessPool.processIndex(packageName, slot)}")
+        RuntimeDiagnostics.log("LAUNCH", "dispatch descriptor $packageName/$slot hostProcess=${currentProcessName()} targetProcess=:clone$processIndex")
         appContext.startActivity(wrapper)
     }
 
@@ -194,6 +199,8 @@ class ShahbounCloneEngine : CloneEngine {
         deleteCloneSharedPreferences(packageName, slot)
         val dir = runtimeSlotDir(packageName, slot)
         if (dir.exists()) require(dir.deleteRecursively()) { "Unable to remove clone storage" }
+        RuntimeProcessPool.releaseProcess(packageName, slot)
+        RuntimeDiagnostics.log("CLONE", "removed $packageName/$slot and released process allocation")
     }
 
     override fun clearData(packageName: String, slot: Int): Result<Unit> = runCatching {
