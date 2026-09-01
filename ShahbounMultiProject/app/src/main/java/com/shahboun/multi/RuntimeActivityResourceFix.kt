@@ -9,7 +9,7 @@ import android.util.TypedValue
 import android.view.ContextThemeWrapper
 import android.view.LayoutInflater
 
-/** Pins Activity/ContextThemeWrapper framework caches to the exact guest resource graph before guest onCreate(). */
+/** Makes the Activity resource graph guest-aware before guest onCreate(). */
 object RuntimeActivityResourceFix {
     private const val WHATSAPP_LAYOUT_PROBE = 0x7f0e1351
 
@@ -20,26 +20,33 @@ object RuntimeActivityResourceFix {
         val resolvedTheme = resolveActivityTheme(activity, session)
         val guestTheme = guestResources.newTheme().apply { if (resolvedTheme != 0) applyStyle(resolvedTheme, true) }
 
-        // ActivityThread calls activity.setTheme() before Instrumentation.callActivityOnCreate().
-        // That eagerly fills ContextThemeWrapper.mResources with the host Stub resources.
-        // Pin the framework fields on ContextThemeWrapper itself; generic field-name scans can
-        // hit app/OEM fields first and leave the real framework cache untouched.
-        val frameworkPinned = pinContextThemeWrapper(activity, guestResources, guestTheme, resolvedTheme)
-        val resourcePins = pinTypedFields(activity, Resources::class.java, guestResources)
-        val themePins = pinTypedFields(activity, Resources.Theme::class.java, guestTheme)
+        // Primary Android-16 path: ActivityThread normally copies Application loaders after
+        // Instrumentation.newActivity(). Repeat it here as an OEM-safe fallback.
+        val activityLoader = session.attachLoaderTo(activity.resources)
+        val baseLoader = session.attachLoaderTo(activity.baseContext.resources)
+
+        // Only use private-cache pinning when the framework resource still cannot resolve the
+        // guest layout. Each field is optional and independent; Samsung may remove/rename fields.
+        var frameworkPinned = false
+        if (!canLoadProbe(activity.resources, pkg.packageName)) {
+            frameworkPinned = pinContextThemeWrapper(activity, guestResources, guestTheme, resolvedTheme)
+            pinTypedFields(activity, Resources::class.java, guestResources)
+            pinTypedFields(activity, Resources.Theme::class.java, guestTheme)
+        }
 
         val inflater = runCatching {
             (activity.baseContext.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater)
                 .cloneInContext(activity)
         }.getOrNull()
         if (inflater != null) {
+            session.attachLoaderTo(inflater.context.resources)
             pinTypedFields(activity, LayoutInflater::class.java, inflater)
             pinTypedFields(activity.window, LayoutInflater::class.java, inflater)
             setNamedField(activity.window, "mLayoutInflater", inflater)
-            setContextThemeWrapperInflater(activity, inflater)
+            setOptionalFrameworkField(ContextThemeWrapper::class.java, activity, "mInflater", inflater)
         }
 
-        RuntimeDiagnostics.log("RES", "activity graph pinned ${pkg.packageName}/${pkg.slot} framework=$frameworkPinned resources=$resourcePins themes=$themePins theme=0x${resolvedTheme.toString(16)}")
+        RuntimeDiagnostics.log("RES", "activity graph prepared ${pkg.packageName}/${pkg.slot} loaderActivity=$activityLoader loaderBase=$baseLoader fallback=$frameworkPinned theme=0x${resolvedTheme.toString(16)}")
         logGraph("session", session.resources, pkg.packageName, pkg.slot)
         logGraph("activity", activity.resources, pkg.packageName, pkg.slot)
         logGraph("base", activity.baseContext.resources, pkg.packageName, pkg.slot)
@@ -53,25 +60,39 @@ object RuntimeActivityResourceFix {
         }
     }
 
-    private fun pinContextThemeWrapper(activity: Activity, resources: Resources, theme: Resources.Theme, themeResId: Int): Boolean {
-        return runCatching {
-            val type = ContextThemeWrapper::class.java
-            type.getDeclaredField("mResources").apply { isAccessible = true }.set(activity, resources)
-            type.getDeclaredField("mTheme").apply { isAccessible = true }.set(activity, theme)
-            type.getDeclaredField("mThemeResource").apply { isAccessible = true }.setInt(activity, themeResId)
-            // mInflater exists on current Android; keep this optional for OEM variance.
-            runCatching { type.getDeclaredField("mInflater").apply { isAccessible = true }.set(activity, null) }
-            true
-        }.onFailure {
-            RuntimeDiagnostics.log("RES", "ContextThemeWrapper pin failed ${activity.javaClass.name}: ${it.javaClass.simpleName}: ${it.message}")
-        }.getOrDefault(false)
+    private fun canLoadProbe(resources: Resources, packageName: String): Boolean {
+        if (packageName != "com.whatsapp") return true
+        return runCatching { resources.getLayout(WHATSAPP_LAYOUT_PROBE).close(); true }.getOrDefault(false)
     }
 
-    private fun setContextThemeWrapperInflater(activity: Activity, inflater: LayoutInflater) {
-        runCatching {
-            ContextThemeWrapper::class.java.getDeclaredField("mInflater").apply { isAccessible = true }.set(activity, inflater)
-        }
+    private fun pinContextThemeWrapper(activity: Activity, resources: Resources, theme: Resources.Theme, themeResId: Int): Boolean {
+        var changed = false
+        changed = setOptionalFrameworkField(ContextThemeWrapper::class.java, activity, "mResources", resources) || changed
+        changed = setOptionalFrameworkField(ContextThemeWrapper::class.java, activity, "mTheme", theme) || changed
+        changed = setOptionalFrameworkIntField(ContextThemeWrapper::class.java, activity, "mThemeResource", themeResId) || changed
+        changed = setOptionalFrameworkIntField(ContextThemeWrapper::class.java, activity, "mThemeResId", themeResId) || changed
+        setOptionalFrameworkField(ContextThemeWrapper::class.java, activity, "mInflater", null)
+        RuntimeDiagnostics.log("RES", "ContextThemeWrapper optional pin ${activity.javaClass.name} changed=$changed")
+        return changed
     }
+
+    private fun setOptionalFrameworkField(type: Class<*>, instance: Any, name: String, value: Any?): Boolean = runCatching {
+        val field = findField(type, name) ?: return@runCatching false
+        field.isAccessible = true
+        field.set(instance, value)
+        true
+    }.onFailure {
+        RuntimeDiagnostics.log("RES", "optional field $name unavailable ${instance.javaClass.name}: ${it.javaClass.simpleName}")
+    }.getOrDefault(false)
+
+    private fun setOptionalFrameworkIntField(type: Class<*>, instance: Any, name: String, value: Int): Boolean = runCatching {
+        val field = findField(type, name) ?: return@runCatching false
+        field.isAccessible = true
+        field.setInt(instance, value)
+        true
+    }.onFailure {
+        RuntimeDiagnostics.log("RES", "optional int field $name unavailable ${instance.javaClass.name}: ${it.javaClass.simpleName}")
+    }.getOrDefault(false)
 
     private fun probeResource(label: String, resources: Resources, packageName: String, slot: Int) {
         runCatching {
