@@ -17,17 +17,21 @@ object RuntimeClipboardBridge {
     fun install(context: Context): Result<Unit> = runCatching {
         if (installed) return@runCatching
         val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: error("ClipboardManager غير متاح")
-        val pair = findServiceField(manager, "IClipboard") ?: error("ClipboardManager binder service غير متاح")
-        val field = pair.first
-        val delegate = pair.second
+        val handle = RuntimeCompatibility.findService(
+            manager,
+            interfaceHints = listOf("IClipboard", "ClipboardService"),
+            candidateNames = listOf("mService", "sService", "mClipboardService")
+        ) ?: error("ClipboardManager binder service غير متاح")
+        val field = handle.field
+        val delegate = handle.delegate
         if (Proxy.isProxyClass(delegate.javaClass) && Proxy.getInvocationHandler(delegate) is Handler) {
             installed = true
             return@runCatching
         }
-        val interfaces = collectInterfaces(delegate.javaClass)
+        val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة IClipboard غير متاحة" }
-        field.isAccessible = true
-        field.set(manager, Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate)))
+        val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate))
+        require(RuntimeCompatibility.write(field, manager, proxy)) { "تعذر تثبيت Clipboard proxy" }
         installed = true
         RuntimeDiagnostics.log("CLIP", "clone-local clipboard bridge installed field=${field.name} owner=${field.declaringClass.name}")
     }
@@ -67,24 +71,6 @@ object RuntimeClipboardBridge {
         } catch (e: InvocationTargetException) { throw (e.targetException ?: e) }
     }
 
-    private fun findServiceField(instance: Any, hint: String): Pair<java.lang.reflect.Field, Any>? {
-        var c: Class<*>? = instance.javaClass
-        while (c != null) {
-            for (field in c.declaredFields) {
-                val value = runCatching { field.isAccessible = true; field.get(instance) }.getOrNull() ?: continue
-                val names = buildList {
-                    add(value.javaClass.name)
-                    value.javaClass.interfaces.forEach { add(it.name) }
-                    field.type.interfaces.forEach { add(it.name) }
-                    add(field.type.name)
-                }
-                if (names.any { it.contains(hint, ignoreCase = true) }) return field to value
-            }
-            c = c.superclass
-        }
-        return null
-    }
-
     private fun key(packageName: String, slot: Int) = "$packageName#$slot"
     private fun defaultFor(type: Class<*>): Any? = when (type) {
         Boolean::class.javaPrimitiveType -> false
@@ -92,5 +78,4 @@ object RuntimeClipboardBridge {
         Long::class.javaPrimitiveType -> 0L
         else -> null
     }
-    private fun collectInterfaces(type: Class<*>): Array<Class<*>> { val out=LinkedHashSet<Class<*>>();var c:Class<*>?=type;while(c!=null){out.addAll(c.interfaces);c=c.superclass};return out.toTypedArray() }
 }
