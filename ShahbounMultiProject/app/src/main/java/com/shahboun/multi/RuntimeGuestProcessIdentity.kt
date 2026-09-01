@@ -1,41 +1,55 @@
 package com.shahboun.multi
 
+import android.app.Application
+import android.os.Build
+
 /**
- * Temporarily exposes the guest's declared main-process name while guest startup code runs.
+ * Exposes a stable guest main-process identity inside an isolated Shahboun clone process.
  *
- * Some applications (notably large multi-process apps) gate their dependency/session bootstrap on
- * ActivityThread.currentProcessName()/Application.getProcessName(). Our Linux process must stay a
- * declared Shahboun :cloneN process for Android, but guest code should observe its own process name
- * while providers and Application.onCreate initialize.
+ * Each :cloneN process is permanently owned by exactly one clone session. Large multi-process apps
+ * cache Application.getProcessName()/ActivityThread.currentProcessName() during static init and on
+ * background threads, so a temporary callback-only override is not sufficient. We therefore pin
+ * ActivityThread's local bound-process name for the lifetime of the clone process while keeping the
+ * real host process name cached for Shahboun's own routing/validation.
  */
 object RuntimeGuestProcessIdentity {
     private val lock = Any()
+    private val realHostProcessName: String =
+        if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
 
-    fun <T> withGuestMainProcess(session: RuntimeSession, block: () -> T): T = synchronized(lock) {
+    @Volatile private var pinnedGuest: String? = null
+
+    fun hostProcessName(): String = realHostProcessName
+
+    fun pin(session: RuntimeSession) = synchronized(lock) {
         val guestName = session.runtimePackage.packageName
+        val existing = pinnedGuest
+        if (existing == guestName) return@synchronized
+        require(existing == null) {
+            "رفض تغيير هوية عملية clone من $existing إلى $guestName"
+        }
+
         val threadClass = Class.forName("android.app.ActivityThread")
         val thread = threadClass.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }.invoke(null)
-            ?: return@synchronized block()
+            ?: error("ActivityThread غير متاح")
         val boundField = RuntimeCompatibility.findField(threadClass, "mBoundApplication")
-            ?: return@synchronized block()
+            ?: error("ActivityThread.mBoundApplication غير متاح")
         boundField.isAccessible = true
-        val bound = boundField.get(thread) ?: return@synchronized block()
+        val bound = boundField.get(thread) ?: error("AppBindData غير متاح")
         val processField = RuntimeCompatibility.findField(bound.javaClass, "processName")
-            ?: return@synchronized block()
+            ?: error("AppBindData.processName غير متاح")
         processField.isAccessible = true
         val old = runCatching { processField.get(bound) as? String }.getOrNull()
-        val changed = runCatching {
-            processField.set(bound, guestName)
-            RuntimeDiagnostics.log("IDENTITY", "guest process scope enter ${session.runtimePackage.packageName}/${session.runtimePackage.slot} old=$old guest=$guestName")
-            true
-        }.getOrDefault(false)
-        try {
-            block()
-        } finally {
-            if (changed) {
-                runCatching { processField.set(bound, old) }
-                RuntimeDiagnostics.log("IDENTITY", "guest process scope exit ${session.runtimePackage.packageName}/${session.runtimePackage.slot} restored=$old")
-            }
-        }
+        processField.set(bound, guestName)
+        pinnedGuest = guestName
+        RuntimeDiagnostics.log(
+            "IDENTITY",
+            "guest process identity pinned ${session.runtimePackage.packageName}/${session.runtimePackage.slot} real=$realHostProcessName old=$old guest=$guestName"
+        )
+    }
+
+    fun <T> withGuestMainProcess(session: RuntimeSession, block: () -> T): T {
+        pin(session)
+        return block()
     }
 }
