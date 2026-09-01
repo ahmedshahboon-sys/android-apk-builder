@@ -67,7 +67,7 @@ class RuntimeSession(
     fun attachLoaderTo(target: Resources): Boolean {
         val loader = resourcesLoader ?: return false
         return runCatching {
-            if (!target.loaders.contains(loader)) target.addLoaders(loader)
+            target.addLoaders(loader)
             true
         }.onFailure {
             RuntimeDiagnostics.log("RES", "attach loader failed ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}: ${it.message}")
@@ -148,10 +148,6 @@ class RuntimeSessionFactory(private val context: Context) {
             "archive resource graph attached package=${effectivePkg.packageName} apks=${allApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets}"
         )
 
-        // Android 16 ActivityThread copies Application ResourcesLoader(s) into the activity base
-        // context after Instrumentation.newActivity() and before Activity.attach(). Install the guest
-        // APK resource graph here so the framework creates the Activity with guest-aware Resources
-        // instead of trying to replace private Activity caches after attach.
         var runtimeResourcesLoader: ResourcesLoader? = null
         var loaderHostResources: Resources? = null
         if (Build.VERSION.SDK_INT >= 30) {
