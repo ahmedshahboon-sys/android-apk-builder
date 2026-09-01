@@ -123,7 +123,7 @@ open class RuntimeStubService : Service() {
         if (intent?.action == ACTION_RUNTIME_STOP_CLONE) {
             val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return START_NOT_STICKY
             val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
-            if (slot >= 0) stopCloneServices(packageName, slot)
+            if (slot >= 0) stopCloneRuntime(packageName, slot)
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -135,7 +135,7 @@ open class RuntimeStubService : Service() {
             .getOrDefault(START_NOT_STICKY)
     }
 
-    private fun stopCloneServices(packageName: String, slot: Int) {
+    private fun stopCloneRuntime(packageName: String, slot: Int) {
         val prefix = "$packageName#$slot#"
         val entries = running.entries.filter { it.key.startsWith(prefix) }
         entries.forEach { entry ->
@@ -144,7 +144,15 @@ open class RuntimeStubService : Service() {
                     .onFailure { RuntimeDiagnostics.log("SERVICE", "stop failed ${entry.key}: ${it.stackTraceToString()}") }
             }
         }
-        RuntimeDiagnostics.log("SERVICE", "stopped clone services $packageName/$slot count=${entries.size}")
+
+        // Force-stop must clean the guest session inside the clone process, not only the host
+        // process registry. Otherwise a later clone assigned to this :cloneN inherits stale static
+        // identity/resources and RuntimeExecutionScope correctly rejects it as a collision.
+        RuntimeRegistry.getOrNull(packageName, slot)?.let { session ->
+            RuntimeExecutionScope.clearProcessSession(session)
+            RuntimeRegistry.remove(packageName, slot)
+        }
+        RuntimeDiagnostics.log("SERVICE", "stopped clone runtime $packageName/$slot services=${entries.size} owner=${RuntimeExecutionScope.processOwner()}")
     }
 
     override fun onBind(intent: Intent?): IBinder? {
@@ -215,16 +223,28 @@ open class RuntimeStubService : Service() {
     }
 
     private fun attachGuestService(service: Service, guestContext: Context, session: RuntimeSession, serviceName: String) {
-        ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }.set(service, guestContext)
+        RuntimeCompatibility.findField(ContextWrapper::class.java, "mBase")?.let { RuntimeCompatibility.write(it, service, guestContext) }
+            ?: error("ContextWrapper.mBase غير متاح")
         val serviceClass = Service::class.java
-        fun field(name: String) = serviceClass.getDeclaredField(name).apply { isAccessible = true }
-        field("mApplication").set(service, session.guestApplication ?: application)
-        field("mClassName").set(service, serviceName)
-        listOf("mThread", "mToken", "mActivityManager", "mStartCompatibility").forEach { name ->
-            runCatching {
-                val f = field(name)
-                f.set(service, f.get(this))
-            }.onFailure { RuntimeDiagnostics.log("SERVICE", "attach field $name unavailable for $serviceName: ${it.javaClass.simpleName}") }
+        RuntimeCompatibility.findField(serviceClass, "mApplication")?.let { RuntimeCompatibility.write(it, service, session.guestApplication ?: application) }
+        RuntimeCompatibility.findField(serviceClass, "mClassName")?.let { RuntimeCompatibility.write(it, service, serviceName) }
+
+        val fieldGroups = listOf(
+            listOf("mThread", "mActivityThread"),
+            listOf("mToken"),
+            listOf("mActivityManager", "mAm"),
+            listOf("mStartCompatibility")
+        )
+        fieldGroups.forEach { names ->
+            val field = RuntimeCompatibility.findField(serviceClass, *names.toTypedArray())
+            if (field == null) {
+                RuntimeDiagnostics.log("SERVICE", "attach field ${names.joinToString("/")} unavailable for $serviceName")
+            } else {
+                runCatching {
+                    field.isAccessible = true
+                    field.set(service, field.get(this))
+                }.onFailure { RuntimeDiagnostics.log("SERVICE", "attach field ${field.name} failed for $serviceName: ${it.javaClass.simpleName}") }
+            }
         }
     }
 
