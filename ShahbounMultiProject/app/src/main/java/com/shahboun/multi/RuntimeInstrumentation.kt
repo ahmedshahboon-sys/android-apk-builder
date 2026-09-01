@@ -58,9 +58,11 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
     }
 
     override fun callActivityOnCreate(activity: Activity, icicle: Bundle?) {
-        RuntimeGuestContext.attachIfNeeded(activity)
+        val frameworkSession = RuntimeFrameworkActivityBinder.bind(activity)
+        if (frameworkSession == null) RuntimeGuestContext.attachIfNeeded(activity)
         RuntimeActivityResourceFix.prepare(activity)
         scoped(activity) { base.callActivityOnCreate(activity, icicle) }
+        RuntimeFrameworkActivityBinder.restorePublicIntent(activity)
     }
     override fun callActivityOnStart(activity: Activity) = scoped(activity) { base.callActivityOnStart(activity) }
     override fun callActivityOnResume(activity: Activity) = scoped(activity) { base.callActivityOnResume(activity) }
