@@ -11,15 +11,12 @@ object RuntimeReadinessReport {
         val crashBlock = latestCrashBlock(log)
         val fatal = crashBlock.isNotBlank()
 
-        checks += status(
-            "Process isolation",
-            log.contains("MultiApplication onCreate process=${BuildConfig.APPLICATION_ID}:clone"),
-            "لم تبدأ عملية clone منفصلة"
-        )
+        checks += status("Process isolation", log.contains("MultiApplication onCreate process=${BuildConfig.APPLICATION_ID}:clone"), "لم تبدأ عملية clone منفصلة")
         checks += status("Guest DEX", log.contains("guest-first isolated classloader enabled"), "لم يثبت تحميل كود الضيف")
         checks += status("Guest resources", hasAllResourceProbes(log), "موارد Activity/base/inflater لم تجتز الفحص")
         checks += status("Guest application", log.contains("guest Application ready"), "Application.onCreate لم يكتمل")
         checks += status("Providers", log.contains("guest providers ready"), "تهيئة Providers لم تكتمل")
+        checks += contentResolverCheck(log, crashBlock)
         checks += status("LoadedApk", log.contains("[LOADEDAPK] bound"), "Virtual LoadedApk لم يثبت")
         checks += status("Activity launch", log.contains("[RUNTIME] activity bound"), "لم يتم إنشاء Activity ضيف")
 
@@ -64,16 +61,23 @@ object RuntimeReadinessReport {
                 if (c.detail.isNotBlank()) append(" — ${c.detail}")
                 appendLine()
             }
-            if (verdict != "READY") {
-                appendLine("Result: النسخة ليست جاهزة للاعتماد النهائي حتى تختفي FAIL/FALLBACK وتُختبر العناصر المطلوبة.")
-            } else {
-                appendLine("Result: اختبارات التشغيل المسجلة اجتازت بوابة الجاهزية.")
-            }
+            if (verdict != "READY") appendLine("Result: النسخة ليست جاهزة للاعتماد النهائي حتى تختفي FAIL/FALLBACK وتُختبر العناصر المطلوبة.")
+            else appendLine("Result: اختبارات التشغيل المسجلة اجتازت بوابة الجاهزية.")
         }
     }
 
-    private fun status(name: String, ok: Boolean, failDetail: String): Check =
-        if (ok) Check(name, "OK") else Check(name, "NOT TESTED", failDetail)
+    private fun status(name: String, ok: Boolean, failDetail: String): Check = if (ok) Check(name, "OK") else Check(name, "NOT TESTED", failDetail)
+
+    private fun contentResolverCheck(log: String, crash: String): Check {
+        val unsupported = crash.contains("UnsupportedOperationException") &&
+            (crash.contains("ContentResolver") || crash.contains("acquireUnstableProvider") || crash.contains("ContentProviderClient"))
+        return when {
+            unsupported -> Check("ContentResolver / Provider clients", "FAIL", "provider-client acquisition غير مدعوم")
+            log.contains("[CONTENT] resolver mode=system-client-safe") -> Check("ContentResolver / Provider clients", "OK", "framework resolver")
+            log.contains("[CONTENT] resolver mode=legacy-multiplexer") -> Check("ContentResolver / Provider clients", "PARTIAL", "legacy resolver")
+            else -> Check("ContentResolver / Provider clients", "NOT TESTED")
+        }
+    }
 
     private fun bridge(log: String, name: String, key: String): Check {
         val ready = log.contains("[BRIDGE] $key=ready")
@@ -86,7 +90,8 @@ object RuntimeReadinessReport {
     }
 
     private fun identityCheck(log: String): Check {
-        val security = latestCrashBlock(log).contains("Package ") && latestCrashBlock(log).contains("does not belong to")
+        val crash = latestCrashBlock(log)
+        val security = crash.contains("Package ") && crash.contains("does not belong to")
         return when {
             security -> Check("Framework identity", "FAIL", "package/UID mismatch")
             log.contains("[BRIDGE] identity=ready") -> Check("Framework identity", "OK")
@@ -95,15 +100,11 @@ object RuntimeReadinessReport {
     }
 
     private fun runtimeFeature(log: String, name: String, markers: List<String>, permissionOnly: Boolean = false): Check {
-        if (permissionOnly) {
-            return if (markers.any(log::contains)) Check(name, "PARTIAL", "الصلاحية ظهرت؛ الاستخدام الفعلي لم يُثبت")
-            else Check(name, "NOT TESTED")
-        }
+        if (permissionOnly) return if (markers.any(log::contains)) Check(name, "PARTIAL", "الصلاحية ظهرت؛ الاستخدام الفعلي لم يُثبت") else Check(name, "NOT TESTED")
         return if (markers.any(log::contains)) Check(name, "OK") else Check(name, "NOT TESTED")
     }
 
-    private fun hasAllResourceProbes(log: String): Boolean =
-        log.contains("activity probe ok") && log.contains("base probe ok") && log.contains("inflater probe ok")
+    private fun hasAllResourceProbes(log: String): Boolean = log.contains("activity probe ok") && log.contains("base probe ok") && log.contains("inflater probe ok")
 
     private fun latestCrashBlock(log: String): String {
         val idx = log.lastIndexOf("[CRASH]")
@@ -113,6 +114,7 @@ object RuntimeReadinessReport {
 
     private fun classifyBlocker(crash: String): String = when {
         crash.isBlank() -> ""
+        crash.contains("UnsupportedOperationException") && (crash.contains("ContentResolver") || crash.contains("acquireUnstableProvider")) -> "ContentResolver / ContentProvider client acquisition"
         crash.contains("ActivityNotFoundException") -> "Internal Activity Routing"
         crash.contains("Resources\$NotFoundException") -> "Guest Resources"
         crash.contains("does not belong to") -> "Framework package/UID identity"
@@ -123,10 +125,8 @@ object RuntimeReadinessReport {
     }
 
     private fun symbol(state: String): String = when (state) {
-        "OK" -> "✓"
-        "READY" -> "✓"
-        "FAIL" -> "✕"
-        "BLOCKED" -> "✕"
+        "OK", "READY" -> "✓"
+        "FAIL", "BLOCKED" -> "✕"
         "FALLBACK" -> "!"
         "PARTIAL" -> "~"
         else -> "·"
