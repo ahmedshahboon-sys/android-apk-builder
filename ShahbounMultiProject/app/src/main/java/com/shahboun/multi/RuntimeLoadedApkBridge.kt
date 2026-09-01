@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.content.res.Resources
 import android.os.Build
 import android.os.Process
 import java.io.File
@@ -16,10 +15,6 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Binds a clone RuntimeSession into Android's own ActivityThread/LoadedApk model before launch.
- *
- * This is the missing boundary between a custom DexClassLoader and ActivityThread. Once bound,
- * createBaseContextForActivity(), makeApplicationInner(), Service/Receiver creation and resource
- * resolution all see the same guest package environment instead of the host stub LoadedApk.
  */
 object RuntimeLoadedApkBridge {
     private val bound = ConcurrentHashMap<String, Any>()
@@ -52,11 +47,8 @@ object RuntimeLoadedApkBridge {
 
     fun release(session: RuntimeSession) {
         val pkg = session.runtimePackage
-        val key = key(pkg.packageName, pkg.slot)
-        val loadedApk = bound.remove(key) ?: return
-        runCatching {
-            RuntimeCompatibility.findField(loadedApk.javaClass, "mApplication")?.let { RuntimeCompatibility.write(it, loadedApk, null) }
-        }
+        val loadedApk = bound.remove(key(pkg.packageName, pkg.slot)) ?: return
+        RuntimeCompatibility.findField(loadedApk.javaClass, "mApplication")?.let { RuntimeCompatibility.write(it, loadedApk, null) }
         RuntimeDiagnostics.log("LOADEDAPK", "released ${pkg.packageName}/${pkg.slot} process=${currentProcessName()}")
     }
 
@@ -99,6 +91,7 @@ object RuntimeLoadedApkBridge {
             }
         }.getOrNull()
         val slotDir = (context.applicationContext as? MultiApplication)?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot)
+            ?: MultiApplication.current?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot)
             ?: File(context.filesDir, "clone_engine")
         fun dir(name: String) = File(slotDir, name).apply { if (!exists()) mkdirs() }
         return (original?.let(::ApplicationInfo) ?: ApplicationInfo()).apply {
@@ -112,6 +105,7 @@ object RuntimeLoadedApkBridge {
             if (Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
             dataDir = dir("data").absolutePath
             deviceProtectedDataDir = dir("device_data").absolutePath
+            if (Build.VERSION.SDK_INT >= 24) credentialProtectedDataDir = dataDir
             nativeLibraryDir = dir("native").absolutePath
             processName = currentProcessName()
             theme = pkg.appTheme
@@ -166,21 +160,50 @@ object RuntimeLoadedApkBridge {
     }
 
     private fun patchLoadedApk(loadedApk: Any, session: RuntimeSession, appInfo: ApplicationInfo) {
-        fun set(names: Array<out String>, value: Any?) {
-            RuntimeCompatibility.findField(loadedApk.javaClass, *names)?.let { field ->
-                if (!RuntimeCompatibility.write(field, loadedApk, value)) {
-                    RuntimeDiagnostics.log("LOADEDAPK", "field write failed ${field.name} ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
-                }
+        val pkg = session.runtimePackage
+        val setter = (loadedApk.javaClass.declaredMethods.toList() + loadedApk.javaClass.methods.toList())
+            .firstOrNull { it.name == "setApplicationInfo" && it.parameterTypes.contentEquals(arrayOf(ApplicationInfo::class.java)) }
+        val appInfoApplied = runCatching {
+            requireNotNull(setter) { "LoadedApk.setApplicationInfo غير متاح" }
+            setter.isAccessible = true
+            setter.invoke(loadedApk, appInfo)
+            true
+        }.onFailure {
+            RuntimeDiagnostics.log("LOADEDAPK", "setApplicationInfo fallback ${pkg.packageName}/${pkg.slot}: ${it.javaClass.simpleName}: ${it.message}")
+        }.getOrDefault(false)
+
+        if (!appInfoApplied) {
+            writeField(loadedApk, session, arrayOf("mApplicationInfo"), appInfo)
+            writeField(loadedApk, session, arrayOf("mPackageName"), appInfo.packageName)
+            writeField(loadedApk, session, arrayOf("mAppDir"), appInfo.sourceDir)
+            writeField(loadedApk, session, arrayOf("mResDir"), appInfo.publicSourceDir ?: appInfo.sourceDir)
+            writeField(loadedApk, session, arrayOf("mSplitNames"), appInfo.splitNames)
+            writeField(loadedApk, session, arrayOf("mSplitAppDirs"), appInfo.splitSourceDirs)
+            writeField(loadedApk, session, arrayOf("mSplitResDirs"), appInfo.splitPublicSourceDirs ?: appInfo.splitSourceDirs)
+            writeField(loadedApk, session, arrayOf("mDataDir"), appInfo.dataDir)
+            writeField(loadedApk, session, arrayOf("mDataDirFile"), appInfo.dataDir?.let(::File))
+            writeField(loadedApk, session, arrayOf("mDeviceProtectedDataDirFile"), appInfo.deviceProtectedDataDir?.let(::File))
+            writeField(loadedApk, session, arrayOf("mCredentialProtectedDataDirFile"), appInfo.credentialProtectedDataDir?.let(::File))
+            writeField(loadedApk, session, arrayOf("mLibDir"), appInfo.nativeLibraryDir)
+        }
+
+        writeField(loadedApk, session, arrayOf("mClassLoader"), session.classLoader)
+        writeField(loadedApk, session, arrayOf("mResources"), session.resources)
+        writeField(loadedApk, session, arrayOf("mApplication"), session.guestApplication)
+        writeField(loadedApk, session, arrayOf("mSecurityViolation"), false)
+
+        RuntimeDiagnostics.log(
+            "LOADEDAPK",
+            "patched ${pkg.packageName}/${pkg.slot} appInfoPath=${if (appInfoApplied) "framework" else "field-fallback"} data=${appInfo.dataDir}"
+        )
+    }
+
+    private fun writeField(loadedApk: Any, session: RuntimeSession, names: Array<out String>, value: Any?) {
+        RuntimeCompatibility.findField(loadedApk.javaClass, *names)?.let { field ->
+            if (!RuntimeCompatibility.write(field, loadedApk, value)) {
+                RuntimeDiagnostics.log("LOADEDAPK", "field write failed ${field.name} ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
             }
         }
-        set(arrayOf("mApplicationInfo"), appInfo)
-        set(arrayOf("mClassLoader"), session.classLoader)
-        set(arrayOf("mResources"), session.resources)
-        set(arrayOf("mApplication"), session.guestApplication)
-        set(arrayOf("mDataDir", "mDataDirFile"), File(appInfo.dataDir))
-        set(arrayOf("mDeviceProtectedDataDirFile"), appInfo.deviceProtectedDataDir?.let(::File))
-        set(arrayOf("mLibDir"), appInfo.nativeLibraryDir)
-        set(arrayOf("mSecurityViolation"), false)
     }
 
     private fun registerPackage(activityThread: Any, packageName: String, loadedApk: Any) {
