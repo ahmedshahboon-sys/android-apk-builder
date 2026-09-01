@@ -18,6 +18,7 @@ class MultiApplication : Application() {
         RuntimeDiagnostics.installCrashHandler()
         val processName = currentProcessName()
         RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=$processName")
+        RuntimeCompatibility.logProfile()
         installWebViewIsolation()
         SystemBarsFitter.install(this)
 
@@ -29,40 +30,16 @@ class MultiApplication : Application() {
 
         if (processName == packageName) RuntimeUpdateCenter.checkAndNotify(this, engine)
 
-        RuntimePackageManagerBridge.install(this)
-            .onSuccess { RuntimeDiagnostics.log("PM", "package manager bridge ready") }
-            .onFailure { RuntimeDiagnostics.log("PM", "package manager bridge fallback: ${it.stackTraceToString()}") }
-
-        RuntimeNotificationBridge.install(this)
-            .onSuccess { RuntimeDiagnostics.log("NOTIFY", "notification bridge ready") }
-            .onFailure { RuntimeDiagnostics.log("NOTIFY", "notification bridge fallback: ${it.stackTraceToString()}") }
-
-        RuntimePendingIntentBridge.install(this)
-            .onSuccess { RuntimeDiagnostics.log("PENDING", "PendingIntent bridge ready") }
-            .onFailure { RuntimeDiagnostics.log("PENDING", "PendingIntent bridge fallback: ${it.stackTraceToString()}") }
-
-        RuntimeAlarmBridge.install(this)
-            .onSuccess { RuntimeDiagnostics.log("ALARM", "AlarmManager bridge ready") }
-            .onFailure { RuntimeDiagnostics.log("ALARM", "AlarmManager bridge fallback: ${it.stackTraceToString()}") }
-
-        RuntimeJobSchedulerBridge.install(this)
-            .onSuccess { RuntimeDiagnostics.log("JOB", "JobScheduler bridge ready") }
-            .onFailure { RuntimeDiagnostics.log("JOB", "JobScheduler bridge fallback: ${it.stackTraceToString()}") }
-
-        RuntimeClipboardBridge.install(this)
-            .onSuccess { RuntimeDiagnostics.log("CLIP", "clipboard bridge ready") }
-            .onFailure { RuntimeDiagnostics.log("CLIP", "clipboard bridge fallback: ${it.stackTraceToString()}") }
-
-        RuntimeIdentityServiceBridge.install(this)
-            .onSuccess { RuntimeDiagnostics.log("IDENTITY", "system identity compatibility ready") }
-            .onFailure { RuntimeDiagnostics.log("IDENTITY", "system identity compatibility fallback: ${it.stackTraceToString()}") }
+        // Engine 2.0: all framework/system bridges are installed and diagnosed through one
+        // compatibility-aware registry instead of independent hard-coded reflection paths.
+        RuntimeBridgeRegistry.install(this)
 
         RuntimeSystemEvents.install(this)
 
         RuntimeInstrumentationInstaller.install()
             .onSuccess {
-                runtimeBridgeReady = true
-                RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge installed")
+                runtimeBridgeReady = RuntimeBridgeRegistry.isCoreReady()
+                RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge installed coreReady=$runtimeBridgeReady")
             }
             .onFailure {
                 runtimeBridgeReady = false
