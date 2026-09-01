@@ -1,5 +1,6 @@
 package com.shahboun.multi
 
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.os.Handler
@@ -7,14 +8,15 @@ import android.os.Message
 import java.lang.reflect.Modifier
 import java.util.Collections
 import java.util.IdentityHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Engine 2.0 pre-attach Activity virtualization.
  *
- * Android builds an Activity Context/Resources from ActivityInfo before Instrumentation.onCreate.
- * For clone launches we patch the transaction's ActivityInfo with the immutable guest APK paths and
- * theme while retaining the host package/token identity. This lets the framework construct the
- * Activity with guest-aware Resources instead of replacing caches after attach.
+ * The Android system validates and schedules a declared Shahboun stub. Once the transaction reaches
+ * the assigned clone process, this bridge swaps the local launch record to guest Intent/ActivityInfo
+ * and binds a guest LoadedApk before ActivityThread creates ContextImpl or asks Instrumentation for
+ * the Activity. The system token/process identity remains the declared host stub identity.
  */
 object RuntimeLaunchTransactionBridge {
     @Volatile private var installed = false
@@ -40,10 +42,17 @@ object RuntimeLaunchTransactionBridge {
     }
 
     private class Callback(private val previous: Handler.Callback?) : Handler.Callback {
+        private val handling = AtomicBoolean(false)
+
         override fun handleMessage(msg: Message): Boolean {
-            runCatching { patchTransaction(msg.obj) }
-                .onFailure { RuntimeDiagnostics.log("LAUNCH2", "transaction patch fallback: ${it.javaClass.simpleName}: ${it.message}") }
-            return previous?.handleMessage(msg) ?: false
+            if (!handling.compareAndSet(false, true)) return previous?.handleMessage(msg) ?: false
+            return try {
+                runCatching { patchTransaction(msg.obj) }
+                    .onFailure { RuntimeDiagnostics.log("LAUNCH2", "transaction patch fallback: ${it.stackTraceToString()}") }
+                previous?.handleMessage(msg) ?: false
+            } finally {
+                handling.set(false)
+            }
         }
     }
 
@@ -53,41 +62,66 @@ object RuntimeLaunchTransactionBridge {
         root ?: return
         val descriptor = findDescriptor(root) ?: return
         val app = MultiApplication.current ?: return
-        val pkg = runCatching { app.engine.runtimePackageFor(descriptor.packageName, descriptor.slot) }.getOrElse {
-            RuntimeDiagnostics.log("LAUNCH2", "snapshot unavailable ${descriptor.packageName}/${descriptor.slot}: ${it.javaClass.simpleName}")
+        val expectedProcess = "${BuildConfig.APPLICATION_ID}:clone${RuntimeProcessPool.processIndex(descriptor.packageName, descriptor.slot)}"
+        val actualProcess = if (android.os.Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else BuildConfig.APPLICATION_ID
+        if (actualProcess != expectedProcess) {
+            RuntimeDiagnostics.log("LAUNCH2", "rejected wrong process ${descriptor.packageName}/${descriptor.slot} actual=$actualProcess expected=$expectedProcess")
             return
         }
+
+        // Bind guest code/resources/Application into Android's own LoadedApk cache before the
+        // transaction executor reaches createBaseContextForActivity().
+        val session = app.engine.sessionFor(descriptor.packageName, descriptor.slot)
+        RuntimeLoadedApkBridge.bind(app, session).getOrThrow()
+        val pkg = session.runtimePackage
         val resolvedActivity = pkg.resolveActivity(descriptor.activity)
+        val guestInfo = RuntimeLoadedApkBridge.activityInfo(app, session, descriptor.activity)
+
         val infos = findObjects(root, ActivityInfo::class.java)
-        if (infos.isEmpty()) {
-            RuntimeDiagnostics.log("LAUNCH2", "ActivityInfo not found ${pkg.packageName}/${pkg.slot}")
-            return
+        require(infos.isNotEmpty()) { "Launch transaction لا يحتوي ActivityInfo" }
+        infos.forEach { info -> patchActivityInfo(info, guestInfo) }
+
+        val intents = findObjects(root, Intent::class.java)
+        var routedIntents = 0
+        intents.forEach { intent ->
+            if (intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) == descriptor.packageName &&
+                intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1) == descriptor.slot) {
+                intent.component = ComponentName(pkg.packageName, resolvedActivity)
+                intent.`package` = pkg.packageName
+                // Keep runtime descriptor extras until callActivityOnCreate binds the guest context;
+                // RuntimeGuestContext then restores the original public Intent for guest code.
+                intent.putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
+                intent.putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
+                intent.putExtra(EXTRA_RUNTIME_ACTIVITY, descriptor.activity)
+                routedIntents++
+            }
         }
 
-        var patched = 0
-        infos.forEach { info ->
-            val ai = info.applicationInfo ?: return@forEach
-            // Keep host package/process/token identity. Only resource/code paths and theme are guest.
-            ai.sourceDir = pkg.baseApk.absolutePath
-            ai.publicSourceDir = pkg.baseApk.absolutePath
-            val splitPaths = pkg.splitApks.map { it.absolutePath }.toTypedArray()
-            ai.splitSourceDirs = splitPaths
-            ai.splitPublicSourceDirs = splitPaths
-            if (android.os.Build.VERSION.SDK_INT >= 26) ai.splitNames = pkg.splitNames.toTypedArray()
-            ai.nativeLibraryDir = app.engine.runtimeSlotDir(pkg.packageName, pkg.slot).resolve("native").absolutePath
-            ai.theme = pkg.appTheme
-
-            val guestTheme = pkg.activityTheme(descriptor.activity).takeIf { it != 0 }
-                ?: pkg.activityTheme(resolvedActivity).takeIf { it != 0 }
-                ?: pkg.launchActivityTheme.takeIf { it != 0 }
-                ?: pkg.appTheme
-            if (guestTheme != 0) info.theme = guestTheme
-            patched++
-        }
         RuntimeDiagnostics.log(
             "LAUNCH2",
-            "pre-attach ActivityInfo patched ${pkg.packageName}/${pkg.slot} requested=${descriptor.activity} resolved=$resolvedActivity infos=$patched apks=${pkg.allApks.size}"
+            "guest launch bound ${pkg.packageName}/${pkg.slot} requested=${descriptor.activity} resolved=$resolvedActivity infos=${infos.size} intents=$routedIntents process=$actualProcess"
         )
+    }
+
+    private fun patchActivityInfo(target: ActivityInfo, source: ActivityInfo) {
+        target.name = source.name
+        target.packageName = source.packageName
+        target.processName = source.processName
+        target.applicationInfo = source.applicationInfo
+        target.theme = source.theme
+        target.targetActivity = source.targetActivity
+        target.exported = source.exported
+        target.permission = source.permission
+        target.taskAffinity = source.taskAffinity
+        target.launchMode = source.launchMode
+        target.documentLaunchMode = source.documentLaunchMode
+        target.flags = source.flags
+        target.screenOrientation = source.screenOrientation
+        target.configChanges = source.configChanges
+        target.softInputMode = source.softInputMode
+        target.uiOptions = source.uiOptions
+        target.parentActivityName = source.parentActivityName
+        if (android.os.Build.VERSION.SDK_INT >= 26) target.colorMode = source.colorMode
     }
 
     private fun findDescriptor(root: Any): Descriptor? {
@@ -109,7 +143,7 @@ object RuntimeLaunchTransactionBridge {
     }
 
     private fun <T : Any> walk(value: Any?, target: Class<T>, out: MutableList<T>, visited: MutableSet<Any>, depth: Int) {
-        if (value == null || depth > 6) return
+        if (value == null || depth > 7) return
         if (target.isInstance(value)) {
             @Suppress("UNCHECKED_CAST") out += value as T
             return
