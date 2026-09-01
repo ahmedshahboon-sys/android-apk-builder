@@ -28,7 +28,7 @@ object RuntimeReadinessReport {
             else -> Check("Internal activity routing", "NOT TESTED", "لم يحدث انتقال داخلي بعد")
         }
 
-        checks += bridge(log, "PackageManager", "package-manager")
+        checks += packageManagerCheck(log, crashBlock)
         checks += bridge(log, "Notifications", "notifications")
         checks += bridge(log, "PendingIntent / ActivityManager", "activity-manager-pending-intent")
         checks += bridge(log, "AlarmManager", "alarm")
@@ -68,6 +68,16 @@ object RuntimeReadinessReport {
     }
 
     private fun status(name: String, ok: Boolean, failDetail: String): Check = if (ok) Check(name, "OK") else Check(name, "NOT TESTED", failDetail)
+
+    private fun packageManagerCheck(log: String, crash: String): Check {
+        val componentStateFailure = crash.contains("setComponentEnabledSetting") ||
+            (crash.contains("Attempt to change component state") && crash.contains("PackageManager"))
+        return when {
+            componentStateFailure -> Check("PackageManager", "FAIL", "guest component state mutation escaped to Android system")
+            log.contains("[PM] virtual component state") -> Check("PackageManager", "OK", "virtual component state active")
+            else -> bridge(log, "PackageManager", "package-manager")
+        }
+    }
 
     private fun contentResolverCheck(log: String, crash: String): Check {
         val unsupported = crash.contains("UnsupportedOperationException") &&
@@ -122,6 +132,7 @@ object RuntimeReadinessReport {
 
     private fun classifyBlocker(crash: String): String = when {
         crash.isBlank() -> ""
+        crash.contains("setComponentEnabledSetting") || crash.contains("Attempt to change component state") -> "Virtual PackageManager / component state"
         crash.contains("UnsupportedOperationException") && (crash.contains("ContentResolver") || crash.contains("acquireUnstableProvider")) -> "ContentResolver / ContentProvider client acquisition"
         crash.contains("ActivityNotFoundException") -> "Internal Activity Routing"
         crash.contains("Resources\$NotFoundException") -> "Guest Resources"
