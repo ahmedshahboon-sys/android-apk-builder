@@ -46,7 +46,8 @@ object RuntimeCompatibilityAudit {
         check("Snapshot وسلامة APK") {
             require(pkg.baseApk.isFile && pkg.baseApk.length() > 0) { "base.apk مفقود" }
             require(pkg.splitApks.all { it.isFile && it.length() > 0 }) { "split APK مفقود" }
-            "base + ${pkg.splitApks.size} split • format=${pkg.snapshotFormat}"
+            require(pkg.sha256.isNotBlank()) { "بصمة base APK مفقودة" }
+            "base + ${pkg.splitApks.size} split • version=${pkg.versionCode}"
         }
 
         check("DEX archives") {
