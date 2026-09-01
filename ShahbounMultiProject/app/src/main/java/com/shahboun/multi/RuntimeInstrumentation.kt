@@ -84,7 +84,8 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
 
     private fun logLifecycle(activity: Activity, event: String) {
         val session = RuntimeActivityBindings.sessionFor(activity)
-        RuntimeDiagnostics.log("LIFECYCLE", "event=$event activity=${activity.javaClass.name} clone=${session?.packageName ?: "host"}/${session?.slot ?: -1} finishing=${activity.isFinishing} changingConfig=${activity.isChangingConfigurations}")
+        val runtime = session?.runtimePackage
+        RuntimeDiagnostics.log("LIFECYCLE", "event=$event activity=${activity.javaClass.name} clone=${runtime?.packageName ?: "host"}/${runtime?.slot ?: -1} finishing=${activity.isFinishing} changingConfig=${activity.isChangingConfigurations}")
     }
 
     private fun <T> scoped(activity: Activity, block: () -> T): T { val session = RuntimeActivityBindings.sessionFor(activity); return if (session != null) RuntimeExecutionScope.withSession(session, block) else block() }
