@@ -41,6 +41,7 @@ class RuntimeGuestContext(
         val host = session.componentHost
         if (host != null) RuntimeContentResolverBridge(session, host, baseContext.contentResolver).resolver else baseContext.contentResolver
     }
+    private val guestJobScheduler by lazy { RuntimeJobSchedulerBridge.facadeFor(baseContext, session) }
 
     override fun getPackageName(): String = session.runtimePackage.packageName
     override fun getClassLoader(): ClassLoader = session.classLoader
@@ -139,9 +140,12 @@ class RuntimeGuestContext(
         object : BroadcastReceiver() { override fun onReceive(context: Context?, intent: Intent?) { RuntimeExecutionScope.withSession(session) { receiver.onReceive(this@RuntimeGuestContext, intent) } } }
     }
 
-    override fun getSystemService(name: String): Any? {
-        if (name == Context.LAYOUT_INFLATER_SERVICE) return (baseContext.getSystemService(name) as? LayoutInflater)?.cloneInContext(this)
-        return super.getSystemService(name)
+    override fun getSystemService(name: String): Any? = when (name) {
+        Context.LAYOUT_INFLATER_SERVICE -> (baseContext.getSystemService(name) as? LayoutInflater)?.cloneInContext(this)
+        Context.JOB_SCHEDULER_SERVICE -> guestJobScheduler
+        Context.CLIPBOARD_SERVICE -> RuntimeClipboardBridge.serviceFor(baseContext, session)
+        Context.ACCOUNT_SERVICE -> RuntimeIdentityServiceBridge.accountManagerFor(baseContext, session)
+        else -> super.getSystemService(name)
     }
 
     private fun cloneDir(relative: String): File = File(slotDir, relative).apply { if (!exists()) require(mkdirs()) { "Unable to create clone directory: $relative" } }
