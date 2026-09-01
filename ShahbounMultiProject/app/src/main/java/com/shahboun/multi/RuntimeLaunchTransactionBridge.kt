@@ -69,6 +69,10 @@ object RuntimeLaunchTransactionBridge {
             return
         }
 
+        // Pin the guest-visible process name before any guest class, Application constructor or
+        // attachBaseContext code can run. Meta-class applications cache this identity very early.
+        RuntimeGuestProcessIdentity.pinPackage(descriptor.packageName, descriptor.slot)
+
         // Bind guest code/resources/Application into Android's own LoadedApk cache before the
         // transaction executor reaches createBaseContextForActivity().
         val session = app.engine.sessionFor(descriptor.packageName, descriptor.slot)
