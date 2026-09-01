@@ -4,13 +4,7 @@ import android.os.Build
 import android.os.IBinder
 import java.lang.reflect.Field
 
-/**
- * Central Android/OEM compatibility layer for Shahboun Clone Engine 2.0.
- *
- * All framework-private discovery should go through this object instead of each bridge
- * guessing one hard-coded field name. This keeps Samsung/Pixel/Xiaomi differences and
- * Android API drift in one place and lets diagnostics report the exact path selected.
- */
+/** Central Android/OEM compatibility layer for Shahboun Clone Engine 2.0. */
 object RuntimeCompatibility {
     data class DeviceProfile(
         val sdk: Int,
@@ -53,7 +47,7 @@ object RuntimeCompatibility {
         )
     }
 
-    /** Finds a framework field by candidate names first, then by type/interface hints. */
+    /** Finds a cached framework service, with a ServiceManager fallback when OEM reflection is restricted. */
     fun findService(instance: Any, interfaceHints: List<String>, candidateNames: List<String> = emptyList()): ServiceHandle? {
         val fields = allFields(instance.javaClass)
         candidateNames.forEach { name ->
@@ -77,13 +71,32 @@ object RuntimeCompatibility {
             }
             if (interfaceHints.any { hint -> names.any { it.contains(hint, ignoreCase = true) } }) return ServiceHandle(field, value)
         }
-        return null
+
+        val fallback = fallbackService(interfaceHints) ?: return null
+        val field = candidateNames.asSequence().mapNotNull { name -> fields.firstOrNull { it.name == name } }.firstOrNull()
+            ?: fields.firstOrNull { f -> interfaceHints.any { hint -> f.type.name.contains(hint, ignoreCase = true) } }
+            ?: return null
+        val delegate = serviceManagerInterface(fallback.first, fallback.second) ?: return null
+        RuntimeDiagnostics.log(
+            "COMPAT",
+            "ServiceManager recovered ${fallback.first} field=${field.name} owner=${field.declaringClass.name}"
+        )
+        return ServiceHandle(field, delegate)
     }
 
-    /**
-     * Fallback for OEMs where the cached manager field cannot be read. It obtains the real Binder
-     * from Android's ServiceManager and converts it with the platform AIDL Stub.asInterface method.
-     */
+    private fun fallbackService(hints: List<String>): Pair<String, String>? {
+        val joined = hints.joinToString("|")
+        return when {
+            joined.contains("IJobScheduler", true) -> "jobscheduler" to "android.app.job.IJobScheduler\$Stub"
+            joined.contains("IClipboard", true) -> "clipboard" to "android.content.IClipboard\$Stub"
+            joined.contains("IAccountManager", true) -> "account" to "android.accounts.IAccountManager\$Stub"
+            joined.contains("IAppOpsService", true) -> "appops" to "com.android.internal.app.IAppOpsService\$Stub"
+            joined.contains("IUserManager", true) -> "user" to "android.os.IUserManager\$Stub"
+            else -> null
+        }
+    }
+
+    /** Obtains a platform AIDL interface directly from ServiceManager without relying on OEM cache layout. */
     fun serviceManagerInterface(serviceName: String, stubClassName: String): Any? = runCatching {
         val serviceManager = Class.forName("android.os.ServiceManager")
         val getService = serviceManager.getDeclaredMethod("getService", String::class.java).apply { isAccessible = true }
