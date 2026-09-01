@@ -37,6 +37,7 @@ object RuntimeDiagnostics {
 
     fun snapshot(): String {
         if (!::appContext.isInitialized) return "Diagnostics not initialized"
+        val raw = runCatching { logFile().takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("Unable to read log")
         val header = buildString {
             appendLine("Shahboun Multi Debug")
             appendLine("SDK: ${Build.VERSION.SDK_INT}")
@@ -44,9 +45,8 @@ object RuntimeDiagnostics {
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("ABI: ${Build.SUPPORTED_ABIS.joinToString()}")
             appendLine("Package: ${appContext.packageName}")
-            appendLine("--- LOG ---")
         }
-        return header + runCatching { logFile().takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("Unable to read log")
+        return header + RuntimeReadinessReport.render(raw) + "--- LOG ---\n" + raw
     }
 
     fun clear() {
