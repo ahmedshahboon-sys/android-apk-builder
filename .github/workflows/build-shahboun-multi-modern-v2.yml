@@ -11,6 +11,9 @@ on:
 permissions:
   contents: write
 
+env:
+  EXPECTED_CERT_SHA256: 4be48acd1f4a7ac730f7068bb3289c174c283e7ae28c5cc593ec59259ef1de53
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,6 +26,26 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+      - name: Restore established Shahboun update key
+        uses: actions/cache@v4
+        with:
+          path: .ci-signing
+          key: shahboun-multi-signing-v1
+      - name: Require stable signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s .ci-signing/shahboun-update.jks || { echo 'Stable Shahboun update keystore is missing; refusing to build with a different key.'; exit 1; }
+          test -s .ci-signing/signing.properties || { echo 'Stable Shahboun signing properties are missing; refusing to build with a different key.'; exit 1; }
+          source <(sed 's/^/export /' .ci-signing/signing.properties)
+          echo "::add-mask::$store_password"
+          echo "::add-mask::$key_password"
+          {
+            echo "SHAHBOUN_KEYSTORE=$GITHUB_WORKSPACE/.ci-signing/shahboun-update.jks"
+            echo "SHAHBOUN_STORE_PASSWORD=$store_password"
+            echo "SHAHBOUN_KEY_PASSWORD=$key_password"
+            echo "SHAHBOUN_KEY_ALIAS=$key_alias"
+          } >> "$GITHUB_ENV"
       - name: Install Android SDK 36
         run: |
           set -euo pipefail
@@ -55,6 +78,16 @@ jobs:
             fi
             exit "$RC"
           fi
+      - name: Verify stable certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
+          test -n "$APK" && test -s "$APK"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee /tmp/shahboun-signature.txt
+          CERT=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' /tmp/shahboun-signature.txt | head -1 | tr '[:upper:]' '[:lower:]')
+          test "$CERT" = "$EXPECTED_CERT_SHA256" || { echo "Signing certificate changed: $CERT"; exit 1; }
       - name: Package APK
         run: |
           set -euo pipefail
@@ -75,10 +108,11 @@ jobs:
           mkdir -p dist
           cp ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk
           sha256sum dist/ShahbounMulti-Modern.apk > dist/ShahbounMulti-Modern.apk.sha256
+          cp /tmp/shahboun-signature.txt dist/ShahbounMulti-Modern.signature.txt
           rm -f dist/shahboun-build-error.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk.sha256
+          git add dist/ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk.sha256 dist/ShahbounMulti-Modern.signature.txt
           git add -u dist/shahboun-build-error.txt 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "Publish Shahboun Multi Modern V2 APK [skip ci]"
