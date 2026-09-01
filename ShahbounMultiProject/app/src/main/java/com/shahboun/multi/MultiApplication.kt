@@ -15,6 +15,7 @@ class MultiApplication : Application() {
         super.onCreate()
         current = this
         RuntimeDiagnostics.initialize(this)
+        RuntimeDeepDiagnostics.initialize(this)
         RuntimeDiagnostics.installCrashHandler()
         val processName = currentProcessName()
         RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=$processName")
@@ -30,13 +31,9 @@ class MultiApplication : Application() {
 
         if (processName == packageName) RuntimeUpdateCenter.checkAndNotify(this, engine)
 
-        // Engine 2.0: all framework/system bridges are installed and diagnosed through one
-        // compatibility-aware registry instead of independent hard-coded reflection paths.
         RuntimeBridgeRegistry.install(this)
         RuntimeSystemEvents.install(this)
 
-        // Must be installed before Instrumentation: this patches launch ActivityInfo/resource paths
-        // before Activity.attach(), while Instrumentation handles guest class instantiation/lifecycle.
         val launchBridgeReady = RuntimeLaunchTransactionBridge.install()
             .onFailure { RuntimeDiagnostics.log("LAUNCH2", "pre-attach bridge fallback: ${it.stackTraceToString()}") }
             .isSuccess
