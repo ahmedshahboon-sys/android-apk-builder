@@ -32,7 +32,7 @@ internal object RuntimeActivityBindings {
 
 class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentation() {
     override fun newActivity(cl: ClassLoader?, className: String?, intent: Intent?): Activity {
-        if (RuntimeProcessPool.isActivityStubName(className) && intent != null) {
+        if (intent != null) {
             val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE)
             val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
             val requested = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY)
@@ -41,14 +41,27 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
                 val session = app.engine.sessionFor(packageName, slot)
                 require(session.runtimePackage.ownsActivity(requested)) { "Activity غير مسجلة في Snapshot النسخة" }
                 val resolved = session.runtimePackage.resolveActivity(requested)
-                RuntimeDiagnostics.log("RUNTIME", "newActivity stub=$className requested=$requested resolved=$resolved package=$packageName/$slot")
-                return RuntimeExecutionScope.withSession(session) { base.newActivity(session.classLoader, resolved, intent) }
+                val incoming = className.orEmpty()
+                require(RuntimeProcessPool.isActivityStubName(incoming) || incoming == resolved || incoming == requested) {
+                    "Launch Activity غير متوقعة: incoming=$incoming expected=$resolved"
+                }
+                RuntimeDiagnostics.log(
+                    "RUNTIME",
+                    "newActivity incoming=$incoming requested=$requested resolved=$resolved package=$packageName/$slot loader=${session.classLoader.javaClass.simpleName}"
+                )
+                return RuntimeExecutionScope.withSession(session) {
+                    base.newActivity(session.classLoader, resolved, intent)
+                }
             }
         }
         return base.newActivity(cl, className, intent)
     }
 
-    override fun callActivityOnCreate(activity: Activity, icicle: Bundle?) { RuntimeGuestContext.attachIfNeeded(activity); RuntimeActivityResourceFix.prepare(activity); scoped(activity) { base.callActivityOnCreate(activity, icicle) } }
+    override fun callActivityOnCreate(activity: Activity, icicle: Bundle?) {
+        RuntimeGuestContext.attachIfNeeded(activity)
+        RuntimeActivityResourceFix.prepare(activity)
+        scoped(activity) { base.callActivityOnCreate(activity, icicle) }
+    }
     override fun callActivityOnStart(activity: Activity) = scoped(activity) { base.callActivityOnStart(activity) }
     override fun callActivityOnResume(activity: Activity) = scoped(activity) { base.callActivityOnResume(activity) }
     override fun callActivityOnPause(activity: Activity) = scoped(activity) { base.callActivityOnPause(activity) }
@@ -81,7 +94,8 @@ object RuntimeInstrumentationInstaller {
         if (installed) return@runCatching
         val activityThread = Class.forName("android.app.ActivityThread")
         val current = activityThread.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }.invoke(null) ?: error("ActivityThread غير متاح")
-        val field = activityThread.getDeclaredField("mInstrumentation").apply { isAccessible = true }
+        val field = RuntimeCompatibility.findField(activityThread, "mInstrumentation") ?: error("Instrumentation غير متاح")
+        field.isAccessible = true
         val existing = field.get(current) as? Instrumentation ?: error("Instrumentation غير متاح")
         if (existing !is ShahbounInstrumentation) field.set(current, ShahbounInstrumentation(existing))
         installed = true
