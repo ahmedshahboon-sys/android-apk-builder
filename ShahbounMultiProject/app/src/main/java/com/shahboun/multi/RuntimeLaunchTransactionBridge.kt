@@ -63,7 +63,7 @@ object RuntimeLaunchTransactionBridge {
         val descriptor = findDescriptor(root) ?: return
         val app = MultiApplication.current ?: return
         val expectedProcess = "${BuildConfig.APPLICATION_ID}:clone${RuntimeProcessPool.processIndex(descriptor.packageName, descriptor.slot)}"
-        val actualProcess = if (android.os.Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else BuildConfig.APPLICATION_ID
+        val actualProcess = RuntimeGuestProcessIdentity.hostProcessName()
         if (actualProcess != expectedProcess) {
             RuntimeDiagnostics.log("LAUNCH2", "rejected wrong process ${descriptor.packageName}/${descriptor.slot} actual=$actualProcess expected=$expectedProcess")
             return
