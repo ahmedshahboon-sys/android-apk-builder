@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.5.3-devdiag"
+        versionCode = 19
+        versionName = "0.5.4-deepdiag"
         manifestPlaceholders["debugActivityEnabled"] = "true"
     }
 
@@ -52,8 +52,6 @@ android {
             isDebuggable = false
             isMinifyEnabled = false
             isShrinkResources = false
-            // Diagnostics remain available from the app UI during development,
-            // while the APK itself stays a normal non-debuggable release build.
             manifestPlaceholders["debugActivityEnabled"] = "true"
             if (hasStableSigning) signingConfig = signingConfigs.getByName("shahbounStable")
         }
