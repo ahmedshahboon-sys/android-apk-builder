@@ -39,7 +39,22 @@ jobs:
             echo 'Prebuilt engine binary found in Shahboun project'; exit 1
           fi
       - name: Build Shahboun-owned APK
-        run: gradle -p ShahbounMultiProject :app:assembleDebug --stacktrace
+        run: |
+          set +e
+          gradle -p ShahbounMultiProject :app:assembleDebug --stacktrace 2>&1 | tee /tmp/shahboun-build.log
+          RC=${PIPESTATUS[0]}
+          if [ "$RC" -ne 0 ]; then
+            mkdir -p dist
+            tail -n 350 /tmp/shahboun-build.log > dist/shahboun-build-error.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add dist/shahboun-build-error.txt
+            if ! git diff --cached --quiet; then
+              git commit -m "Capture Shahboun build error [skip ci]"
+              git push origin HEAD:main
+            fi
+            exit "$RC"
+          fi
       - name: Package APK
         run: |
           set -euo pipefail
@@ -60,9 +75,11 @@ jobs:
           mkdir -p dist
           cp ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk
           sha256sum dist/ShahbounMulti-Modern.apk > dist/ShahbounMulti-Modern.apk.sha256
+          rm -f dist/shahboun-build-error.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk.sha256
+          git add -u dist/shahboun-build-error.txt 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "Publish Shahboun Multi Modern V2 APK [skip ci]"
             git push origin HEAD:main
