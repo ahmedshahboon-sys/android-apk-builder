@@ -51,10 +51,18 @@ class RuntimeComponentHost(
                     providers.add(provider)
                 }
                 RuntimeDiagnostics.log("PROVIDER", "initialized snapshot ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
-            }.onFailure {
+            }.onFailure { error ->
                 snapshot.authority.orEmpty().split(';').forEach { providersByAuthority.remove(it.trim()) }
-                RuntimeDiagnostics.log("PROVIDER", "failed $name: ${it.stackTraceToString()}")
-                throw it
+                val optionalSplitProvider = error is ClassNotFoundException || error.cause is ClassNotFoundException
+                if (optionalSplitProvider) {
+                    RuntimeDiagnostics.log(
+                        "PROVIDER",
+                        "skipped unavailable provider ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority} reason=${error.javaClass.simpleName}: ${error.message}"
+                    )
+                } else {
+                    RuntimeDiagnostics.log("PROVIDER", "failed $name: ${error.stackTraceToString()}")
+                    throw error
+                }
             }
         }
     }
@@ -145,9 +153,6 @@ open class RuntimeStubService : Service() {
             }
         }
 
-        // Force-stop must clean the guest session inside the clone process, not only the host
-        // process registry. Otherwise a later clone assigned to this :cloneN inherits stale static
-        // identity/resources and RuntimeExecutionScope correctly rejects it as a collision.
         RuntimeRegistry.getOrNull(packageName, slot)?.let { session ->
             RuntimeExecutionScope.clearProcessSession(session)
             RuntimeRegistry.remove(packageName, slot)
