@@ -1,6 +1,5 @@
 package com.shahboun.multi
 
-import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -255,7 +254,12 @@ class ShahbounCloneEngine : CloneEngine {
         }
     }
 
-    private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
+    /**
+     * Always use the immutable real host process identity for Shahboun routing and ownership checks.
+     * Guest-visible process identity may be pinned to the guest package very early during launch so
+     * Application.getProcessName() is intentionally not reliable for engine-internal validation.
+     */
+    private fun currentProcessName(): String = RuntimeGuestProcessIdentity.hostProcessName()
 
     private fun recoverInterruptedUpdates() {
         rootDir.listFiles().orEmpty().filter { it.isDirectory }.forEach { packageHashDir ->
