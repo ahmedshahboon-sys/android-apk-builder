@@ -57,7 +57,7 @@ object RuntimeExecutionScope {
         local.set(session)
         thread.contextClassLoader = session.classLoader
         return try {
-            block()
+            RuntimeGuestProcessIdentity.withGuestMainProcess(session) { block() }
         } finally {
             thread.contextClassLoader = previousLoader
             if (previous == null) local.remove() else local.set(previous)
