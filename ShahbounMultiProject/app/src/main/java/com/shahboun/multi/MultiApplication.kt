@@ -33,13 +33,18 @@ class MultiApplication : Application() {
         // Engine 2.0: all framework/system bridges are installed and diagnosed through one
         // compatibility-aware registry instead of independent hard-coded reflection paths.
         RuntimeBridgeRegistry.install(this)
-
         RuntimeSystemEvents.install(this)
+
+        // Must be installed before Instrumentation: this patches launch ActivityInfo/resource paths
+        // before Activity.attach(), while Instrumentation handles guest class instantiation/lifecycle.
+        val launchBridgeReady = RuntimeLaunchTransactionBridge.install()
+            .onFailure { RuntimeDiagnostics.log("LAUNCH2", "pre-attach bridge fallback: ${it.stackTraceToString()}") }
+            .isSuccess
 
         RuntimeInstrumentationInstaller.install()
             .onSuccess {
-                runtimeBridgeReady = RuntimeBridgeRegistry.isCoreReady()
-                RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge installed coreReady=$runtimeBridgeReady")
+                runtimeBridgeReady = RuntimeBridgeRegistry.isCoreReady() && launchBridgeReady
+                RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge installed coreReady=$runtimeBridgeReady launch2=$launchBridgeReady")
             }
             .onFailure {
                 runtimeBridgeReady = false
