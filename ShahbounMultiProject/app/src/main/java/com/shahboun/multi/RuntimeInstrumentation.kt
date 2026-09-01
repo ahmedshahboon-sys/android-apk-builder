@@ -45,13 +45,8 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
                 require(RuntimeProcessPool.isActivityStubName(incoming) || incoming == resolved || incoming == requested) {
                     "Launch Activity غير متوقعة: incoming=$incoming expected=$resolved"
                 }
-                RuntimeDiagnostics.log(
-                    "RUNTIME",
-                    "newActivity incoming=$incoming requested=$requested resolved=$resolved package=$packageName/$slot loader=${session.classLoader.javaClass.simpleName}"
-                )
-                return RuntimeExecutionScope.withSession(session) {
-                    base.newActivity(session.classLoader, resolved, intent)
-                }
+                RuntimeDiagnostics.log("RUNTIME", "newActivity incoming=$incoming requested=$requested resolved=$resolved package=$packageName/$slot loader=${session.classLoader.javaClass.simpleName}")
+                return RuntimeExecutionScope.withSession(session) { base.newActivity(session.classLoader, resolved, intent) }
             }
         }
         return base.newActivity(cl, className, intent)
@@ -61,14 +56,22 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
         val frameworkSession = RuntimeFrameworkActivityBinder.bind(activity)
         if (frameworkSession == null) RuntimeGuestContext.attachIfNeeded(activity)
         RuntimeActivityResourceFix.prepare(activity)
+        logLifecycle(activity, "create")
         scoped(activity) { base.callActivityOnCreate(activity, icicle) }
         RuntimeFrameworkActivityBinder.restorePublicIntent(activity)
     }
-    override fun callActivityOnStart(activity: Activity) = scoped(activity) { base.callActivityOnStart(activity) }
-    override fun callActivityOnResume(activity: Activity) = scoped(activity) { base.callActivityOnResume(activity) }
-    override fun callActivityOnPause(activity: Activity) = scoped(activity) { base.callActivityOnPause(activity) }
-    override fun callActivityOnStop(activity: Activity) = scoped(activity) { base.callActivityOnStop(activity) }
-    override fun callActivityOnDestroy(activity: Activity) { val session = RuntimeActivityBindings.sessionFor(activity); try { if (session != null) RuntimeExecutionScope.withSession(session) { base.callActivityOnDestroy(activity) } else base.callActivityOnDestroy(activity) } finally { RuntimeActivityBindings.unbind(activity) } }
+
+    override fun callActivityOnStart(activity: Activity) = scoped(activity) { logLifecycle(activity, "start"); base.callActivityOnStart(activity) }
+    override fun callActivityOnResume(activity: Activity) = scoped(activity) { logLifecycle(activity, "resume"); RuntimeDeepDiagnostics.captureCallCheckpoint("activity-resume:${activity.javaClass.simpleName}"); base.callActivityOnResume(activity) }
+    override fun callActivityOnPause(activity: Activity) = scoped(activity) { logLifecycle(activity, "pause"); RuntimeDeepDiagnostics.captureCallCheckpoint("activity-pause:${activity.javaClass.simpleName}"); base.callActivityOnPause(activity) }
+    override fun callActivityOnStop(activity: Activity) = scoped(activity) { logLifecycle(activity, "stop"); base.callActivityOnStop(activity) }
+    override fun callActivityOnDestroy(activity: Activity) {
+        val session = RuntimeActivityBindings.sessionFor(activity)
+        try {
+            logLifecycle(activity, "destroy")
+            if (session != null) RuntimeExecutionScope.withSession(session) { base.callActivityOnDestroy(activity) } else base.callActivityOnDestroy(activity)
+        } finally { RuntimeActivityBindings.unbind(activity) }
+    }
 
     @Suppress("unused")
     fun execStartActivity(who: Context?, contextThread: IBinder?, token: IBinder?, target: Activity?, intent: Intent, requestCode: Int, options: Bundle?): ActivityResult? {
@@ -77,6 +80,11 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
         RuntimeDiagnostics.log("RUNTIME", "execStartActivity target=${target?.javaClass?.name ?: "null"} token=${if (token == null) "null" else "present"} routed=${routed.component?.flattenToShortString() ?: routed.action}")
         return if (session != null) RuntimeExecutionScope.withSession(session) { HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options) }
         else HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options)
+    }
+
+    private fun logLifecycle(activity: Activity, event: String) {
+        val session = RuntimeActivityBindings.sessionFor(activity)
+        RuntimeDiagnostics.log("LIFECYCLE", "event=$event activity=${activity.javaClass.name} clone=${session?.packageName ?: "host"}/${session?.slot ?: -1} finishing=${activity.isFinishing} changingConfig=${activity.isChangingConfigurations}")
     }
 
     private fun <T> scoped(activity: Activity, block: () -> T): T { val session = RuntimeActivityBindings.sessionFor(activity); return if (session != null) RuntimeExecutionScope.withSession(session, block) else block() }
