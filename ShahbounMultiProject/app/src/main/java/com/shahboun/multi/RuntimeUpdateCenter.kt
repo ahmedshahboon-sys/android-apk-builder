@@ -23,7 +23,7 @@ object RuntimeUpdateCenter {
     private const val CHANNEL_ID = "clone_updates"
     private const val NOTIFICATION_ID = 86031
 
-    fun checkAndNotify(context: Context, engine: ShahbounCloneEngine) {
+    fun checkAndNotify(context: Context, engine: ShahbounRuntime3Engine) {
         val appContext = context.applicationContext
         Thread {
             val outdated = runCatching {
@@ -35,7 +35,7 @@ object RuntimeUpdateCenter {
             val nm = appContext.getSystemService(NotificationManager::class.java) ?: return@Thread
             if (outdated.isEmpty()) {
                 nm.cancel(NOTIFICATION_ID)
-                RuntimeDiagnostics.log("UPDATE", "all clone snapshots current")
+                RuntimeDiagnostics.log("UPDATE", "all Runtime 3 clone snapshots current")
                 return@Thread
             }
             if (Build.VERSION.SDK_INT >= 26) {
@@ -48,7 +48,7 @@ object RuntimeUpdateCenter {
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setContentTitle("مكرّر التطبيقات")
                 .setContentText(text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText("$text من التطبيقات الأصلية المثبتة. بيانات النسخ ستبقى محفوظة."))
+                .setStyle(NotificationCompat.BigTextStyle().bigText("$text من التطبيقات الأصلية المثبتة. بيانات Runtime 3 المعزولة ستبقى محفوظة."))
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
@@ -94,7 +94,7 @@ class CloneUpdatesActivity : Activity() {
             gravity = Gravity.END
         })
         root.addView(TextView(this).apply {
-            text = "نحدّث ملفات التطبيق فقط ونحتفظ ببيانات كل نسخة. إذا فشل أي تحديث يرجع Snapshot القديم تلقائيًا."
+            text = "نحدّث ملفات التطبيق فقط داخل Runtime 3 ونحتفظ ببيانات كل نسخة. إذا فشل أي تحديث يرجع Snapshot السابق تلقائيًا."
             textSize = 14f
             setTextColor(Color.LTGRAY)
             gravity = Gravity.END
@@ -176,7 +176,7 @@ class CloneUpdatesActivity : Activity() {
                     .onSuccess { success++ }
                     .onFailure { failures += "${clone.customName}: ${it.message ?: "خطأ"}" }
             }
-            RuntimeDiagnostics.log("UPDATE", "update-all complete success=$success failed=${failures.size}")
+            RuntimeDiagnostics.log("UPDATE", "Runtime3 update-all complete success=$success failed=${failures.size}")
             RuntimeUpdateCenter.checkAndNotify(this, engine)
             runOnUiThread {
                 val message = buildString {
