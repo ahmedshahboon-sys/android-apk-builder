@@ -1,7 +1,6 @@
 package com.shahboun.multi
 
 import android.app.Activity
-import android.app.Application
 import android.content.AttributionSource
 import android.content.BroadcastReceiver
 import android.content.ContentResolver
@@ -43,7 +42,16 @@ class RuntimeGuestContext(
     }
     private val guestJobScheduler by lazy { RuntimeJobSchedulerBridge.facadeFor(baseContext, session) }
 
-    override fun getPackageName(): String = session.runtimePackage.packageName
+    override fun getPackageName(): String {
+        // Android system services validate a calling package against the real UID. Google Play
+        // Dynamite modules often call Context.getPackageName() from code loaded outside the guest
+        // class loader and then send that value across Binder. Sending the virtual guest package
+        // causes SecurityException("Unknown calling package") because only the Shahboun host owns
+        // this UID. Keep guest identity for guest code, but expose the physical host identity to
+        // Google/Play/Firebase service code.
+        if (RuntimeSystemPackageIdentity.requiresPhysicalPackage()) return baseContext.packageName
+        return session.runtimePackage.packageName
+    }
     override fun getClassLoader(): ClassLoader = session.classLoader
     override fun getResources(): Resources = session.resources
     override fun getAssets() = session.resources.assets
@@ -153,15 +161,20 @@ class RuntimeGuestContext(
 
     companion object {
         fun attachIfNeeded(activity: Activity) {
-            val wrapperIntent = activity.intent ?: return
-            val packageName = wrapperIntent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return
-            val slot = wrapperIntent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
-            val requested = wrapperIntent.getStringExtra(EXTRA_RUNTIME_ACTIVITY) ?: return
-            if (slot < 0) return
+            val wrapperIntent = activity.intent
+            val explicitPackage = wrapperIntent?.getStringExtra(EXTRA_RUNTIME_PACKAGE)
+            val explicitSlot = wrapperIntent?.getIntExtra(EXTRA_RUNTIME_SLOT, -1) ?: -1
+            val owner = RuntimeExecutionScope.processOwner()
+            val packageName = explicitPackage ?: owner?.first ?: return
+            val slot = if (explicitSlot >= 0) explicitSlot else owner?.second ?: return
             val hostApp = activity.applicationContext as? MultiApplication ?: return
-            val session = RuntimeRegistry.get(packageName, slot)
-            val guestActivity = session.runtimePackage.resolveActivity(requested)
-            if (activity.javaClass.name != guestActivity) return
+            val session = RuntimeRegistry.getOrNull(packageName, slot)
+                ?: runCatching { hostApp.engine.sessionFor(packageName, slot) }.getOrNull()
+                ?: return
+            val requested = wrapperIntent?.getStringExtra(EXTRA_RUNTIME_ACTIVITY)
+            val actual = activity.javaClass.name
+            val guestActivity = if (!requested.isNullOrBlank()) session.runtimePackage.resolveActivity(requested) else actual
+            if (actual != guestActivity && !session.runtimePackage.ownsActivity(actual)) return
             val slotDir = hostApp.engine.runtimeSlotDir(packageName, slot)
             val originalBase = activity.baseContext
             val guest = RuntimeGuestContext(originalBase, session, slotDir)
@@ -169,9 +182,9 @@ class RuntimeGuestContext(
             val guestApplication = session.ensureGuestApplication(originalBase, slotDir)
             Activity::class.java.getDeclaredField("mApplication").apply { isAccessible = true }.set(activity, guestApplication)
             RuntimeActivityBindings.bind(activity, packageName, slot)
-            RuntimeIntentRouter.originalIntent(wrapperIntent)?.let { activity.intent = it }
-            applyGuestTheme(activity, session.runtimePackage, requested, guestActivity)
-            RuntimeDiagnostics.log("RUNTIME", "attached guest context $packageName/$slot activity=$guestActivity requested=$requested")
+            if (wrapperIntent != null) RuntimeIntentRouter.originalIntent(wrapperIntent)?.let { activity.intent = it }
+            applyGuestTheme(activity, session.runtimePackage, requested ?: actual, guestActivity)
+            RuntimeDiagnostics.log("RUNTIME", "attached guest context $packageName/$slot activity=$actual requested=${requested ?: "recreated"}")
         }
 
         private fun applyGuestTheme(activity: Activity, pkg: RuntimePackage, requestedName: String, resolvedName: String) {
@@ -180,5 +193,30 @@ class RuntimeGuestContext(
                 ?: if (resolvedName == pkg.launchActivity && pkg.launchActivityTheme != 0) pkg.launchActivityTheme else pkg.appTheme
             if (themeId != 0) runCatching { activity.setTheme(themeId) }
         }
+    }
+}
+
+/**
+ * Chooses the package string exposed to code that crosses into real system/Google services.
+ * StackTraceElement.toString() on Android includes Dynamite module identity even when the Java
+ * class name itself is obfuscated (for example m7.*), which makes this independent of a specific
+ * obfuscation prefix/version.
+ */
+private object RuntimeSystemPackageIdentity {
+    private val physicalMarkers = arrayOf(
+        "com.google.android.gms",
+        "com.google.firebase",
+        "com.android.vending",
+        "dynamite_measurement",
+        "dynamite@"
+    )
+
+    fun requiresPhysicalPackage(): Boolean {
+        val trace = Thread.currentThread().stackTrace
+        for (frame in trace) {
+            val text = frame.toString()
+            if (physicalMarkers.any { marker -> text.contains(marker, ignoreCase = true) }) return true
+        }
+        return false
     }
 }
