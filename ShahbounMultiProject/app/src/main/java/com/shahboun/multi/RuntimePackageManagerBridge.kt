@@ -163,7 +163,8 @@ object RuntimePackageManagerBridge {
 
         private fun applicationInfoFromOriginal(session: RuntimeSession, original: ApplicationInfo?): ApplicationInfo {
             val pkg = session.runtimePackage
-            val slotDir = (context as? MultiApplication)?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot) ?: java.io.File(context.filesDir, "clone_engine")
+            val slotDir = (context as? MultiApplication)?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot)
+                ?: Runtime3ProcessMetadata.slotDir(context, pkg.packageName, pkg.slot)
             fun dir(name: String) = java.io.File(slotDir, name).apply { if (!exists()) mkdirs() }
             return (original?.let(::ApplicationInfo) ?: ApplicationInfo()).apply {
                 packageName = pkg.packageName; className = pkg.applicationClass; uid = Process.myUid(); sourceDir = pkg.baseApk.absolutePath; publicSourceDir = pkg.baseApk.absolutePath
