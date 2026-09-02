@@ -2,7 +2,7 @@ name: Build Shahboun Multi Native
 
 on:
   push:
-    branches: [main]
+    branches: [main, shahboun-multi-runtime-3]
     paths:
       - 'ShahbounMultiProject/**'
       - '.github/workflows/build-shahboun-private-bridge.yml'
