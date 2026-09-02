@@ -9,10 +9,15 @@ object RuntimeProcessAllocator {
 
     fun allocate(context: Context, packageName: String, slot: Int, poolSize: Int): Int = synchronized(this) {
         require(poolSize > 0)
+        Runtime3ProcessMetadata.read(context, packageName, slot, poolSize)?.let { return it }
+
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = key(packageName, slot)
         val existing = prefs.getInt(key, -1)
-        if (existing in 0 until poolSize) return existing
+        if (existing in 0 until poolSize) {
+            Runtime3ProcessMetadata.write(context, packageName, slot, existing)
+            return existing
+        }
 
         val used = prefs.all.mapNotNull { (name, value) ->
             if (name.startsWith(KEY_PREFIX) && value is Int && value in 0 until poolSize) value else null
@@ -23,17 +28,24 @@ object RuntimeProcessAllocator {
             ?: throw IllegalStateException("Runtime 3 process capacity exhausted: used=${used.size}/$poolSize. No clone process sharing is allowed.")
 
         check(prefs.edit().putInt(key, selected).commit()) { "Unable to persist Runtime 3 process allocation" }
+        Runtime3ProcessMetadata.write(context, packageName, slot, selected)
         RuntimeDiagnostics.log("PROCESS3", "allocated $packageName/$slot -> :clone$selected used=${used.size + 1}/$poolSize")
         selected
     }
 
     fun lookup(context: Context?, packageName: String, slot: Int, poolSize: Int): Int? {
         context ?: return null
+        Runtime3ProcessMetadata.read(context, packageName, slot, poolSize)?.let { return it }
         val value = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(key(packageName, slot), -1)
-        return value.takeIf { it in 0 until poolSize }
+        if (value in 0 until poolSize) {
+            runCatching { Runtime3ProcessMetadata.write(context, packageName, slot, value) }
+            return value
+        }
+        return null
     }
 
     fun release(context: Context, packageName: String, slot: Int) = synchronized(this) {
+        Runtime3ProcessMetadata.delete(context, packageName, slot)
         val removed = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(key(packageName, slot)).commit()
         RuntimeDiagnostics.log("PROCESS3", "released $packageName/$slot removed=$removed")
     }
