@@ -2,7 +2,7 @@ name: Build Shahboun Multi Modern V2
 
 on:
   push:
-    branches: [main]
+    branches: [main, shahboun-multi-runtime-3]
     paths:
       - 'ShahbounMultiProject/**'
       - '.github/workflows/build-shahboun-multi-modern-v2.yml'
@@ -69,13 +69,6 @@ jobs:
           if [ "$RC" -ne 0 ]; then
             mkdir -p dist
             tail -n 350 /tmp/shahboun-build.log > dist/shahboun-build-error.txt
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add dist/shahboun-build-error.txt
-            if ! git diff --cached --quiet; then
-              git commit -m "Capture Shahboun build error [skip ci]"
-              git push origin HEAD:main
-            fi
             exit "$RC"
           fi
       - name: Verify stable certificate
@@ -100,21 +93,3 @@ jobs:
           name: ShahbounMulti-Modern-V2-APK
           path: ShahbounMulti-Modern.apk
           if-no-files-found: error
-      - name: Publish APK
-        run: |
-          set -euo pipefail
-          git fetch origin main
-          git reset --hard origin/main
-          mkdir -p dist
-          cp ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk
-          sha256sum dist/ShahbounMulti-Modern.apk > dist/ShahbounMulti-Modern.apk.sha256
-          cp /tmp/shahboun-signature.txt dist/ShahbounMulti-Modern.signature.txt
-          rm -f dist/shahboun-build-error.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/ShahbounMulti-Modern.apk dist/ShahbounMulti-Modern.apk.sha256 dist/ShahbounMulti-Modern.signature.txt
-          git add -u dist/shahboun-build-error.txt 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Publish Shahboun Multi Modern V2 APK [skip ci]"
-            git push origin HEAD:main
-          fi
