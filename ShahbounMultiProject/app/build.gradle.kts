@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 31
-        versionName = "0.7.3-runtime3"
+        versionCode = 32
+        versionName = "0.7.4-runtime3"
         manifestPlaceholders["debugActivityEnabled"] = "true"
     }
 
