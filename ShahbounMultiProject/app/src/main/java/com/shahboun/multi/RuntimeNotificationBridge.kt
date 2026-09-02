@@ -9,7 +9,7 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 
-/** Namespaces notification traffic per clone slot while presenting the host identity to Android. */
+/** Fully namespaces notification traffic, channels and groups per Runtime 3 clone identity. */
 object RuntimeNotificationBridge {
     @Volatile private var installed = false
 
@@ -32,7 +32,7 @@ object RuntimeNotificationBridge {
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate))
         require(RuntimeCompatibility.write(field, owner, proxy)) { "تعذر تثبيت Notification proxy" }
         installed = true
-        RuntimeDiagnostics.log("NOTIFY", "slot-aware notification bridge installed field=${field.name} owner=${field.declaringClass.name}")
+        RuntimeDiagnostics.log("NOTIFY", "Runtime3 notification bridge installed field=${field.name} owner=${field.declaringClass.name}")
     }
 
     private fun findNotificationService(manager: NotificationManager): Triple<java.lang.reflect.Field, Any?, Any>? {
@@ -65,6 +65,7 @@ object RuntimeNotificationBridge {
             val mutable = Array<Any?>(source.size) { source[it] }
             var touched = false
 
+            // Android must see the real host package/UID; guest objects and IDs are namespaced below.
             mutable.indices.forEach { index ->
                 if (mutable[index] == pkg.packageName) {
                     mutable[index] = BuildConfig.APPLICATION_ID
@@ -72,40 +73,89 @@ object RuntimeNotificationBridge {
                 }
             }
 
+            val notificationMethod = method.name.contains("Notification", ignoreCase = true)
+            val channelMethod = method.name.contains("NotificationChannel", ignoreCase = true)
+            val groupMethod = method.name.contains("NotificationChannelGroup", ignoreCase = true)
+
+            if (channelMethod || groupMethod) {
+                mutable.forEach { Runtime3NotificationNamespace.namespaceObjects(pkg.packageName, pkg.slot, it) }
+                namespaceChannelOrGroupId(method, mutable, pkg.packageName, pkg.slot)
+                touched = true
+            }
+
             when {
                 method.name.contains("enqueueNotification", ignoreCase = true) -> {
-                    namespaceTag(method, mutable, pkg.slot, beforeNotification = true)
+                    namespaceTag(method, mutable, pkg.packageName, pkg.slot, beforeNotification = true)
                     mutable.filterIsInstance<Notification>().forEach { notification ->
+                        Runtime3NotificationNamespace.namespaceNotification(pkg.packageName, pkg.slot, notification)
                         @Suppress("DEPRECATION")
                         if (notification.icon == 0) notification.icon = R.drawable.ic_launcher_mokarrer
                     }
                     touched = true
                 }
                 method.name.contains("cancelNotification", ignoreCase = true) -> {
-                    namespaceTag(method, mutable, pkg.slot, beforeNotification = false)
+                    namespaceTag(method, mutable, pkg.packageName, pkg.slot, beforeNotification = false)
                     touched = true
                 }
                 method.name.contains("cancelAll", ignoreCase = true) -> {
-                    // Android's cancelAll has no clone tag filter. Refuse a destructive cross-clone
-                    // operation; individual namespaced notifications remain independently cancellable.
+                    // INotificationManager.cancelAll has no per-channel/tag predicate. Suppress it so
+                    // one clone can never erase notifications belonging to another clone.
                     RuntimeDiagnostics.log("NOTIFY", "clone-scoped cancelAll suppressed ${pkg.packageName}/${pkg.slot}")
                     return defaultValue(method.returnType)
                 }
             }
 
             if (touched) RuntimeDiagnostics.log("NOTIFY", "routed ${method.name} ${pkg.packageName}/${pkg.slot}")
-            return invokeDelegate(method, mutable)
+
+            return try {
+                val result = invokeDelegate(method, mutable)
+                if (channelMethod || groupMethod) {
+                    Runtime3NotificationNamespace.restoreObjects(pkg.packageName, pkg.slot, result)
+                }
+                result
+            } finally {
+                // Binder has already consumed the namespaced parcel. Restore guest-owned objects so
+                // their visible channel/group IDs remain exactly what the original app supplied.
+                if (notificationMethod || channelMethod || groupMethod) {
+                    mutable.forEach { Runtime3NotificationNamespace.restoreObjects(pkg.packageName, pkg.slot, it) }
+                }
+            }
         }
 
-        private fun namespaceTag(method: Method, args: Array<Any?>, slot: Int, beforeNotification: Boolean) {
-            val notificationIndex = if (beforeNotification) method.parameterTypes.indexOfFirst { Notification::class.java.isAssignableFrom(it) } else -1
+        private fun namespaceChannelOrGroupId(method: Method, args: Array<Any?>, packageName: String, slot: Int) {
+            // Conversation creation carries a conversationId string, not a raw channel lookup ID;
+            // its parent NotificationChannel object is already namespaced by namespaceObjects().
+            if (method.name.startsWith("createConversationNotificationChannel", ignoreCase = true)) return
+
+            val host = BuildConfig.APPLICATION_ID
+            val candidate = method.parameterTypes.indices.firstOrNull { index ->
+                method.parameterTypes[index] == String::class.java &&
+                    (args.getOrNull(index) as? String)?.let { value ->
+                        value != host && value != packageName && !value.startsWith("android")
+                    } == true
+            } ?: return
+            val original = args[candidate] as? String ?: return
+            args[candidate] = Runtime3NotificationNamespace.namespaceId(packageName, slot, original)
+        }
+
+        private fun namespaceTag(
+            method: Method,
+            args: Array<Any?>,
+            packageName: String,
+            slot: Int,
+            beforeNotification: Boolean
+        ) {
+            val notificationIndex = if (beforeNotification) {
+                method.parameterTypes.indexOfFirst { Notification::class.java.isAssignableFrom(it) }
+            } else -1
             val upper = if (notificationIndex >= 0) notificationIndex else method.parameterTypes.size
             val candidates = (0 until upper).filter { method.parameterTypes[it] == String::class.java }
             if (candidates.size < 2) return
             val tagIndex = candidates.last()
             val current = args[tagIndex] as? String
-            if (current?.startsWith("shahboun.slot.$slot:") == true) return
-            args[tagIndex] = "shahboun.slot.$slot:${current.orEmpty()}"
+            val prefix = Runtime3NotificationNamespace.prefix(packageName, slot)
+            if (current?.startsWith(prefix) == true) return
+            args[tagIndex] = "$prefix${current.orEmpty()}"
         }
 
         private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
