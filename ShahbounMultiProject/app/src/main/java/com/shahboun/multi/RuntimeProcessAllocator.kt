@@ -2,16 +2,9 @@ package com.shahboun.multi
 
 import android.content.Context
 
-/**
- * Assigns clone identities to declared :cloneN host processes.
- *
- * A clone identity keeps the same process across Activity/Service/Receiver/Job launches. The first
- * POOL_SIZE installed identities get unique processes, preventing static/native/WebView cross-talk.
- * If the pool is exhausted we retain the deterministic legacy index, but RuntimeExecutionScope will
- * reject concurrent identity mixing rather than silently contaminate another clone.
- */
+/** Runtime 3 process allocator: one clone identity == one host process slot, never shared. */
 object RuntimeProcessAllocator {
-    private const val PREFS = "shahboun_runtime_processes_v2"
+    private const val PREFS = "shahboun_runtime_processes_v3"
     private const val KEY_PREFIX = "identity."
 
     fun allocate(context: Context, packageName: String, slot: Int, poolSize: Int): Int = synchronized(this) {
@@ -21,17 +14,16 @@ object RuntimeProcessAllocator {
         val existing = prefs.getInt(key, -1)
         if (existing in 0 until poolSize) return existing
 
-        val used = HashSet<Int>()
-        prefs.all.forEach { (name, value) ->
-            if (name.startsWith(KEY_PREFIX) && value is Int && value in 0 until poolSize) used += value
-        }
-        val preferred = legacyIndex(packageName, slot, poolSize)
-        val selected = if (preferred !in used) preferred else (0 until poolSize).firstOrNull { it !in used } ?: preferred
-        prefs.edit().putInt(key, selected).commit()
-        RuntimeDiagnostics.log(
-            "PROCESS",
-            "allocated $packageName/$slot -> :clone$selected preferred=$preferred unique=${selected !in used} used=${used.size}/$poolSize"
-        )
+        val used = prefs.all.mapNotNull { (name, value) ->
+            if (name.startsWith(KEY_PREFIX) && value is Int && value in 0 until poolSize) value else null
+        }.toSet()
+
+        val preferred = stableIndex(packageName, slot, poolSize)
+        val selected = if (preferred !in used) preferred else (0 until poolSize).firstOrNull { it !in used }
+            ?: throw IllegalStateException("Runtime 3 process capacity exhausted: used=${used.size}/$poolSize. No clone process sharing is allowed.")
+
+        check(prefs.edit().putInt(key, selected).commit()) { "Unable to persist Runtime 3 process allocation" }
+        RuntimeDiagnostics.log("PROCESS3", "allocated $packageName/$slot -> :clone$selected used=${used.size + 1}/$poolSize")
         selected
     }
 
@@ -43,7 +35,7 @@ object RuntimeProcessAllocator {
 
     fun release(context: Context, packageName: String, slot: Int) = synchronized(this) {
         val removed = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(key(packageName, slot)).commit()
-        RuntimeDiagnostics.log("PROCESS", "released $packageName/$slot removed=$removed")
+        RuntimeDiagnostics.log("PROCESS3", "released $packageName/$slot removed=$removed")
     }
 
     fun migrateIfNeeded(context: Context, packageName: String, slot: Int, poolSize: Int): Int =
@@ -54,8 +46,10 @@ object RuntimeProcessAllocator {
             if (!name.startsWith(KEY_PREFIX) || value !is Int) null else name.removePrefix(KEY_PREFIX) to value
         }.toMap()
 
-    fun legacyIndex(packageName: String, slot: Int, poolSize: Int): Int =
+    fun stableIndex(packageName: String, slot: Int, poolSize: Int): Int =
         Math.floorMod(31 * packageName.hashCode() + slot, poolSize)
+
+    fun legacyIndex(packageName: String, slot: Int, poolSize: Int): Int = stableIndex(packageName, slot, poolSize)
 
     private fun key(packageName: String, slot: Int): String = "$KEY_PREFIX$packageName#$slot"
 }
