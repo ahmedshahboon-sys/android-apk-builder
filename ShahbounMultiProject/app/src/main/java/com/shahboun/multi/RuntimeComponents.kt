@@ -27,10 +27,23 @@ class RuntimeComponentHost(
     private val guestContext by lazy { RuntimeGuestContext(hostContext, session, slotDir) }
     private val providers = mutableListOf<ContentProvider>()
     private val providersByAuthority = ConcurrentHashMap<String, ContentProvider>()
+    @Volatile private var providersInitialized = false
 
     @Synchronized
     fun initializeProviders() {
-        if (providers.isNotEmpty()) return
+        if (providersInitialized) return
+
+        if (Build.VERSION.SDK_INT >= 29) {
+            val count = Runtime3ProviderRegistry.install(guestContext, session).getOrThrow()
+            providersInitialized = true
+            RuntimeDiagnostics.log(
+                "PROVIDER3",
+                "framework provider registry ready ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=$count"
+            )
+            return
+        }
+
+        // Legacy Android fallback. Modern Android uses ActivityThread's real local-provider map above.
         session.runtimePackage.providers.forEach { snapshot ->
             val name = snapshot.name
             runCatching {
@@ -50,7 +63,7 @@ class RuntimeComponentHost(
                     provider.attachInfo(guestContext, providerInfo)
                     providers.add(provider)
                 }
-                RuntimeDiagnostics.log("PROVIDER", "initialized snapshot ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
+                RuntimeDiagnostics.log("PROVIDER", "initialized legacy ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
             }.onFailure { error ->
                 snapshot.authority.orEmpty().split(';').forEach { providersByAuthority.remove(it.trim()) }
                 val optionalSplitProvider = error is ClassNotFoundException || error.cause is ClassNotFoundException
@@ -65,6 +78,7 @@ class RuntimeComponentHost(
                 }
             }
         }
+        providersInitialized = true
     }
 
     fun providerForAuthority(authority: String?): ContentProvider? = authority?.let(providersByAuthority::get)
@@ -119,6 +133,7 @@ class RuntimeComponentHost(
     override fun close() {
         providersByAuthority.clear()
         providers.clear()
+        providersInitialized = false
     }
 }
 
