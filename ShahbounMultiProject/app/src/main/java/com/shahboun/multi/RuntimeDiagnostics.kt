@@ -49,8 +49,7 @@ object RuntimeDiagnostics {
 
     fun snapshot(): String {
         if (!::appContext.isInitialized) return "Diagnostics not initialized"
-        val rawAll = runCatching { logFile().takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("Unable to read log")
-        val raw = currentSessionWindow(rawAll)
+        val raw = currentRaw()
         val crashCount = Regex("\\[CRASH]\\s").findAll(raw).count()
         val fallbackCount = Regex("=fallback").findAll(raw).count()
         val header = buildString {
@@ -68,6 +67,39 @@ object RuntimeDiagnostics {
         return header + RuntimeDeepDiagnostics.renderReport() + RuntimeReadinessReport.render(raw) + "--- LOG (CURRENT SESSION) ---\n" + raw
     }
 
+    /** Small share-safe summary. Full logs remain on-device and are only shown in full mode. */
+    fun compactSnapshot(): String {
+        if (!::appContext.isInitialized) return "Diagnostics not initialized"
+        val raw = currentRaw()
+        val crashes = Regex("\\[CRASH]\\s").findAll(raw).count()
+        val fallbacks = Regex("=fallback").findAll(raw).count()
+        val lowMemory = Regex("reasonName=LOW_MEMORY").findAll(raw).count()
+        val anr = Regex("reasonName=ANR").findAll(raw).count()
+        val security = Regex("SecurityException").findAll(raw).count()
+        val activityRouting = Regex("ActivityNotFoundException").findAll(raw).count()
+        val processCollision = Regex("PROCESS COLLISION").findAll(raw).count()
+        val resourceFailures = Regex("resource probe (failed|FAIL)|Resources\\$NotFoundException", RegexOption.IGNORE_CASE).findAll(raw).count()
+        val lastHealth = raw.lineSequence().filter { "[HEALTH]" in it }.lastOrNull()?.substringAfter("[HEALTH] ")?.take(220)
+        val lastCrashProcess = raw.lineSequence().filter { "[CRASH]" in it }.lastOrNull()?.let { line ->
+            Regex("process=([^ ]+)").find(line)?.groupValues?.getOrNull(1)
+        }
+        return buildString {
+            appendLine("SHAHBOUN DEBUG • ${versionLabel()}")
+            appendLine("${Build.MANUFACTURER} ${Build.MODEL} • Android ${Build.VERSION.RELEASE} / SDK ${Build.VERSION.SDK_INT}")
+            appendLine("Session: $sessionGroup")
+            appendLine("Runtime: crashes=$crashes fallback=$fallbacks lowmem=$lowMemory anr=$anr")
+            if (security > 0) appendLine("! IDENTITY/SECURITY: $security")
+            if (activityRouting > 0) appendLine("! ACTIVITY-ROUTE: $activityRouting")
+            if (processCollision > 0) appendLine("! PROCESS-COLLISION: $processCollision")
+            if (resourceFailures > 0) appendLine("! RESOURCES: $resourceFailures")
+            if (lastCrashProcess != null) appendLine("Last crash process: $lastCrashProcess")
+            if (!lastHealth.isNullOrBlank()) appendLine("Last fatal: $lastHealth")
+            if (crashes == 0 && fallbacks == 0 && lowMemory == 0 && anr == 0 && security == 0 && activityRouting == 0 && processCollision == 0 && resourceFailures == 0) {
+                appendLine("✓ لا توجد أخطاء Runtime مسجلة في الجلسة الحالية")
+            }
+        }.trimEnd()
+    }
+
     fun clear() {
         if (!::appContext.isInitialized) return
         synchronized(lock) {
@@ -80,6 +112,11 @@ object RuntimeDiagnostics {
     }
 
     fun currentSessionGroup(): String = sessionGroup
+
+    private fun currentRaw(): String {
+        val rawAll = runCatching { logFile().takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("Unable to read log")
+        return currentSessionWindow(rawAll)
+    }
 
     private fun currentSessionWindow(raw: String): String {
         if (raw.isBlank() || sessionGroup == "unknown") return raw
