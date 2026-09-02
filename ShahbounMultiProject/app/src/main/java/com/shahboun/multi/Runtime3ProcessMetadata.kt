@@ -29,7 +29,7 @@ object Runtime3ProcessMetadata {
         File(slotDir(context, packageName, slot), FILE_NAME).delete()
     }
 
-    private fun slotDir(context: Context, packageName: String, slot: Int): File {
+    fun slotDir(context: Context, packageName: String, slot: Int): File {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(packageName.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
