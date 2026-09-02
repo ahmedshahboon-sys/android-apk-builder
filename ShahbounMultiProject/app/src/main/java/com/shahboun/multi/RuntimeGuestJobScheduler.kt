@@ -41,7 +41,7 @@ class RuntimeGuestJobScheduler(
         val routed = route(job) ?: return safeSchedule(job)
         return runCatching {
             val result = delegate.schedule(routed.hostJob)
-            if (result == RESULT_SUCCESS) save(routed.record)
+            if (result == RESULT_SUCCESS) RuntimeJobSchedulerBridge.saveRecord(routed.record)
             RuntimeDiagnostics.log(
                 "JOB",
                 "facade schedule ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=${namespace ?: "default"} guest=${job.id} host=${routed.record.hostJobId} result=$result"
@@ -58,7 +58,7 @@ class RuntimeGuestJobScheduler(
         val routed = route(job) ?: return safeEnqueue(job, work)
         return runCatching {
             val result = delegate.enqueue(routed.hostJob, work)
-            if (result == RESULT_SUCCESS) save(routed.record)
+            if (result == RESULT_SUCCESS) RuntimeJobSchedulerBridge.saveRecord(routed.record)
             RuntimeDiagnostics.log(
                 "JOB",
                 "facade enqueue ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=${namespace ?: "default"} guest=${job.id} host=${routed.record.hostJobId} result=$result"
@@ -71,28 +71,26 @@ class RuntimeGuestJobScheduler(
     }
 
     override fun cancel(jobId: Int) {
+        val pkg = session.runtimePackage
         val hostId = hostJobId(jobId)
         runCatching { delegate.cancel(hostId) }
-        remove(hostId)
+        RuntimeJobSchedulerBridge.removeRecord(pkg.packageName, pkg.slot, hostId)
         RuntimeDiagnostics.log(
             "JOB",
-            "facade cancel ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=${namespace ?: "default"} guest=$jobId host=$hostId"
+            "facade cancel ${pkg.packageName}/${pkg.slot} namespace=${namespace ?: "default"} guest=$jobId host=$hostId"
         )
     }
 
     override fun cancelAll() {
-        if (namespace == null) {
-            RuntimeJobSchedulerBridge.cancelClone(session.runtimePackage.packageName, session.runtimePackage.slot)
-            return
-        }
-        val records = recordsForNamespace()
+        val pkg = session.runtimePackage
+        val records = RuntimeJobSchedulerBridge.recordsFor(pkg.packageName, pkg.slot, namespace, allNamespaces = false)
         records.forEach { record ->
             runCatching { delegate.cancel(record.hostJobId) }
-            remove(record.hostJobId)
+            RuntimeJobSchedulerBridge.removeRecord(pkg.packageName, pkg.slot, record.hostJobId)
         }
         RuntimeDiagnostics.log(
             "JOB",
-            "facade cancelAll ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=$namespace count=${records.size}"
+            "facade cancelAll ${pkg.packageName}/${pkg.slot} namespace=${namespace ?: "default"} count=${records.size}"
         )
     }
 
@@ -104,7 +102,7 @@ class RuntimeGuestJobScheduler(
         val pkg = session.runtimePackage
         return runCatching { delegate.allPendingJobs }.getOrDefault(emptyList()).mapNotNull { hostJob ->
             val record = RuntimeJobSchedulerBridge.lookup(hostJob.id)
-            if (record == null || record.packageName != pkg.packageName || record.slot != pkg.slot) null
+            if (record == null || record.packageName != pkg.packageName || record.slot != pkg.slot || record.namespace != namespace) null
             else restore(hostJob, record)
         }.toMutableList()
     }
@@ -112,7 +110,8 @@ class RuntimeGuestJobScheduler(
     override fun getPendingJob(jobId: Int): JobInfo? {
         val hostId = hostJobId(jobId)
         val record = RuntimeJobSchedulerBridge.lookup(hostId) ?: return null
-        if (record.packageName != session.runtimePackage.packageName || record.slot != session.runtimePackage.slot) return null
+        val pkg = session.runtimePackage
+        if (record.packageName != pkg.packageName || record.slot != pkg.slot || record.namespace != namespace) return null
         return runCatching { delegate.getPendingJob(hostId) }.getOrNull()?.let { restore(it, record) }
     }
 
@@ -155,7 +154,14 @@ class RuntimeGuestJobScheduler(
         val patched = patchJob(original, hostId, hostService)
         return Routed(
             patched,
-            RuntimeJobSchedulerBridge.JobRecord(pkg.packageName, pkg.slot, service.className, original.id, hostId)
+            RuntimeJobSchedulerBridge.JobRecord(
+                pkg.packageName,
+                pkg.slot,
+                service.className,
+                original.id,
+                hostId,
+                namespace
+            )
         )
     }
 
@@ -187,36 +193,6 @@ class RuntimeGuestJobScheduler(
 
     private fun hostJobId(guestId: Int): Int {
         val pkg = session.runtimePackage
-        var h = 17
-        h = 31 * h + pkg.packageName.hashCode()
-        h = 31 * h + pkg.slot
-        h = 31 * h + (namespace?.hashCode() ?: 0)
-        h = 31 * h + guestId
-        return h and 0x7fffffff
-    }
-
-    private fun save(record: RuntimeJobSchedulerBridge.JobRecord) {
-        hostContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString(
-                "job.${record.hostJobId}",
-                "${record.packageName}|${record.slot}|${record.serviceName}|${record.guestJobId}"
-            )
-            .apply()
-    }
-
-    private fun remove(hostId: Int) {
-        hostContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostId").apply()
-    }
-
-    private fun recordsForNamespace(): List<RuntimeJobSchedulerBridge.JobRecord> {
-        val pkg = session.runtimePackage
-        val pendingIds = runCatching { delegate.allPendingJobs.map { it.id }.toSet() }.getOrDefault(emptySet())
-        return pendingIds.mapNotNull(RuntimeJobSchedulerBridge::lookup).filter {
-            it.packageName == pkg.packageName && it.slot == pkg.slot
-        }
-    }
-
-    companion object {
-        private const val PREFS = "shahboun_runtime_jobs"
+        return RuntimeJobSchedulerBridge.hostJobId(pkg.packageName, pkg.slot, namespace, guestId)
     }
 }
