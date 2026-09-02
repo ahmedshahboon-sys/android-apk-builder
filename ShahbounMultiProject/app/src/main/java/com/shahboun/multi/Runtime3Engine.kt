@@ -1,5 +1,6 @@
 package com.shahboun.multi
 
+import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -10,9 +11,9 @@ import java.security.MessageDigest
 /**
  * Shahboun Runtime 3.0 orchestration layer.
  *
- * Runtime 3 deliberately uses a new storage root and never restores Runtime 2 sessions. Existing
- * CloneStore profiles are re-snapshotted from the original installed application so stale native,
- * code-cache, jobs and process ownership cannot leak into the new runtime.
+ * Runtime 3 has one host coordinator and isolated clone restore processes. Host-only operations
+ * mutate snapshots/process allocations; :cloneN processes only restore their assigned immutable
+ * snapshot. Runtime 2 storage is never read by this engine.
  */
 class ShahbounRuntime3Engine {
     val name: String = "Shahboun Runtime 3.0"
@@ -29,13 +30,18 @@ class ShahbounRuntime3Engine {
         require(rootDir.exists() || rootDir.mkdirs()) { "Unable to initialize Runtime 3 storage" }
         installer = RuntimePackageInstaller(appContext)
         sessionFactory = RuntimeSessionFactory(appContext)
-        recoverInterruptedUpdates()
-        bootstrapExistingProfiles()
-        RuntimeDiagnostics.log("ENGINE3", "initialized root=${rootDir.absolutePath} processCapacity=${RuntimeProcessPool.size}")
+        if (isHostProcess()) {
+            recoverInterruptedUpdates()
+            bootstrapExistingProfiles()
+        }
+        RuntimeDiagnostics.log(
+            "ENGINE3",
+            "initialized root=${rootDir.absolutePath} processCapacity=${RuntimeProcessPool.size} role=${if (isHostProcess()) "host" else "clone"}"
+        )
     }
 
     fun createClone(packageName: String, slot: Int): Result<Unit> = runCatching {
-        requireInitialized()
+        requireInitialized(); requireHostProcess()
         require(packageName.isNotBlank() && slot >= 0) { "Invalid clone identity" }
         appContext.packageManager.getApplicationInfo(packageName, 0)
         val dir = runtimeSlotDir(packageName, slot)
@@ -44,7 +50,7 @@ class ShahbounRuntime3Engine {
     }
 
     fun updateClone(packageName: String, slot: Int): Result<Unit> = runCatching {
-        requireInitialized()
+        requireInitialized(); requireHostProcess()
         appContext.packageManager.getApplicationInfo(packageName, 0)
         forceStop(packageName, slot).getOrThrow()
         RuntimeProcessPool.allocateProcess(packageName, slot)
@@ -72,7 +78,7 @@ class ShahbounRuntime3Engine {
     }
 
     fun launch(packageName: String, slot: Int): Result<Unit> = runCatching {
-        requireInitialized()
+        requireInitialized(); requireHostProcess()
         (appContext as? MultiApplication)?.requireRuntimeBridge() ?: error("Runtime 3 application context invalid")
         val pkg = runtimePackageFor(packageName, slot)
         val processIndex = RuntimeProcessPool.allocateProcess(pkg.packageName, pkg.slot)
@@ -136,7 +142,7 @@ class ShahbounRuntime3Engine {
     }.getOrDefault(false)
 
     fun forceStop(packageName: String, slot: Int): Result<Unit> = runCatching {
-        requireInitialized()
+        requireInitialized(); requireHostProcess()
         RuntimeActivityBindings.finishClone(packageName, slot)
         RuntimeJobSchedulerBridge.cancelClone(packageName, slot)
         runCatching {
@@ -152,6 +158,7 @@ class ShahbounRuntime3Engine {
     }
 
     fun remove(packageName: String, slot: Int): Result<Unit> = runCatching {
+        requireInitialized(); requireHostProcess()
         forceStop(packageName, slot).getOrThrow()
         RuntimeClipboardBridge.clearClone(packageName, slot)
         deleteCloneSharedPreferences(packageName, slot)
@@ -161,6 +168,7 @@ class ShahbounRuntime3Engine {
     }
 
     fun clearData(packageName: String, slot: Int): Result<Unit> = runCatching {
+        requireInitialized(); requireHostProcess()
         forceStop(packageName, slot).getOrThrow()
         RuntimeClipboardBridge.clearClone(packageName, slot)
         deleteCloneSharedPreferences(packageName, slot)
@@ -171,6 +179,7 @@ class ShahbounRuntime3Engine {
     }
 
     fun clearCache(packageName: String, slot: Int): Result<Unit> = runCatching {
+        requireInitialized(); requireHostProcess()
         forceStop(packageName, slot).getOrThrow()
         val dir = runtimeSlotDir(packageName, slot)
         listOf("cache", "code_cache", "external/cache").forEach { name ->
@@ -190,6 +199,7 @@ class ShahbounRuntime3Engine {
     }
 
     private fun bootstrapExistingProfiles() {
+        requireHostProcess()
         CloneStore(appContext).list().forEach { profile ->
             val dir = runtimeSlotDir(profile.packageName, profile.slot)
             if (dir.isDirectory && File(dir, "runtime.meta").isFile) return@forEach
@@ -204,6 +214,7 @@ class ShahbounRuntime3Engine {
     }
 
     private fun prepareFreshSlot(packageName: String, slot: Int, dir: File) {
+        requireHostProcess()
         require(dir.mkdirs()) { "Unable to create clone storage" }
         try {
             createDataDirs(dir)
@@ -229,6 +240,7 @@ class ShahbounRuntime3Engine {
     }
 
     private fun recoverInterruptedUpdates() {
+        requireHostProcess()
         rootDir.walkTopDown().filter { it.isDirectory }.forEach { dir ->
             val apkBackup = File(dir, "apk.v3-backup")
             val metaBackup = File(dir, "runtime.meta.v3-backup")
@@ -246,17 +258,27 @@ class ShahbounRuntime3Engine {
         check(hostProcessName() == expected) { "Runtime 3 process mismatch: actual=${hostProcessName()} expected=$expected" }
     }
 
-    private fun hostProcessName(): String = RuntimeGuestProcessIdentity.hostProcessName()
+    private fun requireHostProcess() {
+        check(isHostProcess()) { "Runtime 3 host-only operation attempted from ${hostProcessName()}" }
+    }
+
+    private fun isHostProcess(): Boolean = hostProcessName() == BuildConfig.APPLICATION_ID
+    private fun hostProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
     private fun prefPrefix(packageName: String, slot: Int) = "clone_${packageName}_${slot}_"
+
     private fun deleteCloneSharedPreferences(packageName: String, slot: Int) {
         val prefix = prefPrefix(packageName, slot)
         File(appContext.applicationInfo.dataDir, "shared_prefs").listFiles().orEmpty().filter { it.name.startsWith(prefix) && it.name.endsWith(".xml") }.forEach {
             appContext.deleteSharedPreferences(it.name.removeSuffix(".xml")); it.delete()
         }
     }
+
     private fun sharedPreferenceBytes(packageName: String, slot: Int): Long {
         val prefix = prefPrefix(packageName, slot)
         return File(appContext.applicationInfo.dataDir, "shared_prefs").listFiles().orEmpty().filter { it.name.startsWith(prefix) && it.name.endsWith(".xml") }.sumOf { it.length() }
     }
-    private fun requireInitialized() { check(::appContext.isInitialized && ::rootDir.isInitialized && ::installer.isInitialized && ::sessionFactory.isInitialized) }
+
+    private fun requireInitialized() {
+        check(::appContext.isInitialized && ::rootDir.isInitialized && ::installer.isInitialized && ::sessionFactory.isInitialized)
+    }
 }
