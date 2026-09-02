@@ -162,7 +162,7 @@ class RuntimeGuestJobScheduler(
     }
 
     private fun remove(hostId: Int) {
-        hostContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostId).apply()
+        hostContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostId").apply()
     }
 
     companion object {
