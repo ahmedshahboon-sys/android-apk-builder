@@ -100,15 +100,21 @@ private object HiddenInstrumentationDispatch {
 }
 
 object RuntimeInstrumentationInstaller {
-    @Volatile private var installed = false
-    fun install(): Result<Unit> = runCatching {
-        if (installed) return@runCatching
+    private fun currentField(): Pair<Any, java.lang.reflect.Field> {
         val activityThread = Class.forName("android.app.ActivityThread")
         val current = activityThread.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }.invoke(null) ?: error("ActivityThread غير متاح")
         val field = RuntimeCompatibility.findField(activityThread, "mInstrumentation") ?: error("Instrumentation غير متاح")
         field.isAccessible = true
-        val existing = field.get(current) as? Instrumentation ?: error("Instrumentation غير متاح")
-        if (existing !is ShahbounInstrumentation) field.set(current, ShahbounInstrumentation(existing))
-        installed = true
+        return current to field
+    }
+
+    fun install(): Result<Unit> = reassert("startup")
+
+    fun reassert(reason: String): Result<Unit> = runCatching {
+        val (thread, field) = currentField()
+        val existing = field.get(thread) as? Instrumentation ?: error("Instrumentation غير متاح")
+        if (existing is ShahbounInstrumentation) return@runCatching
+        field.set(thread, ShahbounInstrumentation(existing))
+        RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge asserted reason=$reason wrapped=${existing.javaClass.name}")
     }
 }
