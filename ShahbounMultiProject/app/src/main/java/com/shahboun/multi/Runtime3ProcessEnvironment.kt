@@ -32,8 +32,6 @@ object Runtime3ProcessEnvironment {
             .onFailure { RuntimeDiagnostics.log("ENV3", "TMPDIR fallback ${it.javaClass.simpleName}: ${it.message}") }
         runCatching { Os.setenv("FILES_DIR", files.absolutePath, true) }
             .onFailure { RuntimeDiagnostics.log("ENV3", "FILES_DIR fallback ${it.javaClass.simpleName}: ${it.message}") }
-        runCatching { Os.chdir(data.absolutePath) }
-            .onFailure { RuntimeDiagnostics.log("ENV3", "chdir fallback ${it.javaClass.simpleName}: ${it.message}") }
 
         // Android keeps a Java-visible process name in ActivityThread and a native argv[0].
         // RuntimeGuestProcessIdentity handles ActivityThread; this optional call aligns argv[0]
@@ -50,7 +48,7 @@ object Runtime3ProcessEnvironment {
         owner = identity
         RuntimeDiagnostics.log(
             "ENV3",
-            "activated $identity data=${data.absolutePath} cache=${cache.absolutePath} cwd=${data.absolutePath}"
+            "activated $identity data=${data.absolutePath} cache=${cache.absolutePath} files=${files.absolutePath}"
         )
     }
 }
