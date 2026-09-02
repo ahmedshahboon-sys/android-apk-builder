@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <application android:theme="@style/AppTheme" android:usesCleartextTraffic="true" android:label="Shahboun Router E5785" android:icon="@drawable/router_icon" android:roundIcon="@drawable/router_icon">
-        <activity android:name=".MainActivityV19" android:screenOrientation="portrait" android:exported="true">
+        <activity android:name=".MainActivityV20" android:screenOrientation="portrait" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
