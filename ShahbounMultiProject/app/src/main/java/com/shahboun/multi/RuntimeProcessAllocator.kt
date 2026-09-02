@@ -45,6 +45,8 @@ object RuntimeProcessAllocator {
     }
 
     fun release(context: Context, packageName: String, slot: Int) = synchronized(this) {
+        runCatching { RuntimeNotificationBridge.clearClone(context, packageName, slot, removeChannels = true) }
+            .onFailure { RuntimeDiagnostics.log("NOTIFY3", "release cleanup failed $packageName/$slot: ${it.javaClass.simpleName}: ${it.message}") }
         Runtime3ProcessMetadata.delete(context, packageName, slot)
         val removed = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(key(packageName, slot)).commit()
         RuntimeDiagnostics.log("PROCESS3", "released $packageName/$slot removed=$removed")
