@@ -26,21 +26,36 @@ object Runtime3LegacyCleaner {
             val legacySlot = File(legacyRoot, "$hash/${profile.slot}")
             val v3Ready = v3Slot.isDirectory && File(v3Slot, "runtime.meta").isFile && File(v3Slot, "clone.meta").isFile
             if (!v3Ready) {
-                pending += "${profile.packageName}/${profile.slot}"
+                pending += "${profile.packageName}/${profile.slot}:v3-not-ready"
                 return@forEach
             }
-            if (legacySlot.exists()) require(legacySlot.deleteRecursively()) { "Unable to remove Runtime 2 slot ${profile.packageName}/${profile.slot}" }
+            if (legacySlot.exists()) {
+                val removed = runCatching { legacySlot.deleteRecursively() }.getOrDefault(false)
+                if (!removed || legacySlot.exists()) {
+                    pending += "${profile.packageName}/${profile.slot}:legacy-busy"
+                    RuntimeDiagnostics.log("ENGINE3", "legacy slot retained for retry ${profile.packageName}/${profile.slot}")
+                    return@forEach
+                }
+            }
             migrated++
         }
 
         // Old scheduler/process records are invalid in Runtime 3 regardless of per-clone data state.
-        val oldJobsCleared = app.getSharedPreferences("shahboun_runtime_jobs", Context.MODE_PRIVATE).edit().clear().commit()
-        val oldProcessMapCleared = app.getSharedPreferences("shahboun_runtime_processes_v2", Context.MODE_PRIVATE).edit().clear().commit()
+        val oldJobsCleared = runCatching {
+            app.getSharedPreferences("shahboun_runtime_jobs", Context.MODE_PRIVATE).edit().clear().commit()
+        }.getOrDefault(false)
+        val oldProcessMapCleared = runCatching {
+            app.getSharedPreferences("shahboun_runtime_processes_v2", Context.MODE_PRIVATE).edit().clear().commit()
+        }.getOrDefault(false)
 
         if (pending.isEmpty()) {
             // Any remaining directories are orphaned Runtime 2 snapshots not represented by CloneStore.
-            if (legacyRoot.exists()) require(legacyRoot.deleteRecursively()) { "Unable to remove orphan Runtime 2 storage" }
-            check(prefs.edit().putBoolean(KEY_DONE, true).commit()) { "Unable to persist Runtime 3 migration state" }
+            val rootRemoved = !legacyRoot.exists() || runCatching { legacyRoot.deleteRecursively() }.getOrDefault(false)
+            if (rootRemoved && !legacyRoot.exists()) {
+                prefs.edit().putBoolean(KEY_DONE, true).apply()
+            } else {
+                pending += "legacy-root-busy"
+            }
         }
 
         RuntimeDiagnostics.log(
