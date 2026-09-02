@@ -6,7 +6,7 @@ import android.os.Build
 import android.webkit.WebView
 
 class MultiApplication : Application() {
-    lateinit var engine: ShahbounCloneEngine
+    lateinit var engine: ShahbounRuntime3Engine
         private set
 
     var runtimeBridgeReady: Boolean = false
@@ -26,10 +26,10 @@ class MultiApplication : Application() {
 
         if (processName == packageName) migrateLegacyJobRecords()
 
-        engine = ShahbounCloneEngine()
+        engine = ShahbounRuntime3Engine()
         engine.initialize(this)
-            .onSuccess { RuntimeDiagnostics.log("ENGINE", "initialized: ${engine.name}") }
-            .onFailure { RuntimeDiagnostics.log("ENGINE", "initialize failed: ${it.stackTraceToString()}") }
+            .onSuccess { RuntimeDiagnostics.log("ENGINE3", "initialized: ${engine.name}") }
+            .onFailure { RuntimeDiagnostics.log("ENGINE3", "initialize failed: ${it.stackTraceToString()}") }
             .getOrThrow()
 
         if (processName == packageName) RuntimeUpdateCenter.checkAndNotify(this, engine)
@@ -54,13 +54,13 @@ class MultiApplication : Application() {
 
     private fun migrateLegacyJobRecords() {
         val migrationPrefs = getSharedPreferences("shahboun_runtime_migrations", MODE_PRIVATE)
-        val migratedCode = migrationPrefs.getInt("job_runtime_schema", 0)
-        if (migratedCode >= BuildConfig.VERSION_CODE) return
+        val schema = 3
+        if (migrationPrefs.getInt("job_runtime_schema", 0) >= schema) return
         runCatching { getSystemService(JobScheduler::class.java)?.cancelAll() }
             .onFailure { RuntimeDiagnostics.log("JOB", "legacy system job cleanup failed: ${it.javaClass.simpleName}: ${it.message}") }
         val cleared = getSharedPreferences("shahboun_runtime_jobs", MODE_PRIVATE).edit().clear().commit()
-        migrationPrefs.edit().putInt("job_runtime_schema", BuildConfig.VERSION_CODE).commit()
-        RuntimeDiagnostics.log("JOB", "legacy job migration complete version=${BuildConfig.VERSION_CODE} recordsCleared=$cleared")
+        migrationPrefs.edit().putInt("job_runtime_schema", schema).commit()
+        RuntimeDiagnostics.log("JOB", "Runtime 3 job migration complete recordsCleared=$cleared")
     }
 
     private fun installWebViewIsolation() {
@@ -75,9 +75,7 @@ class MultiApplication : Application() {
     private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName
 
     fun requireRuntimeBridge() {
-        check(runtimeBridgeReady) {
-            "جسر تشغيل النسخ غير متاح على هذا الجهاز. افتح «التشخيص» وانسخ السجل."
-        }
+        check(runtimeBridgeReady) { "جسر Runtime 3 غير متاح على هذا الجهاز. افتح «التشخيص» وانسخ السجل." }
     }
 
     companion object {
