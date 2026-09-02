@@ -60,6 +60,7 @@ class RuntimeSession(
         RuntimeDiagnostics.log("RUNTIME", "guest providers ready ${runtimePackage.packageName}/${runtimePackage.slot}")
         RuntimeDiagnostics.log("RUNTIME", "calling guest Application.onCreate ${runtimePackage.packageName}/${runtimePackage.slot}")
         RuntimeExecutionScope.withSession(this) { app.onCreate() }
+        RuntimeInstrumentationInstaller.reassert("guest-app:${runtimePackage.packageName}/${runtimePackage.slot}").getOrElse { throw it }
         RuntimeDiagnostics.log("RUNTIME", "guest Application ready ${runtimePackage.packageName}/${runtimePackage.slot}")
         return app
     }
@@ -258,44 +259,26 @@ private object NativeLibraryExtractor {
     fun extract(apks: List<File>, targetDir: File): Result {
         val supported = Build.SUPPORTED_ABIS.toList()
         val abi = supported.firstOrNull { candidate -> apks.any { containsAbi(it, candidate) } }
-            ?: return Result(null, emptyList())
         val extracted = LinkedHashMap<String, File>()
-        apks.forEach { apk -> extractAbi(apk, abi, targetDir, extracted) }
-        extracted.values.forEach { file ->
-            require(file.isFile && file.length() > 0 && file.canRead()) { "مكتبة Native غير صالحة: ${file.name}" }
-            runCatching { Os.chmod(file.absolutePath, 0b101101101) }
+        if (abi != null) {
+            apks.forEach { apk ->
+                ZipFile(apk).use { zip ->
+                    zip.entries().asSequence()
+                        .filter { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") }
+                        .forEach { entry ->
+                            val fileName = entry.name.substringAfterLast('/')
+                            val out = File(targetDir, fileName)
+                            zip.getInputStream(entry).use { input -> FileOutputStream(out).use(input::copyTo) }
+                            runCatching { Os.chmod(out.absolutePath, 0b101101101) }
+                            extracted[fileName] = out
+                        }
+                }
+            }
         }
         return Result(abi, extracted.values.toList())
     }
 
-    private fun containsAbi(apk: File, abi: String): Boolean = ZipFile(apk).use { zip ->
-        zip.entries().asSequence().any { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") }
-    }
-
-    private fun extractAbi(apk: File, abi: String, targetDir: File, extracted: MutableMap<String, File>) {
-        ZipFile(apk).use { zip ->
-            zip.entries().asSequence().filter { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") }.forEach { entry ->
-                val fileName = entry.name.substringAfterLast('/')
-                require(fileName.isNotBlank() && !fileName.contains("..")) { "اسم مكتبة Native غير صالح" }
-                val out = File(targetDir, fileName)
-                val temp = File(targetDir, ".$fileName.tmp")
-                zip.getInputStream(entry).use { input -> FileOutputStream(temp).use { output -> input.copyTo(output) } }
-                require(temp.isFile && temp.length() > 0) { "فشل استخراج مكتبة Native" }
-                if (out.exists()) out.delete()
-                require(temp.renameTo(out)) { "فشل تثبيت مكتبة Native: $fileName" }
-                extracted[fileName] = out
-            }
-        }
-    }
-}
-
-object RuntimeRegistry {
-    private val sessions = ConcurrentHashMap<String, RuntimeSession>()
-    private fun key(packageName: String, slot: Int) = "$packageName#$slot"
-    fun put(session: RuntimeSession) { sessions.put(key(session.runtimePackage.packageName, session.runtimePackage.slot), session)?.close() }
-    fun getOrNull(packageName: String, slot: Int): RuntimeSession? = sessions[key(packageName, slot)]
-    fun get(packageName: String, slot: Int): RuntimeSession = getOrNull(packageName, slot) ?: error("جلسة التشغيل غير موجودة")
-    fun remove(packageName: String, slot: Int) { sessions.remove(key(packageName, slot))?.close() }
-    fun clear() { sessions.values.forEach { it.close() }; sessions.clear() }
-    fun sessionForClassLoader(loader: ClassLoader?): RuntimeSession? = loader?.let { candidate -> sessions.values.firstOrNull { it.classLoader === candidate } }
+    private fun containsAbi(apk: File, abi: String): Boolean = runCatching {
+        ZipFile(apk).use { zip -> zip.entries().asSequence().any { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") } }
+    }.getOrDefault(false)
 }
