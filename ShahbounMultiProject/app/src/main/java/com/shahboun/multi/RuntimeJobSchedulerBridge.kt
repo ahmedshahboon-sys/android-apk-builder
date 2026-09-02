@@ -21,7 +21,6 @@ object RuntimeJobSchedulerBridge {
     @Volatile private var installed = false
     @Volatile private var facadeOnly = false
     private lateinit var appContext: Context
-    private const val PREFS = "shahboun_runtime_jobs"
 
     fun install(context: Context): Result<Unit> = runCatching {
         if (installed) return@runCatching
@@ -55,7 +54,7 @@ object RuntimeJobSchedulerBridge {
         }
         installed = true
         facadeOnly = false
-        RuntimeDiagnostics.log("JOB", "clone-aware JobScheduler bridge installed field=${field.name} owner=${field.declaringClass.name}")
+        RuntimeDiagnostics.log("JOB", "Runtime3 JobScheduler bridge installed field=${field.name} owner=${field.declaringClass.name}")
     }
 
     fun usesPublicFacade(): Boolean = facadeOnly
@@ -70,10 +69,26 @@ object RuntimeJobSchedulerBridge {
 
     fun lookup(hostJobId: Int): JobRecord? {
         if (!::appContext.isInitialized) return null
-        val raw = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("job.$hostJobId", null) ?: return null
-        val parts = raw.split('|', limit = 4)
-        if (parts.size != 4) return null
-        return JobRecord(parts[0], parts[1].toIntOrNull() ?: return null, parts[2], parts[3].toIntOrNull() ?: return null, hostJobId)
+        return Runtime3JobStore.lookup(appContext, hostJobId)
+    }
+
+    fun saveRecord(record: JobRecord) {
+        if (!::appContext.isInitialized) return
+        Runtime3JobStore.save(appContext, record)
+    }
+
+    fun removeRecord(packageName: String, slot: Int, hostJobId: Int) {
+        if (!::appContext.isInitialized) return
+        Runtime3JobStore.remove(appContext, packageName, slot, hostJobId)
+    }
+
+    fun recordsFor(packageName: String, slot: Int, namespace: String? = null, allNamespaces: Boolean = true): List<JobRecord> {
+        if (!::appContext.isInitialized) return emptyList()
+        return if (allNamespaces) {
+            Runtime3JobStore.recordsFor(appContext, packageName, slot)
+        } else {
+            Runtime3JobStore.recordsFor(appContext, packageName, slot, namespace)
+        }
     }
 
     fun cancelClone(packageName: String, slot: Int): Int {
@@ -81,14 +96,26 @@ object RuntimeJobSchedulerBridge {
         val records = recordsFor(packageName, slot)
         val scheduler = appContext.getSystemService(JobScheduler::class.java)
         records.forEach { record ->
-            runCatching { scheduler?.cancel(record.hostJobId) }.onFailure { RuntimeDiagnostics.log("JOB", "cancelClone host=${record.hostJobId} failed: ${it.javaClass.simpleName}") }
-            remove(record.hostJobId)
+            val target = if (Build.VERSION.SDK_INT >= 34 && record.namespace != null) {
+                runCatching { scheduler?.forNamespace(record.namespace) }.getOrNull() ?: scheduler
+            } else scheduler
+            runCatching { target?.cancel(record.hostJobId) }
+                .onFailure { RuntimeDiagnostics.log("JOB", "cancelClone host=${record.hostJobId} failed: ${it.javaClass.simpleName}") }
+            removeRecord(record.packageName, record.slot, record.hostJobId)
         }
+        Runtime3JobStore.clear(appContext, packageName, slot)
         RuntimeDiagnostics.log("JOB", "cancelClone $packageName/$slot count=${records.size}")
         return records.size
     }
 
-    data class JobRecord(val packageName: String, val slot: Int, val serviceName: String, val guestJobId: Int, val hostJobId: Int)
+    data class JobRecord(
+        val packageName: String,
+        val slot: Int,
+        val serviceName: String,
+        val guestJobId: Int,
+        val hostJobId: Int,
+        val namespace: String? = null
+    )
 
     private class Handler(private val delegate: Any) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
@@ -97,9 +124,8 @@ object RuntimeJobSchedulerBridge {
             return when (method.name) {
                 "schedule", "enqueue" -> routeSchedule(session, method, args)
                 "cancel" -> routeCancel(session, method, args)
-                "cancelAll" -> routeCancelAll(session, method, args)
+                "cancelAll", "cancelAllInNamespace" -> routeCancelAll(session, method, args)
                 "getPendingJob" -> routeGetPendingJob(session, method, args)
-                "getAllPendingJobs" -> invokeDelegate(method, args)
                 else -> invokeDelegate(method, args)
             }
         }
@@ -112,16 +138,17 @@ object RuntimeJobSchedulerBridge {
             val service = original.service
             val pkg = session.runtimePackage
             if (service.packageName != pkg.packageName || !pkg.ownsService(service.className)) return invokeDelegate(method, args)
-            val hostId = hostJobId(pkg.packageName, pkg.slot, original.id)
+            val namespace = namespaceFrom(method, source)
+            val hostId = hostJobId(pkg.packageName, pkg.slot, namespace, original.id)
             val hostService = ComponentName(BuildConfig.APPLICATION_ID, RuntimeProcessPool.jobServiceStub(pkg.packageName, pkg.slot).name)
             val routed = cloneAndPatchJob(original, hostId, hostService).getOrElse {
                 RuntimeDiagnostics.log("JOB", "JobInfo patch failed ${pkg.packageName}/${pkg.slot} id=${original.id}: ${it.stackTraceToString()}")
                 return invokeDelegate(method, args)
             }
-            save(JobRecord(pkg.packageName, pkg.slot, service.className, original.id, hostId))
+            saveRecord(JobRecord(pkg.packageName, pkg.slot, service.className, original.id, hostId, namespace))
             val mutable = Array<Any?>(source.size) { source[it] }
             mutable[index] = routed
-            RuntimeDiagnostics.log("JOB", "schedule ${pkg.packageName}/${pkg.slot} ${service.className} guest=${original.id} host=$hostId")
+            RuntimeDiagnostics.log("JOB", "schedule ${pkg.packageName}/${pkg.slot} ns=${namespace ?: "default"} ${service.className} guest=${original.id} host=$hostId")
             return invokeDelegate(method, mutable)
         }
 
@@ -130,31 +157,36 @@ object RuntimeJobSchedulerBridge {
             val intIndex = method.parameterTypes.indexOfLast { it == Int::class.javaPrimitiveType }
             if (intIndex < 0 || source.getOrNull(intIndex) !is Int) return invokeDelegate(method, args)
             val guestId = source[intIndex] as Int
-            val hostId = hostJobId(session.runtimePackage.packageName, session.runtimePackage.slot, guestId)
+            val namespace = namespaceFrom(method, source)
+            val pkg = session.runtimePackage
+            val hostId = hostJobId(pkg.packageName, pkg.slot, namespace, guestId)
             val mutable = Array<Any?>(source.size) { source[it] }
             mutable[intIndex] = hostId
-            remove(hostId)
-            RuntimeDiagnostics.log("JOB", "cancel ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=$guestId host=$hostId")
+            removeRecord(pkg.packageName, pkg.slot, hostId)
+            RuntimeDiagnostics.log("JOB", "cancel ${pkg.packageName}/${pkg.slot} ns=${namespace ?: "default"} guest=$guestId host=$hostId")
             return invokeDelegate(method, mutable)
         }
 
         private fun routeCancelAll(session: RuntimeSession, method: Method, args: Array<out Any?>?): Any? {
-            val records = recordsFor(session.runtimePackage.packageName, session.runtimePackage.slot)
-            val cancelMethod = delegate.javaClass.methods.firstOrNull { it.name == "cancel" && it.parameterTypes.lastOrNull() == Int::class.javaPrimitiveType }
-                ?: return nullFor(method.returnType)
-            val namespace = args?.firstOrNull { it is String } as? String
+            val pkg = session.runtimePackage
+            val namespace = if (method.name == "cancelAllInNamespace") namespaceFrom(method, args ?: emptyArray()) else null
+            val allNamespaces = method.name == "cancelAll"
+            val records = recordsFor(pkg.packageName, pkg.slot, namespace, allNamespaces)
+            val cancelMethod = delegate.javaClass.methods.firstOrNull {
+                it.name == "cancel" && it.parameterTypes.lastOrNull() == Int::class.javaPrimitiveType
+            } ?: return nullFor(method.returnType)
             records.forEach { record ->
                 runCatching {
                     val callArgs = when (cancelMethod.parameterCount) {
                         1 -> arrayOf<Any?>(record.hostJobId)
-                        2 -> arrayOf<Any?>(namespace, record.hostJobId)
+                        2 -> arrayOf<Any?>(record.namespace, record.hostJobId)
                         else -> return@runCatching
                     }
                     cancelMethod.invoke(delegate, *callArgs)
                 }
-                remove(record.hostJobId)
+                removeRecord(record.packageName, record.slot, record.hostJobId)
             }
-            RuntimeDiagnostics.log("JOB", "cancelAll ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=${records.size}")
+            RuntimeDiagnostics.log("JOB", "${method.name} ${pkg.packageName}/${pkg.slot} ns=${namespace ?: if (allNamespaces) "ALL" else "default"} count=${records.size}")
             return nullFor(method.returnType)
         }
 
@@ -163,9 +195,18 @@ object RuntimeJobSchedulerBridge {
             val intIndex = method.parameterTypes.indexOfLast { it == Int::class.javaPrimitiveType }
             if (intIndex < 0 || source.getOrNull(intIndex) !is Int) return invokeDelegate(method, args)
             val guestId = source[intIndex] as Int
+            val namespace = namespaceFrom(method, source)
+            val pkg = session.runtimePackage
             val mutable = Array<Any?>(source.size) { source[it] }
-            mutable[intIndex] = hostJobId(session.runtimePackage.packageName, session.runtimePackage.slot, guestId)
+            mutable[intIndex] = hostJobId(pkg.packageName, pkg.slot, namespace, guestId)
             return invokeDelegate(method, mutable)
+        }
+
+        private fun namespaceFrom(method: Method, args: Array<out Any?>): String? {
+            if (Build.VERSION.SDK_INT < 34) return null
+            val index = method.parameterTypes.indices.firstOrNull { it < args.size && method.parameterTypes[it] == String::class.java }
+                ?: return null
+            return args[index] as? String
         }
 
         private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
@@ -175,26 +216,35 @@ object RuntimeJobSchedulerBridge {
 
     private fun cloneAndPatchJob(original: JobInfo, hostId: Int, hostService: ComponentName): Result<JobInfo> = runCatching {
         val parcel = android.os.Parcel.obtain()
-        val clone = try { original.writeToParcel(parcel, 0); parcel.setDataPosition(0); JobInfo.CREATOR.createFromParcel(parcel) } finally { parcel.recycle() }
+        val clone = try {
+            original.writeToParcel(parcel, 0)
+            parcel.setDataPosition(0)
+            JobInfo.CREATOR.createFromParcel(parcel)
+        } finally { parcel.recycle() }
         val idField = RuntimeCompatibility.findField(JobInfo::class.java, "jobId", "mJobId") ?: error("JobInfo.jobId غير متاح")
         val serviceField = RuntimeCompatibility.findField(JobInfo::class.java, "service", "mService") ?: error("JobInfo.service غير متاح")
-        idField.isAccessible = true; serviceField.isAccessible = true
-        idField.setInt(clone, hostId); serviceField.set(clone, hostService)
+        idField.isAccessible = true
+        serviceField.isAccessible = true
+        idField.setInt(clone, hostId)
+        serviceField.set(clone, hostService)
         clone
     }
 
-    private fun hostJobId(packageName: String, slot: Int, guestId: Int): Int {
-        var h = 17; h = 31 * h + packageName.hashCode(); h = 31 * h + slot; h = 31 * h + guestId
+    fun hostJobId(packageName: String, slot: Int, namespace: String?, guestId: Int): Int {
+        var h = 17
+        h = 31 * h + packageName.hashCode()
+        h = 31 * h + slot
+        h = 31 * h + (namespace?.hashCode() ?: 0)
+        h = 31 * h + guestId
         return h and 0x7fffffff
     }
 
-    private fun save(record: JobRecord) { appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("job.${record.hostJobId}", "${record.packageName}|${record.slot}|${record.serviceName}|${record.guestJobId}").apply() }
-    private fun remove(hostJobId: Int) { appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostJobId").apply() }
-    private fun recordsFor(packageName: String, slot: Int): List<JobRecord> = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).all.keys.mapNotNull { key ->
-        val id = key.removePrefix("job.").toIntOrNull() ?: return@mapNotNull null
-        lookup(id)?.takeIf { it.packageName == packageName && it.slot == slot }
+    private fun nullFor(type: Class<*>): Any? = when (type) {
+        Boolean::class.javaPrimitiveType -> false
+        Int::class.javaPrimitiveType -> 0
+        Long::class.javaPrimitiveType -> 0L
+        else -> null
     }
-    private fun nullFor(type: Class<*>): Any? = when (type) { Boolean::class.javaPrimitiveType -> false; Int::class.javaPrimitiveType -> 0; Long::class.javaPrimitiveType -> 0L; else -> null }
 }
 
 open class RuntimeJobService : JobService() {
@@ -205,7 +255,8 @@ open class RuntimeJobService : JobService() {
         val record = RuntimeJobSchedulerBridge.lookup(params.jobId) ?: return false
         val app = applicationContext as? MultiApplication ?: MultiApplication.current ?: return false
         val session = runCatching { app.engine.sessionFor(record.packageName, record.slot) }.getOrElse {
-            RuntimeDiagnostics.log("JOB", "session restore failed host=${params.jobId}: ${it.stackTraceToString()}"); return false
+            RuntimeDiagnostics.log("JOB", "session restore failed host=${params.jobId}: ${it.stackTraceToString()}")
+            return false
         }
         if (!session.runtimePackage.ownsService(record.serviceName)) return false
         val guest = running.getOrPut(params.jobId) { createGuest(session, record.serviceName, record.packageName, record.slot) }
@@ -220,7 +271,8 @@ open class RuntimeJobService : JobService() {
 
     override fun onDestroy() {
         running.values.forEach { guest -> runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onDestroy() } } }
-        running.clear(); super.onDestroy()
+        running.clear()
+        super.onDestroy()
     }
 
     private fun createGuest(session: RuntimeSession, serviceName: String, packageName: String, slot: Int): Guest = RuntimeExecutionScope.withSession(session) {
@@ -230,7 +282,8 @@ open class RuntimeJobService : JobService() {
         val app = applicationContext as MultiApplication
         val guestContext = RuntimeGuestContext(baseContext, session, app.engine.runtimeSlotDir(packageName, slot))
         attachServiceFields(service, guestContext, session, serviceName)
-        service.onCreate(); service.onBind(Intent())
+        service.onCreate()
+        service.onBind(Intent())
         RuntimeDiagnostics.log("JOB", "created guest JobService $packageName/$slot $serviceName process=${if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName}")
         Guest(service, session)
     }
@@ -241,7 +294,9 @@ open class RuntimeJobService : JobService() {
         fun field(name: String) = serviceClass.getDeclaredField(name).apply { isAccessible = true }
         field("mApplication").set(service, session.guestApplication ?: application)
         field("mClassName").set(service, serviceName)
-        listOf("mThread", "mToken", "mActivityManager", "mStartCompatibility").forEach { name -> runCatching { val f=field(name); f.set(service, f.get(this)) } }
+        listOf("mThread", "mToken", "mActivityManager", "mStartCompatibility").forEach { name ->
+            runCatching { val f = field(name); f.set(service, f.get(this)) }
+        }
     }
 }
 
