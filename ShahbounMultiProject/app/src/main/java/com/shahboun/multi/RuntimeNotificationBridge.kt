@@ -9,7 +9,7 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 
-/** Fully namespaces notification traffic, channels and groups per Runtime 3 clone identity. */
+/** Fully namespaces notification traffic, channels, groups and lifecycle per Runtime 3 clone. */
 object RuntimeNotificationBridge {
     @Volatile private var installed = false
 
@@ -29,10 +29,18 @@ object RuntimeNotificationBridge {
         }
         val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة INotificationManager غير متاحة" }
-        val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate))
+        val proxy = Proxy.newProxyInstance(
+            interfaces.first().classLoader,
+            interfaces,
+            Handler(context.applicationContext, delegate)
+        )
         require(RuntimeCompatibility.write(field, owner, proxy)) { "تعذر تثبيت Notification proxy" }
         installed = true
         RuntimeDiagnostics.log("NOTIFY", "Runtime3 notification bridge installed field=${field.name} owner=${field.declaringClass.name}")
+    }
+
+    fun clearClone(context: Context, packageName: String, slot: Int, removeChannels: Boolean) {
+        Runtime3NotificationLedger.clearClone(context, packageName, slot, removeChannels)
     }
 
     private fun findNotificationService(manager: NotificationManager): Triple<java.lang.reflect.Field, Any?, Any>? {
@@ -56,7 +64,7 @@ object RuntimeNotificationBridge {
         return null
     }
 
-    private class Handler(private val delegate: Any) : InvocationHandler {
+    private class Handler(private val context: Context, private val delegate: Any) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
             if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
             val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
@@ -65,7 +73,6 @@ object RuntimeNotificationBridge {
             val mutable = Array<Any?>(source.size) { source[it] }
             var touched = false
 
-            // Android must see the real host package/UID; guest objects and IDs are namespaced below.
             mutable.indices.forEach { index ->
                 if (mutable[index] == pkg.packageName) {
                     mutable[index] = BuildConfig.APPLICATION_ID
@@ -83,6 +90,9 @@ object RuntimeNotificationBridge {
                 touched = true
             }
 
+            var ledgerEntry: Runtime3NotificationLedger.Entry? = null
+            var ledgerAction = 0 // 1=record, 2=remove
+
             when {
                 method.name.contains("enqueueNotification", ignoreCase = true) -> {
                     namespaceTag(method, mutable, pkg.packageName, pkg.slot, beforeNotification = true)
@@ -91,16 +101,19 @@ object RuntimeNotificationBridge {
                         @Suppress("DEPRECATION")
                         if (notification.icon == 0) notification.icon = R.drawable.ic_launcher_mokarrer
                     }
+                    ledgerEntry = notificationEntry(method, mutable, beforeNotification = true)
+                    ledgerAction = 1
                     touched = true
                 }
                 method.name.contains("cancelNotification", ignoreCase = true) -> {
                     namespaceTag(method, mutable, pkg.packageName, pkg.slot, beforeNotification = false)
+                    ledgerEntry = notificationEntry(method, mutable, beforeNotification = false)
+                    ledgerAction = 2
                     touched = true
                 }
                 method.name.contains("cancelAll", ignoreCase = true) -> {
-                    // INotificationManager.cancelAll has no per-channel/tag predicate. Suppress it so
-                    // one clone can never erase notifications belonging to another clone.
-                    RuntimeDiagnostics.log("NOTIFY", "clone-scoped cancelAll suppressed ${pkg.packageName}/${pkg.slot}")
+                    Runtime3NotificationLedger.cancelAll(context, pkg.packageName, pkg.slot)
+                    RuntimeDiagnostics.log("NOTIFY", "clone-scoped cancelAll ${pkg.packageName}/${pkg.slot}")
                     return defaultValue(method.returnType)
                 }
             }
@@ -109,22 +122,38 @@ object RuntimeNotificationBridge {
 
             return try {
                 val result = invokeDelegate(method, mutable)
+                ledgerEntry?.let { entry ->
+                    when (ledgerAction) {
+                        1 -> Runtime3NotificationLedger.record(context, pkg.packageName, pkg.slot, entry.tag, entry.id)
+                        2 -> Runtime3NotificationLedger.remove(context, pkg.packageName, pkg.slot, entry.tag, entry.id)
+                    }
+                }
                 if (channelMethod || groupMethod) {
                     Runtime3NotificationNamespace.restoreObjects(pkg.packageName, pkg.slot, result)
                 }
                 result
             } finally {
-                // Binder has already consumed the namespaced parcel. Restore guest-owned objects so
-                // their visible channel/group IDs remain exactly what the original app supplied.
                 if (notificationMethod || channelMethod || groupMethod) {
                     mutable.forEach { Runtime3NotificationNamespace.restoreObjects(pkg.packageName, pkg.slot, it) }
                 }
             }
         }
 
+        private fun notificationEntry(method: Method, args: Array<Any?>, beforeNotification: Boolean): Runtime3NotificationLedger.Entry? {
+            val notificationIndex = if (beforeNotification) {
+                method.parameterTypes.indexOfFirst { Notification::class.java.isAssignableFrom(it) }
+            } else -1
+            val tagUpper = if (notificationIndex >= 0) notificationIndex else method.parameterTypes.size
+            val tagIndex = (0 until tagUpper).filter { method.parameterTypes[it] == String::class.java }.lastOrNull() ?: return null
+            val intCandidates = method.parameterTypes.indices.filter { method.parameterTypes[it] == Int::class.javaPrimitiveType }
+            val idIndex = if (beforeNotification && notificationIndex >= 0) {
+                intCandidates.filter { it < notificationIndex }.lastOrNull()
+            } else intCandidates.firstOrNull()
+            val id = idIndex?.let { args.getOrNull(it) as? Int } ?: return null
+            return Runtime3NotificationLedger.Entry(args.getOrNull(tagIndex) as? String, id)
+        }
+
         private fun namespaceChannelOrGroupId(method: Method, args: Array<Any?>, packageName: String, slot: Int) {
-            // Conversation creation carries a conversationId string, not a raw channel lookup ID;
-            // its parent NotificationChannel object is already namespaced by namespaceObjects().
             if (method.name.startsWith("createConversationNotificationChannel", ignoreCase = true)) return
 
             val host = BuildConfig.APPLICATION_ID
