@@ -2,6 +2,7 @@ package com.shahboun.multi
 
 import android.app.job.JobInfo
 import android.app.job.JobScheduler
+import android.app.job.JobService
 import android.app.job.JobWorkItem
 import android.content.ComponentName
 import android.content.Context
@@ -20,30 +21,42 @@ class RuntimeGuestJobScheduler(
 ) : JobScheduler() {
 
     override fun schedule(job: JobInfo): Int {
+        if (isRejectedGuestJob(job)) return RESULT_FAILURE
         val routed = route(job) ?: return delegate.schedule(job)
-        val result = delegate.schedule(routed.hostJob)
-        if (result == RESULT_SUCCESS) save(routed.record)
-        RuntimeDiagnostics.log(
-            "JOB",
-            "facade schedule ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id} host=${routed.record.hostJobId} result=$result"
-        )
-        return result
+        return runCatching {
+            val result = delegate.schedule(routed.hostJob)
+            if (result == RESULT_SUCCESS) save(routed.record)
+            RuntimeDiagnostics.log(
+                "JOB",
+                "facade schedule ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id} host=${routed.record.hostJobId} result=$result"
+            )
+            result
+        }.getOrElse {
+            RuntimeDiagnostics.log("JOB", "facade schedule rejected ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id}: ${it.javaClass.simpleName}: ${it.message}")
+            RESULT_FAILURE
+        }
     }
 
     override fun enqueue(job: JobInfo, work: JobWorkItem): Int {
+        if (isRejectedGuestJob(job)) return RESULT_FAILURE
         val routed = route(job) ?: return delegate.enqueue(job, work)
-        val result = delegate.enqueue(routed.hostJob, work)
-        if (result == RESULT_SUCCESS) save(routed.record)
-        RuntimeDiagnostics.log(
-            "JOB",
-            "facade enqueue ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id} host=${routed.record.hostJobId} result=$result"
-        )
-        return result
+        return runCatching {
+            val result = delegate.enqueue(routed.hostJob, work)
+            if (result == RESULT_SUCCESS) save(routed.record)
+            RuntimeDiagnostics.log(
+                "JOB",
+                "facade enqueue ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id} host=${routed.record.hostJobId} result=$result"
+            )
+            result
+        }.getOrElse {
+            RuntimeDiagnostics.log("JOB", "facade enqueue rejected ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id}: ${it.javaClass.simpleName}: ${it.message}")
+            RESULT_FAILURE
+        }
     }
 
     override fun cancel(jobId: Int) {
         val hostId = hostJobId(jobId)
-        delegate.cancel(hostId)
+        runCatching { delegate.cancel(hostId) }
         remove(hostId)
         RuntimeDiagnostics.log(
             "JOB",
@@ -72,6 +85,21 @@ class RuntimeGuestJobScheduler(
     }
 
     private data class Routed(val hostJob: JobInfo, val record: RuntimeJobSchedulerBridge.JobRecord)
+
+    private fun isRejectedGuestJob(original: JobInfo): Boolean {
+        val pkg = session.runtimePackage
+        val service = original.service
+        if (service.packageName != pkg.packageName || !pkg.ownsService(service.className)) return false
+        val clazz = runCatching { session.classLoader.loadClass(service.className) }.getOrNull()
+        val valid = clazz != null && JobService::class.java.isAssignableFrom(clazz)
+        if (!valid) {
+            RuntimeDiagnostics.log(
+                "JOB",
+                "guest job rejected ${pkg.packageName}/${pkg.slot} service=${service.className} guest=${original.id} reason=not-JobService"
+            )
+        }
+        return !valid
+    }
 
     private fun route(original: JobInfo): Routed? {
         val pkg = session.runtimePackage
@@ -134,7 +162,7 @@ class RuntimeGuestJobScheduler(
     }
 
     private fun remove(hostId: Int) {
-        hostContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostId").apply()
+        hostContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostId).apply()
     }
 
     companion object {
