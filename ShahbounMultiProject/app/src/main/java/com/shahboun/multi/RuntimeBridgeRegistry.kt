@@ -2,9 +2,19 @@ package com.shahboun.multi
 
 import android.content.Context
 
-/** Installs runtime bridges through one compatibility-aware pipeline and records capability state. */
+/** Installs Runtime 3 system bridges and records an all-or-nothing launch capability state. */
 object RuntimeBridgeRegistry {
     data class BridgeState(val name: String, val ready: Boolean, val detail: String?)
+
+    private val required = setOf(
+        "package-manager",
+        "notifications",
+        "activity-manager-pending-intent",
+        "alarm",
+        "jobs",
+        "clipboard",
+        "identity"
+    )
 
     @Volatile private var latest: List<BridgeState> = emptyList()
 
@@ -27,13 +37,15 @@ object RuntimeBridgeRegistry {
 
         latest = states.toList()
         val ready = states.count { it.ready }
-        RuntimeDiagnostics.log("BRIDGE", "capability matrix ready=$ready/${states.size} failed=${states.filterNot { it.ready }.joinToString { it.name }}")
+        RuntimeDiagnostics.log("BRIDGE", "Runtime3 capability matrix ready=$ready/${states.size} failed=${states.filterNot { it.ready }.joinToString { it.name }}")
         return latest
     }
 
     fun snapshot(): List<BridgeState> = latest
+
     fun isCoreReady(): Boolean {
-        val required = setOf("package-manager", "activity-manager-pending-intent", "identity")
-        return latest.filter { it.name in required }.all { it.ready }
+        if (latest.isEmpty()) return false
+        val map = latest.associateBy { it.name }
+        return required.all { map[it]?.ready == true }
     }
 }
