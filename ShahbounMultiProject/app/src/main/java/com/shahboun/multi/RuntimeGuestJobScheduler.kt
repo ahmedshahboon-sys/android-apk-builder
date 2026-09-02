@@ -6,50 +6,66 @@ import android.app.job.JobService
 import android.app.job.JobWorkItem
 import android.content.ComponentName
 import android.content.Context
+import android.os.Build
 import android.os.Parcel
 
 /**
- * Public-API JobScheduler facade used by guest contexts when Android 14+ hides the
+ * Public-API JobScheduler facade used by guest contexts when Android hides the
  * framework's cached IJobScheduler Binder. Jobs are rewritten to Shahboun host
  * stubs before they reach the system and translated back to guest identity on reads.
  */
 class RuntimeGuestJobScheduler(
     private val hostContext: Context,
     private val session: RuntimeSession,
+    private val namespace: String? = null,
     private val delegate: JobScheduler = hostContext.getSystemService(JobScheduler::class.java)
         ?: error("JobScheduler غير متاح")
 ) : JobScheduler() {
 
+    override fun forNamespace(rawNamespace: String): JobScheduler {
+        if (Build.VERSION.SDK_INT < 34) return this
+        val normalized = rawNamespace.trim()
+        require(normalized.isNotEmpty()) { "JobScheduler namespace فارغ" }
+        val namespacedDelegate = delegate.forNamespace(normalized)
+        RuntimeDiagnostics.log(
+            "JOB",
+            "facade namespace ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=$normalized"
+        )
+        return RuntimeGuestJobScheduler(hostContext, session, normalized, namespacedDelegate)
+    }
+
+    override fun getNamespace(): String? = namespace
+
     override fun schedule(job: JobInfo): Int {
         if (isRejectedGuestJob(job)) return RESULT_FAILURE
-        val routed = route(job) ?: return delegate.schedule(job)
+        val routed = route(job) ?: return safeSchedule(job)
         return runCatching {
             val result = delegate.schedule(routed.hostJob)
             if (result == RESULT_SUCCESS) save(routed.record)
             RuntimeDiagnostics.log(
                 "JOB",
-                "facade schedule ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id} host=${routed.record.hostJobId} result=$result"
+                "facade schedule ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=${namespace ?: "default"} guest=${job.id} host=${routed.record.hostJobId} result=$result"
             )
             result
         }.getOrElse {
-            RuntimeDiagnostics.log("JOB", "facade schedule rejected ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id}: ${it.javaClass.simpleName}: ${it.message}")
+            RuntimeDiagnostics.log("JOB", "facade schedule rejected ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=${namespace ?: "default"} guest=${job.id}: ${it.javaClass.simpleName}: ${it.message}")
             RESULT_FAILURE
         }
     }
 
     override fun enqueue(job: JobInfo, work: JobWorkItem): Int {
         if (isRejectedGuestJob(job)) return RESULT_FAILURE
-        val routed = route(job) ?: return delegate.enqueue(job, work)
+        val routed = route(job) ?: return safeEnqueue(job, work)
         return runCatching {
             val result = delegate.enqueue(routed.hostJob, work)
             if (result == RESULT_SUCCESS) save(routed.record)
             RuntimeDiagnostics.log(
                 "JOB",
-                "facade enqueue ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id} host=${routed.record.hostJobId} result=$result"
+                "facade enqueue ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=${namespace ?: "default"} guest=${job.id} host=${routed.record.hostJobId} result=$result"
             )
             result
         }.getOrElse {
-            RuntimeDiagnostics.log("JOB", "facade enqueue rejected ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=${job.id}: ${it.javaClass.simpleName}: ${it.message}")
+            RuntimeDiagnostics.log("JOB", "facade enqueue rejected ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=${namespace ?: "default"} guest=${job.id}: ${it.javaClass.simpleName}: ${it.message}")
             RESULT_FAILURE
         }
     }
@@ -60,17 +76,33 @@ class RuntimeGuestJobScheduler(
         remove(hostId)
         RuntimeDiagnostics.log(
             "JOB",
-            "facade cancel ${session.runtimePackage.packageName}/${session.runtimePackage.slot} guest=$jobId host=$hostId"
+            "facade cancel ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=${namespace ?: "default"} guest=$jobId host=$hostId"
         )
     }
 
     override fun cancelAll() {
+        if (namespace == null) {
+            RuntimeJobSchedulerBridge.cancelClone(session.runtimePackage.packageName, session.runtimePackage.slot)
+            return
+        }
+        val records = recordsForNamespace()
+        records.forEach { record ->
+            runCatching { delegate.cancel(record.hostJobId) }
+            remove(record.hostJobId)
+        }
+        RuntimeDiagnostics.log(
+            "JOB",
+            "facade cancelAll ${session.runtimePackage.packageName}/${session.runtimePackage.slot} namespace=$namespace count=${records.size}"
+        )
+    }
+
+    override fun cancelInAllNamespaces() {
         RuntimeJobSchedulerBridge.cancelClone(session.runtimePackage.packageName, session.runtimePackage.slot)
     }
 
     override fun getAllPendingJobs(): MutableList<JobInfo> {
         val pkg = session.runtimePackage
-        return delegate.allPendingJobs.mapNotNull { hostJob ->
+        return runCatching { delegate.allPendingJobs }.getOrDefault(emptyList()).mapNotNull { hostJob ->
             val record = RuntimeJobSchedulerBridge.lookup(hostJob.id)
             if (record == null || record.packageName != pkg.packageName || record.slot != pkg.slot) null
             else restore(hostJob, record)
@@ -81,10 +113,20 @@ class RuntimeGuestJobScheduler(
         val hostId = hostJobId(jobId)
         val record = RuntimeJobSchedulerBridge.lookup(hostId) ?: return null
         if (record.packageName != session.runtimePackage.packageName || record.slot != session.runtimePackage.slot) return null
-        return delegate.getPendingJob(hostId)?.let { restore(it, record) }
+        return runCatching { delegate.getPendingJob(hostId) }.getOrNull()?.let { restore(it, record) }
     }
 
     private data class Routed(val hostJob: JobInfo, val record: RuntimeJobSchedulerBridge.JobRecord)
+
+    private fun safeSchedule(job: JobInfo): Int = runCatching { delegate.schedule(job) }.getOrElse {
+        RuntimeDiagnostics.log("JOB", "delegate schedule failed namespace=${namespace ?: "default"}: ${it.javaClass.simpleName}: ${it.message}")
+        RESULT_FAILURE
+    }
+
+    private fun safeEnqueue(job: JobInfo, work: JobWorkItem): Int = runCatching { delegate.enqueue(job, work) }.getOrElse {
+        RuntimeDiagnostics.log("JOB", "delegate enqueue failed namespace=${namespace ?: "default"}: ${it.javaClass.simpleName}: ${it.message}")
+        RESULT_FAILURE
+    }
 
     private fun isRejectedGuestJob(original: JobInfo): Boolean {
         val pkg = session.runtimePackage
@@ -95,7 +137,7 @@ class RuntimeGuestJobScheduler(
         if (!valid) {
             RuntimeDiagnostics.log(
                 "JOB",
-                "guest job rejected ${pkg.packageName}/${pkg.slot} service=${service.className} guest=${original.id} reason=not-JobService"
+                "guest job rejected ${pkg.packageName}/${pkg.slot} namespace=${namespace ?: "default"} service=${service.className} guest=${original.id} reason=not-JobService"
             )
         }
         return !valid
@@ -148,6 +190,7 @@ class RuntimeGuestJobScheduler(
         var h = 17
         h = 31 * h + pkg.packageName.hashCode()
         h = 31 * h + pkg.slot
+        h = 31 * h + (namespace?.hashCode() ?: 0)
         h = 31 * h + guestId
         return h and 0x7fffffff
     }
@@ -163,6 +206,14 @@ class RuntimeGuestJobScheduler(
 
     private fun remove(hostId: Int) {
         hostContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("job.$hostId").apply()
+    }
+
+    private fun recordsForNamespace(): List<RuntimeJobSchedulerBridge.JobRecord> {
+        val pkg = session.runtimePackage
+        val pendingIds = runCatching { delegate.allPendingJobs.map { it.id }.toSet() }.getOrDefault(emptySet())
+        return pendingIds.mapNotNull(RuntimeJobSchedulerBridge::lookup).filter {
+            it.packageName == pkg.packageName && it.slot == pkg.slot
+        }
     }
 
     companion object {
