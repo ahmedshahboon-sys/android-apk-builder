@@ -66,7 +66,7 @@ class MultiApplication : Application() {
     private fun installWebViewIsolation() {
         if (Build.VERSION.SDK_INT < 28) return
         val process = currentProcessName()
-        val processIndex = Regex(":clone([0-9])$").find(process)?.groupValues?.getOrNull(1) ?: return
+        val processIndex = Regex(":clone([0-9]+)$").find(process)?.groupValues?.getOrNull(1) ?: return
         runCatching { WebView.setDataDirectorySuffix("shahboun_process_$processIndex") }
             .onSuccess { RuntimeDiagnostics.log("WEBVIEW", "isolated data directory processIndex=$processIndex process=$process") }
             .onFailure { RuntimeDiagnostics.log("WEBVIEW", "data directory isolation failed processIndex=$processIndex: ${it.stackTraceToString()}") }
