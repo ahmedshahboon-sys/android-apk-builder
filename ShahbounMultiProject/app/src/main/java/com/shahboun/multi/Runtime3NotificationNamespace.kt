@@ -97,12 +97,10 @@ object Runtime3NotificationNamespace {
     }
 
     private fun setChannelId(channel: NotificationChannel, id: String) {
-        val success = runCatching {
-            val method = channel.javaClass.getDeclaredMethod("setId", String::class.java).apply { isAccessible = true }
-            method.invoke(channel, id)
-            true
-        }.getOrDefault(false)
-        if (!success) setField(channel, "mId", id)
+        // NotificationChannel has no public setter for its immutable ID. Runtime 3 patches the
+        // framework backing field through the central compatibility layer instead of invoking the
+        // explicitly blocked hidden setId() method on targetSdk 36.
+        setField(channel, "mId", id)
     }
 
     private fun setField(target: Any, name: String, value: Any?) {
