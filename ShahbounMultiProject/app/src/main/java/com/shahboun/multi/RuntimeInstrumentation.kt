@@ -75,9 +75,19 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
 
     @Suppress("unused")
     fun execStartActivity(who: Context?, contextThread: IBinder?, token: IBinder?, target: Activity?, intent: Intent, requestCode: Int, options: Bundle?): ActivityResult? {
-        val session = target?.let(RuntimeActivityBindings::sessionFor)
-        val routed = if (target != null) routeForGuest(target, intent) else intent
-        RuntimeDiagnostics.log("RUNTIME", "execStartActivity target=${target?.javaClass?.name ?: "null"} token=${if (token == null) "null" else "present"} routed=${routed.component?.flattenToShortString() ?: routed.action}")
+        val session = target?.let(RuntimeActivityBindings::sessionFor) ?: RuntimeExecutionScope.current()
+        val routed = if (session != null) RuntimeIntentRouter.wrap(who ?: target ?: MultiApplication.current ?: return null, session, intent) else intent
+        RuntimeDiagnostics.log("RUNTIME", "execStartActivity activityTarget=${target?.javaClass?.name ?: "null"} token=${if (token == null) "null" else "present"} routed=${routed.component?.flattenToShortString() ?: routed.action}")
+        return if (session != null) RuntimeExecutionScope.withSession(session) { HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options) }
+        else HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options)
+    }
+
+    @Suppress("unused")
+    fun execStartActivity(who: Context?, contextThread: IBinder?, token: IBinder?, target: String?, intent: Intent, requestCode: Int, options: Bundle?): ActivityResult? {
+        val session = RuntimeExecutionScope.current()
+        val routeContext = who ?: MultiApplication.current
+        val routed = if (session != null && routeContext != null) RuntimeIntentRouter.wrap(routeContext, session, intent) else intent
+        RuntimeDiagnostics.log("RUNTIME", "execStartActivity stringTarget=${target ?: "null"} token=${if (token == null) "null" else "present"} routed=${routed.component?.flattenToShortString() ?: routed.action}")
         return if (session != null) RuntimeExecutionScope.withSession(session) { HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options) }
         else HiddenInstrumentationDispatch.execStartActivity(base, who, contextThread, token, target, routed, requestCode, options)
     }
@@ -89,13 +99,18 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
     }
 
     private fun <T> scoped(activity: Activity, block: () -> T): T { val session = RuntimeActivityBindings.sessionFor(activity); return if (session != null) RuntimeExecutionScope.withSession(session, block) else block() }
-    private fun routeForGuest(activity: Activity, intent: Intent): Intent { val session = RuntimeActivityBindings.sessionFor(activity) ?: return intent; return RuntimeIntentRouter.wrap(activity, session, intent) }
 }
 
 private object HiddenInstrumentationDispatch {
-    private val method by lazy { Instrumentation::class.java.getDeclaredMethod("execStartActivity", Context::class.java, IBinder::class.java, IBinder::class.java, Activity::class.java, Intent::class.java, Int::class.javaPrimitiveType, Bundle::class.java).apply { isAccessible = true } }
+    private val activityMethod by lazy { Instrumentation::class.java.getDeclaredMethod("execStartActivity", Context::class.java, IBinder::class.java, IBinder::class.java, Activity::class.java, Intent::class.java, Int::class.javaPrimitiveType, Bundle::class.java).apply { isAccessible = true } }
+    private val stringMethod by lazy { Instrumentation::class.java.getDeclaredMethod("execStartActivity", Context::class.java, IBinder::class.java, IBinder::class.java, String::class.java, Intent::class.java, Int::class.javaPrimitiveType, Bundle::class.java).apply { isAccessible = true } }
+
     fun execStartActivity(instrumentation: Instrumentation, who: Context?, contextThread: IBinder?, token: IBinder?, target: Activity?, intent: Intent, requestCode: Int, options: Bundle?): Instrumentation.ActivityResult? {
-        @Suppress("UNCHECKED_CAST") return method.invoke(instrumentation, who, contextThread, token, target, intent, requestCode, options) as? Instrumentation.ActivityResult
+        @Suppress("UNCHECKED_CAST") return activityMethod.invoke(instrumentation, who, contextThread, token, target, intent, requestCode, options) as? Instrumentation.ActivityResult
+    }
+
+    fun execStartActivity(instrumentation: Instrumentation, who: Context?, contextThread: IBinder?, token: IBinder?, target: String?, intent: Intent, requestCode: Int, options: Bundle?): Instrumentation.ActivityResult? {
+        @Suppress("UNCHECKED_CAST") return stringMethod.invoke(instrumentation, who, contextThread, token, target, intent, requestCode, options) as? Instrumentation.ActivityResult
     }
 }
 
