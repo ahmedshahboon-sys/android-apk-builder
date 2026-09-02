@@ -14,7 +14,7 @@ data class CompatibilityReport(val packageName: String, val slot: Int, val check
     val warnings get() = checks.count { it.status == CompatibilityCheck.Status.WARN }
     val passed get() = checks.count { it.status == CompatibilityCheck.Status.PASS }
     fun render(): String = buildString {
-        appendLine("اختبار التوافق: $packageName / نسخة ${slot + 1}")
+        appendLine("اختبار Runtime 3: $packageName / نسخة ${slot + 1}")
         appendLine("نجاح: $passed   تحذير: $warnings   فشل: $failed")
         appendLine()
         checks.forEach { c ->
@@ -28,9 +28,9 @@ data class CompatibilityReport(val packageName: String, val slot: Int, val check
     }
 }
 
-/** Engine 2.0 audit: host process never loads guest code. Runtime checks are reported separately. */
+/** Runtime 3 structural audit. It never pretends a host-only check is a successful live guest test. */
 object RuntimeCompatibilityAudit {
-    fun run(context: Context, engine: ShahbounCloneEngine, packageName: String, slot: Int): CompatibilityReport {
+    fun run(context: Context, engine: ShahbounRuntime3Engine, packageName: String, slot: Int): CompatibilityReport {
         val out = mutableListOf<CompatibilityCheck>()
         fun check(name: String, block: () -> String) {
             runCatching { block() }
@@ -39,8 +39,15 @@ object RuntimeCompatibilityAudit {
         }
 
         val pkg = runCatching { engine.runtimePackageFor(packageName, slot) }.getOrElse {
-            out += CompatibilityCheck("Snapshot", CompatibilityCheck.Status.FAIL, it.message ?: it.javaClass.simpleName)
+            out += CompatibilityCheck("Runtime 3 Snapshot", CompatibilityCheck.Status.FAIL, it.message ?: it.javaClass.simpleName)
             return finish(packageName, slot, out)
+        }
+
+        check("Runtime 3 storage") {
+            val slotDir = engine.runtimeSlotDir(packageName, slot)
+            require(slotDir.absolutePath.contains("clone_engine_v3")) { "النسخة ما زالت على جذر Runtime 2" }
+            require(java.io.File(slotDir, "clone.meta").readText().contains("engine=3")) { "clone.meta ليس Runtime 3" }
+            "جذر v3 مستقل"
         }
 
         check("Snapshot وسلامة APK") {
@@ -58,7 +65,7 @@ object RuntimeCompatibilityAudit {
 
         check("Resources archives") {
             pkg.allApks.forEach { apk -> ZipFile(apk).use { zip -> require(zip.getEntry("resources.arsc") != null || apk != pkg.baseApk) { "resources.arsc مفقود من base" } } }
-            "${pkg.allApks.size} APK resource paths جاهزة للـpre-attach"
+            "${pkg.allApks.size} APK resource paths جاهزة"
         }
 
         check("Manifest components") {
@@ -72,12 +79,13 @@ object RuntimeCompatibilityAudit {
             "requested=${pkg.launchAlias ?: pkg.launchActivity} target=${pkg.launchActivity}"
         }
 
-        check("Process allocation") {
+        check("Process isolation") {
+            require(RuntimeProcessPool.size >= 16) { "سعة العمليات أقل من معيار Runtime 3" }
             val index = RuntimeProcessAllocator.migrateIfNeeded(context, packageName, slot, RuntimeProcessPool.size)
             val mappings = RuntimeProcessAllocator.snapshot(context)
             val duplicate = mappings.entries.firstOrNull { it.key != "$packageName#$slot" && it.value == index }
             require(duplicate == null) { "process collision مع ${duplicate?.key}" }
-            ":clone$index • allocation ثابت وفريد"
+            ":clone$index • unique • capacity=${RuntimeProcessPool.size}"
         }
 
         check("صلاحيات المضيف") {
@@ -89,13 +97,13 @@ object RuntimeCompatibilityAudit {
 
         val bridgeStates = RuntimeBridgeRegistry.snapshot()
         if (bridgeStates.isEmpty()) {
-            out += CompatibilityCheck("System bridges", CompatibilityCheck.Status.WARN, "لم تُسجل capability matrix بعد")
+            out += CompatibilityCheck("System bridges", CompatibilityCheck.Status.FAIL, "لم تُسجل capability matrix")
         } else {
             bridgeStates.forEach { state ->
                 out += CompatibilityCheck(
                     "Bridge/${state.name}",
-                    if (state.ready) CompatibilityCheck.Status.PASS else CompatibilityCheck.Status.WARN,
-                    if (state.ready) "جاهز" else (state.detail ?: "fallback")
+                    if (state.ready) CompatibilityCheck.Status.PASS else CompatibilityCheck.Status.FAIL,
+                    if (state.ready) "جاهز" else (state.detail ?: "غير جاهز")
                 )
             }
         }
@@ -111,7 +119,7 @@ object RuntimeCompatibilityAudit {
         out += CompatibilityCheck(
             "Runtime live test",
             CompatibilityCheck.Status.WARN,
-            if (processName.contains(":clone")) "نفّذ الاختبار الحي من process النسخة" else "Host audit فقط؛ التشغيل الحي يُثبت من سجل :cloneN"
+            if (processName.contains(":clone")) "عملية clone نشطة؛ الحكم النهائي من سجل lifecycle/runtime" else "غير منفذ هنا — Host audit لا يساوي تشغيل حي"
         )
 
         val updated = engine.needsUpdate(packageName, slot)
@@ -138,7 +146,7 @@ object RuntimeCompatibilityAudit {
 
     private fun finish(packageName: String, slot: Int, checks: List<CompatibilityCheck>): CompatibilityReport {
         val report = CompatibilityReport(packageName, slot, checks)
-        RuntimeDiagnostics.log("AUDIT", report.render().replace("\n", " | "))
+        RuntimeDiagnostics.log("AUDIT3", report.render().replace("\n", " | "))
         return report
     }
 }
