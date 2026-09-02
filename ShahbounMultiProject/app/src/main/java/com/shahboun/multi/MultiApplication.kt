@@ -28,7 +28,10 @@ class MultiApplication : Application() {
 
         engine = ShahbounRuntime3Engine()
         engine.initialize(this)
-            .onSuccess { RuntimeDiagnostics.log("ENGINE3", "initialized: ${engine.name}") }
+            .onSuccess {
+                RuntimeDiagnostics.log("ENGINE3", "initialized: ${engine.name}")
+                if (processName == packageName) Runtime3LegacyCleaner.cleanup(this)
+            }
             .onFailure { RuntimeDiagnostics.log("ENGINE3", "initialize failed: ${it.stackTraceToString()}") }
             .getOrThrow()
 
