@@ -15,44 +15,66 @@ class MultiApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         current = this
-        RuntimeDiagnostics.initialize(this)
-        RuntimeDeepDiagnostics.initialize(this)
-        RuntimeDiagnostics.installCrashHandler()
+
+        // Nothing outside the core engine is allowed to kill the host UI during Application startup.
+        runCatching { RuntimeDiagnostics.initialize(this) }
+        runCatching { RuntimeDeepDiagnostics.initialize(this) }
+        runCatching { RuntimeDiagnostics.installCrashHandler() }
+
         val processName = currentProcessName()
-        RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=$processName")
-        RuntimeCompatibility.logProfile()
-        installWebViewIsolation()
-        SystemBarsFitter.install(this)
+        safeStartup("APP") { RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=$processName") }
+        safeStartup("COMPAT") { RuntimeCompatibility.logProfile() }
+        safeStartup("WEBVIEW") { installWebViewIsolation() }
+        safeStartup("BARS") { SystemBarsFitter.install(this) }
 
-        if (processName == packageName) migrateLegacyJobRecords()
+        if (processName == packageName) safeStartup("JOB-MIGRATE") { migrateLegacyJobRecords() }
 
+        // Core engine initialization is intentionally tiny (private Runtime 3 storage + factories).
+        // Keep the object available even if a recovery/bootstrap path hits malformed legacy state.
         engine = ShahbounRuntime3Engine()
-        engine.initialize(this)
+        val engineResult = engine.initialize(this)
+        engineResult
             .onSuccess {
-                RuntimeDiagnostics.log("ENGINE3", "initialized: ${engine.name}")
-                if (processName == packageName) Runtime3LegacyCleaner.cleanup(this)
-            }
-            .onFailure { RuntimeDiagnostics.log("ENGINE3", "initialize failed: ${it.stackTraceToString()}") }
-            .getOrThrow()
-
-        if (processName == packageName) RuntimeUpdateCenter.checkAndNotify(this, engine)
-
-        RuntimeBridgeRegistry.install(this)
-        RuntimeSystemEvents.install(this)
-
-        val launchBridgeReady = RuntimeLaunchTransactionBridge.install()
-            .onFailure { RuntimeDiagnostics.log("LAUNCH2", "pre-attach bridge fallback: ${it.stackTraceToString()}") }
-            .isSuccess
-
-        RuntimeInstrumentationInstaller.install()
-            .onSuccess {
-                runtimeBridgeReady = RuntimeBridgeRegistry.isCoreReady() && launchBridgeReady
-                RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge installed coreReady=$runtimeBridgeReady launch2=$launchBridgeReady")
+                safeStartup("ENGINE3") { RuntimeDiagnostics.log("ENGINE3", "initialized: ${engine.name}") }
+                if (processName == packageName) safeStartup("LEGACY-CLEAN") { Runtime3LegacyCleaner.cleanup(this) }
             }
             .onFailure {
-                runtimeBridgeReady = false
-                RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge unavailable: ${it.stackTraceToString()}")
+                safeStartup("ENGINE3") { RuntimeDiagnostics.log("ENGINE3", "initialize failed without killing host UI: ${it.stackTraceToString()}") }
             }
+
+        if (processName == packageName && engineResult.isSuccess) {
+            safeStartup("UPDATE") { RuntimeUpdateCenter.checkAndNotify(this, engine) }
+        }
+
+        safeStartup("BRIDGES") { RuntimeBridgeRegistry.install(this) }
+        safeStartup("SYSTEM-EVENTS") { RuntimeSystemEvents.install(this) }
+
+        val launchBridgeReady = runCatching { RuntimeLaunchTransactionBridge.install() }
+            .getOrElse { Result.failure(it) }
+            .onFailure { safeStartup("LAUNCH2") { RuntimeDiagnostics.log("LAUNCH2", "pre-attach bridge fallback: ${it.stackTraceToString()}") } }
+            .isSuccess
+
+        val instrumentationReady = runCatching { RuntimeInstrumentationInstaller.install() }
+            .getOrElse { Result.failure(it) }
+            .onFailure {
+                runtimeBridgeReady = false
+                safeStartup("RUNTIME") { RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge unavailable: ${it.stackTraceToString()}") }
+            }
+            .isSuccess
+
+        runtimeBridgeReady = engineResult.isSuccess && instrumentationReady && RuntimeBridgeRegistry.isCoreReady() && launchBridgeReady
+        safeStartup("RUNTIME") {
+            RuntimeDiagnostics.log(
+                "RUNTIME",
+                "startup completed hostAlive=true engine=${engineResult.isSuccess} instrumentation=$instrumentationReady core=${RuntimeBridgeRegistry.isCoreReady()} launch2=$launchBridgeReady ready=$runtimeBridgeReady"
+            )
+        }
+    }
+
+    private inline fun safeStartup(tag: String, block: () -> Unit) {
+        runCatching(block).onFailure { error ->
+            runCatching { RuntimeDiagnostics.log("STARTUP", "$tag failed but host continues: ${error.javaClass.simpleName}: ${error.message}") }
+        }
     }
 
     private fun migrateLegacyJobRecords() {
