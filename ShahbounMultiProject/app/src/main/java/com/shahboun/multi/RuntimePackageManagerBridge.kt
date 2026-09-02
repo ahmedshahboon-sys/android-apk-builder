@@ -76,11 +76,15 @@ object RuntimePackageManagerBridge {
         private fun stateKey(session: RuntimeSession, component: ComponentName): String =
             "${session.runtimePackage.packageName}#${session.runtimePackage.slot}:${component.flattenToString()}"
 
+        private fun persistComponentState(session: RuntimeSession, component: ComponentName, state: Int) {
+            val pkg = session.runtimePackage
+            componentStates[stateKey(session, component)] = state
+            Runtime3ComponentStateStore.put(context, pkg.packageName, pkg.slot, component, state)
+        }
+
         private fun setVirtualComponentState(session: RuntimeSession, component: ComponentName, args: Array<out Any?>): Any? {
             val state = args.drop(1).firstOrNull { it is Int } as? Int ?: PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
-            componentStates[stateKey(session, component)] = state
-            context.getSharedPreferences("shahboun_component_states", Context.MODE_PRIVATE).edit()
-                .putInt(stateKey(session, component), state).apply()
+            persistComponentState(session, component, state)
             RuntimeDiagnostics.log("PM", "virtual component state ${component.flattenToShortString()}=$state clone=${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
             return null
         }
@@ -88,8 +92,8 @@ object RuntimePackageManagerBridge {
         private fun virtualComponentState(session: RuntimeSession, component: ComponentName): Int {
             val key = stateKey(session, component)
             componentStates[key]?.let { return it }
-            return context.getSharedPreferences("shahboun_component_states", Context.MODE_PRIVATE)
-                .getInt(key, PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
+            val pkg = session.runtimePackage
+            return Runtime3ComponentStateStore.get(context, pkg.packageName, pkg.slot, component)
                 .also { componentStates[key] = it }
         }
 
@@ -106,9 +110,7 @@ object RuntimePackageManagerBridge {
                     val state = runCatching { setting!!.javaClass.getMethod("getEnabledState").invoke(setting) as Int }.getOrElse {
                         runCatching { setting!!.javaClass.getMethod("getNewState").invoke(setting) as Int }.getOrDefault(PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
                     }
-                    componentStates[stateKey(session, component)] = state
-                    context.getSharedPreferences("shahboun_component_states", Context.MODE_PRIVATE).edit()
-                        .putInt(stateKey(session, component), state).apply()
+                    persistComponentState(session, component, state)
                     RuntimeDiagnostics.log("PM", "virtual component state ${component.flattenToShortString()}=$state batch clone=${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
                 }
             }
