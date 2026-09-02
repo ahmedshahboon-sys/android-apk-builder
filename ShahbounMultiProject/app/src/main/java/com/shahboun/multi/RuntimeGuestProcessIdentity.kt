@@ -3,7 +3,15 @@ package com.shahboun.multi
 import android.app.Application
 import android.os.Build
 
-/** Pins one immutable guest identity to one Runtime 3 clone process for its full lifetime. */
+/**
+ * Pins one immutable guest identity to one Runtime 3 clone process for its full lifetime.
+ *
+ * Runtime 3 deliberately keeps Android's real process name (`com.shahboun.multi:cloneN`) stable.
+ * Guest identity is virtualized through LoadedApk/Context/PackageManager/AppOps and the runtime
+ * execution scope. Mutating ActivityThread.mBoundApplication.processName made later framework
+ * validation observe the guest package instead of the physical clone slot and caused deterministic
+ * process-mismatch crashes on Android 16.
+ */
 object RuntimeGuestProcessIdentity {
     private val lock = Any()
     private val realHostProcessName: String =
@@ -25,25 +33,15 @@ object RuntimeGuestProcessIdentity {
         }
         require(existing == null) { "رفض تغيير هوية عملية clone من $existing إلى $packageName" }
 
-        val threadClass = Class.forName("android.app.ActivityThread")
-        val thread = threadClass.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }.invoke(null)
-            ?: error("ActivityThread غير متاح")
-        val boundField = RuntimeCompatibility.findField(threadClass, "mBoundApplication")
-            ?: error("ActivityThread.mBoundApplication غير متاح")
-        boundField.isAccessible = true
-        val bound = boundField.get(thread) ?: error("AppBindData غير متاح")
-        val processField = RuntimeCompatibility.findField(bound.javaClass, "processName")
-            ?: error("AppBindData.processName غير متاح")
-        processField.isAccessible = true
-        val old = runCatching { processField.get(bound) as? String }.getOrNull()
-        processField.set(bound, packageName)
+        // Do NOT rewrite ActivityThread/AppBindData.processName. The physical process identity is
+        // the security boundary that maps this process to exactly one Runtime 3 slot. Rewriting it
+        // breaks subsequent slot validation and can confuse framework process bookkeeping.
         pinnedGuest = packageName
-
         session?.let { bindRuntime3Environment(it) }
 
         RuntimeDiagnostics.log(
             "IDENTITY",
-            "Runtime3 guest process identity pinned $packageName/$slot real=$realHostProcessName old=$old guest=$packageName"
+            "Runtime3 guest identity pinned $packageName/$slot physical=$realHostProcessName mode=virtual-no-process-rename"
         )
     }
 
