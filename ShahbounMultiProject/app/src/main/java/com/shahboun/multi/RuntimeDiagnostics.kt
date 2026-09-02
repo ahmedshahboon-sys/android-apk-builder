@@ -67,7 +67,6 @@ object RuntimeDiagnostics {
         return header + RuntimeDeepDiagnostics.renderReport() + RuntimeReadinessReport.render(raw) + "--- LOG (CURRENT SESSION) ---\n" + raw
     }
 
-    /** Small share-safe summary. Full logs remain on-device and are only shown in full mode. */
     fun compactSnapshot(): String {
         if (!::appContext.isInitialized) return "Diagnostics not initialized"
         val raw = currentRaw()
@@ -78,7 +77,7 @@ object RuntimeDiagnostics {
         val security = Regex("SecurityException").findAll(raw).count()
         val activityRouting = Regex("ActivityNotFoundException").findAll(raw).count()
         val processCollision = Regex("PROCESS COLLISION").findAll(raw).count()
-        val resourceFailures = Regex("resource probe (failed|FAIL)|Resources\\$NotFoundException", RegexOption.IGNORE_CASE).findAll(raw).count()
+        val resourceFailures = Regex("resource probe (failed|FAIL)|NotFoundException", RegexOption.IGNORE_CASE).findAll(raw).count()
         val lastHealth = raw.lineSequence().filter { "[HEALTH]" in it }.lastOrNull()?.substringAfter("[HEALTH] ")?.take(220)
         val lastCrashProcess = raw.lineSequence().filter { "[CRASH]" in it }.lastOrNull()?.let { line ->
             Regex("process=([^ ]+)").find(line)?.groupValues?.getOrNull(1)
