@@ -102,7 +102,7 @@ object RuntimeLoadedApkBridge {
         }.getOrNull()
         val slotDir = (context.applicationContext as? MultiApplication)?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot)
             ?: MultiApplication.current?.engine?.runtimeSlotDir(pkg.packageName, pkg.slot)
-            ?: File(context.filesDir, "clone_engine")
+            ?: Runtime3ProcessMetadata.slotDir(context, pkg.packageName, pkg.slot)
         fun dir(name: String) = File(slotDir, name).apply { if (!exists()) mkdirs() }
         return (original?.let(::ApplicationInfo) ?: ApplicationInfo()).apply {
             packageName = pkg.packageName
