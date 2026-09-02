@@ -1,6 +1,8 @@
 package com.shahboun.multi
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.pm.ProviderInfo
 import android.os.Build
 
@@ -27,24 +29,39 @@ object Runtime3ProviderRegistry {
         }?.apply { isAccessible = true }
             ?: error("ActivityThread.installProvider(Context, holder, ProviderInfo, boolean, boolean, boolean) unavailable")
 
+        val pkg = session.runtimePackage
         val guestAppInfo = context.applicationInfo
         var installed = 0
-        session.runtimePackage.providers.forEach { snapshot ->
-            val authority = snapshot.authority?.takeIf { it.isNotBlank() }
+        pkg.providers.forEach { snapshot ->
+            val component = ComponentName(pkg.packageName, snapshot.name)
+            val original = runCatching {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    context.packageManager.getProviderInfo(
+                        component,
+                        PackageManager.ComponentInfoFlags.of(PackageManager.GET_META_DATA.toLong())
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.packageManager.getProviderInfo(component, PackageManager.GET_META_DATA)
+                }
+            }.getOrNull()
+
+            val info = (original?.let(::ProviderInfo) ?: ProviderInfo()).apply {
+                name = snapshot.name
+                packageName = pkg.packageName
+                authority = snapshot.authority?.takeIf { it.isNotBlank() } ?: authority
+                exported = snapshot.exported
+                grantUriPermissions = snapshot.grantUriPermissions
+                applicationInfo = guestAppInfo
+                processName = pkg.packageName
+                enabled = true
+            }
+            val authority = info.authority?.takeIf { it.isNotBlank() }
             if (authority == null) {
                 RuntimeDiagnostics.log("PROVIDER3", "skip ${snapshot.name}: no authority")
                 return@forEach
             }
-            val info = ProviderInfo().apply {
-                name = snapshot.name
-                packageName = session.runtimePackage.packageName
-                this.authority = authority
-                exported = snapshot.exported
-                grantUriPermissions = snapshot.grantUriPermissions
-                applicationInfo = guestAppInfo
-                processName = session.runtimePackage.packageName
-                enabled = true
-            }
+
             val holder = installMethod.invoke(
                 thread,
                 context,
@@ -57,7 +74,7 @@ object Runtime3ProviderRegistry {
             installed++
             RuntimeDiagnostics.log(
                 "PROVIDER3",
-                "framework-local installed ${session.runtimePackage.packageName}/${session.runtimePackage.slot} ${snapshot.name} authority=$authority holder=${holder.javaClass.name}"
+                "framework-local installed ${pkg.packageName}/${pkg.slot} ${snapshot.name} authority=$authority metadata=${info.metaData?.size() ?: 0} holder=${holder.javaClass.name}"
             )
         }
         installed
