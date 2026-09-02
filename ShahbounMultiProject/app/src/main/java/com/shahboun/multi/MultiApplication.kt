@@ -1,6 +1,7 @@
 package com.shahboun.multi
 
 import android.app.Application
+import android.app.job.JobScheduler
 import android.os.Build
 import android.webkit.WebView
 
@@ -22,6 +23,8 @@ class MultiApplication : Application() {
         RuntimeCompatibility.logProfile()
         installWebViewIsolation()
         SystemBarsFitter.install(this)
+
+        if (processName == packageName) migrateLegacyJobRecords()
 
         engine = ShahbounCloneEngine()
         engine.initialize(this)
@@ -47,6 +50,17 @@ class MultiApplication : Application() {
                 runtimeBridgeReady = false
                 RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge unavailable: ${it.stackTraceToString()}")
             }
+    }
+
+    private fun migrateLegacyJobRecords() {
+        val migrationPrefs = getSharedPreferences("shahboun_runtime_migrations", MODE_PRIVATE)
+        val migratedCode = migrationPrefs.getInt("job_runtime_schema", 0)
+        if (migratedCode >= BuildConfig.VERSION_CODE) return
+        runCatching { getSystemService(JobScheduler::class.java)?.cancelAll() }
+            .onFailure { RuntimeDiagnostics.log("JOB", "legacy system job cleanup failed: ${it.javaClass.simpleName}: ${it.message}") }
+        val cleared = getSharedPreferences("shahboun_runtime_jobs", MODE_PRIVATE).edit().clear().commit()
+        migrationPrefs.edit().putInt("job_runtime_schema", BuildConfig.VERSION_CODE).commit()
+        RuntimeDiagnostics.log("JOB", "legacy job migration complete version=${BuildConfig.VERSION_CODE} recordsCleared=$cleared")
     }
 
     private fun installWebViewIsolation() {
