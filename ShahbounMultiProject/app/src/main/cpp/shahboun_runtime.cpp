@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -18,8 +19,23 @@ struct RootRecord {
 
 std::unordered_map<std::string, RootRecord> gRoots;
 
+// JNI's GetStringUTFChars uses modified UTF-8, where Java U+0000 is encoded as C0 80 rather than
+// a C NUL. Explicitly inspect UTF-16 first so NUL/path injection cannot bypass lexical validation.
+bool jstringHasJavaNul(JNIEnv* env, jstring value) {
+    if (value == nullptr) return false;
+    const jsize length = env->GetStringLength(value);
+    const jchar* chars = env->GetStringChars(value, nullptr);
+    if (chars == nullptr) return true;
+    bool found = false;
+    for (jsize i = 0; i < length; ++i) {
+        if (chars[i] == 0) { found = true; break; }
+    }
+    env->ReleaseStringChars(value, chars);
+    return found;
+}
+
 std::string jstringToUtf8(JNIEnv* env, jstring value) {
-    if (value == nullptr) return {};
+    if (value == nullptr || jstringHasJavaNul(env, value)) return {};
     const char* chars = env->GetStringUTFChars(value, nullptr);
     if (chars == nullptr) return {};
     std::string out(chars);
@@ -35,14 +51,27 @@ bool containsNul(const std::string& value) {
     return std::find(value.begin(), value.end(), '\0') != value.end();
 }
 
+bool safePackageName(const std::string& packageName) {
+    if (packageName.empty() || packageName.size() > 255 || containsNul(packageName)) return false;
+    if (packageName.front() == '.' || packageName.back() == '.' || packageName.find("..") != std::string::npos) return false;
+    return std::all_of(packageName.begin(), packageName.end(), [](unsigned char c) {
+        return std::isalnum(c) || c == '.' || c == '_';
+    });
+}
+
 std::string normalizeSeparators(std::string path) {
-    std::replace(path.begin(), path.end(), '\\', '/');
+    // Backslash is not a Linux path separator. Treating it as one would give Java and native callers
+    // different path semantics; reject it at managed-boundary checks instead of silently rewriting.
     while (path.find("//") != std::string::npos) path.replace(path.find("//"), 2, "/");
     return path;
 }
 
+bool malformedPath(const std::string& path) {
+    return path.empty() || containsNul(path) || path.find('\\') != std::string::npos;
+}
+
 std::string normalizeLexical(std::string path) {
-    if (path.empty() || containsNul(path)) return {};
+    if (malformedPath(path)) return {};
     path = normalizeSeparators(std::move(path));
     const bool absolute = path.front() == '/';
     std::vector<std::string> parts;
@@ -75,7 +104,7 @@ std::string normalizeLexical(std::string path) {
 }
 
 bool isAbsoluteSafe(const std::string& raw) {
-    if (raw.empty() || containsNul(raw)) return false;
+    if (malformedPath(raw)) return false;
     const auto normalized = normalizeLexical(raw);
     return !normalized.empty() && normalized.front() == '/';
 }
@@ -108,6 +137,7 @@ std::string joinRoot(const std::string& root, const std::string& bucket, const s
 }
 
 bool lookupRecord(const std::string& packageName, jint slot, RootRecord* out) {
+    if (!safePackageName(packageName) || slot < 0 || out == nullptr) return false;
     std::lock_guard<std::mutex> lock(gMutex);
     const auto it = gRoots.find(keyFor(packageName, slot));
     if (it == gRoots.end()) return false;
@@ -135,13 +165,14 @@ std::vector<MappingRule> rulesFor(const std::string& packageName) {
 }
 
 bool rawManagedPathEscapes(const std::string& raw, const std::string& guestRoot) {
-    if (!startsWithPath(normalizeSeparators(raw), guestRoot)) return false;
+    if (malformedPath(raw)) return true;
+    if (!startsWithPath(raw, guestRoot)) return false;
     const auto normalized = normalizeLexical(raw);
     return normalized.empty() || !startsWithPath(normalized, guestRoot);
 }
 
 std::string mapGuestPath(const std::string& packageName, jint slot, const std::string& rawPath) {
-    if (rawPath.empty() || containsNul(rawPath)) return {};
+    if (!safePackageName(packageName) || slot < 0 || malformedPath(rawPath)) return {};
     RootRecord record;
     if (!lookupRecord(packageName, slot, &record)) return normalizeLexical(rawPath);
 
@@ -161,7 +192,7 @@ std::string mapGuestPath(const std::string& packageName, jint slot, const std::s
 }
 
 std::string resolveRelativeLogical(const std::string& baseLogical, const std::string& relative) {
-    if (relative.empty() || containsNul(relative)) return {};
+    if (malformedPath(relative)) return {};
     if (relative.front() == '/') return normalizeLexical(relative);
     const auto base = normalizeLexical(baseLogical);
     if (base.empty() || base.front() != '/') return {};
@@ -170,7 +201,7 @@ std::string resolveRelativeLogical(const std::string& baseLogical, const std::st
 
 std::string mapGuestPathAt(const std::string& packageName, jint slot,
                            const std::string& dirLogicalPath, const std::string& rawPath) {
-    if (rawPath.empty() || containsNul(rawPath)) return {};
+    if (!safePackageName(packageName) || slot < 0 || malformedPath(rawPath) || malformedPath(dirLogicalPath)) return {};
     if (rawPath.front() == '/') return mapGuestPath(packageName, slot, rawPath);
     const auto resolved = resolveRelativeLogical(dirLogicalPath, rawPath);
     if (resolved.empty()) return {};
@@ -188,7 +219,7 @@ std::string mapGuestPathAt(const std::string& packageName, jint slot,
 }
 
 std::string reverseGuestPath(const std::string& packageName, jint slot, const std::string& rawPath) {
-    if (rawPath.empty() || containsNul(rawPath)) return {};
+    if (!safePackageName(packageName) || slot < 0 || malformedPath(rawPath)) return {};
     const std::string path = normalizeLexical(rawPath);
     RootRecord record;
     if (!lookupRecord(packageName, slot, &record)) return path;
@@ -223,16 +254,17 @@ std::string describePolicy(const std::string& packageName, jint slot) {
     if (!lookupRecord(packageName, slot, &record)) return "UNREGISTERED";
     return "PATH_MAP_V4 root=" + record.root +
         " internal=data,device_data external=data,media,obb reverse=true traversal=reject-managed-escape" 
-        " relative_path=true relative_dirfd=logical-only symlink_kernel_guard=false syscall_intercept=false linker_namespace=false";
+        " relative_path=true relative_dirfd=logical-only nul=reject backslash=reject symlink_kernel_guard=false syscall_intercept=false linker_namespace=false";
 }
 } // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_shahboun_multi_RuntimeNativeRuntime_nativeRegisterRoot(
     JNIEnv* env, jclass, jstring packageName, jint slot, jstring rootPath) {
+    if (jstringHasJavaNul(env, packageName) || jstringHasJavaNul(env, rootPath)) return JNI_FALSE;
     const std::string pkg = jstringToUtf8(env, packageName);
     const std::string root = normalizeLexical(jstringToUtf8(env, rootPath));
-    if (pkg.empty() || slot < 0 || !isAbsoluteSafe(root)) return JNI_FALSE;
+    if (!safePackageName(pkg) || slot < 0 || !isAbsoluteSafe(root)) return JNI_FALSE;
     {
         std::lock_guard<std::mutex> lock(gMutex);
         gRoots[keyFor(pkg, slot)] = RootRecord{pkg, slot, root};
@@ -244,7 +276,9 @@ Java_com_shahboun_multi_RuntimeNativeRuntime_nativeRegisterRoot(
 extern "C" JNIEXPORT void JNICALL
 Java_com_shahboun_multi_RuntimeNativeRuntime_nativeUnregisterRoot(
     JNIEnv* env, jclass, jstring packageName, jint slot) {
+    if (jstringHasJavaNul(env, packageName)) return;
     const std::string pkg = jstringToUtf8(env, packageName);
+    if (!safePackageName(pkg) || slot < 0) return;
     std::lock_guard<std::mutex> lock(gMutex);
     gRoots.erase(keyFor(pkg, slot));
 }
@@ -252,12 +286,14 @@ Java_com_shahboun_multi_RuntimeNativeRuntime_nativeUnregisterRoot(
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_shahboun_multi_RuntimeNativeRuntime_nativeMapGuestPath(
     JNIEnv* env, jclass, jstring packageName, jint slot, jstring path) {
+    if (jstringHasJavaNul(env, packageName) || jstringHasJavaNul(env, path)) return utf8ToJstring(env, {});
     return utf8ToJstring(env, mapGuestPath(jstringToUtf8(env, packageName), slot, jstringToUtf8(env, path)));
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_shahboun_multi_RuntimeNativeRuntime_nativeMapGuestPathAt(
     JNIEnv* env, jclass, jstring packageName, jint slot, jstring dirLogicalPath, jstring path) {
+    if (jstringHasJavaNul(env, packageName) || jstringHasJavaNul(env, dirLogicalPath) || jstringHasJavaNul(env, path)) return utf8ToJstring(env, {});
     return utf8ToJstring(env, mapGuestPathAt(
         jstringToUtf8(env, packageName), slot, jstringToUtf8(env, dirLogicalPath), jstringToUtf8(env, path)));
 }
@@ -265,28 +301,32 @@ Java_com_shahboun_multi_RuntimeNativeRuntime_nativeMapGuestPathAt(
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_shahboun_multi_RuntimeNativeRuntime_nativeReverseMapGuestPath(
     JNIEnv* env, jclass, jstring packageName, jint slot, jstring path) {
+    if (jstringHasJavaNul(env, packageName) || jstringHasJavaNul(env, path)) return utf8ToJstring(env, {});
     return utf8ToJstring(env, reverseGuestPath(jstringToUtf8(env, packageName), slot, jstringToUtf8(env, path)));
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_shahboun_multi_RuntimeNativeRuntime_nativeDescribePolicy(
     JNIEnv* env, jclass, jstring packageName, jint slot) {
+    if (jstringHasJavaNul(env, packageName)) return utf8ToJstring(env, "INVALID");
     return utf8ToJstring(env, describePolicy(jstringToUtf8(env, packageName), slot));
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_shahboun_multi_RuntimeNativeRuntime_nativeIsSafePath(
     JNIEnv* env, jclass, jstring path) {
+    if (jstringHasJavaNul(env, path)) return JNI_FALSE;
     return isAbsoluteSafe(jstringToUtf8(env, path)) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_shahboun_multi_RuntimeNativeRuntime_nativeIsWithinRoot(
     JNIEnv* env, jclass, jstring packageName, jint slot, jstring path) {
+    if (jstringHasJavaNul(env, packageName) || jstringHasJavaNul(env, path)) return JNI_FALSE;
     return registeredPathIsContained(jstringToUtf8(env, packageName), slot, jstringToUtf8(env, path)) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*, void*) {
-    __android_log_print(ANDROID_LOG_INFO, TAG, "Shahboun native runtime loaded path-map-v4");
+    __android_log_print(ANDROID_LOG_INFO, TAG, "Shahboun native runtime loaded path-map-v4 hardened");
     return JNI_VERSION_1_6;
 }
