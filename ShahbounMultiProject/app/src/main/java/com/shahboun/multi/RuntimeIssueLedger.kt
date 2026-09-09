@@ -53,13 +53,14 @@ object RuntimeIssueLedger {
         if (!::appContext.isInitialized) return
         val normalized = message.replace(Regex("\\s+"), " ").trim()
         val code = when {
+            tag == "LAUNCH2" && normalized.contains("transaction patch fallback", true) -> "LAUNCH-TRANSACTION"
+            tag == "PROVIDER3" && (normalized.contains("failed", true) || normalized.contains("rejected", true)) -> "PROVIDER"
             tag == "LAUNCH" && normalized.contains("failed", true) -> "LAUNCH"
             tag == "STARTUP" && normalized.contains("failed", true) -> "STARTUP"
             normalized.contains("ActivityNotFoundException") -> "ACTIVITY-ROUTE"
             normalized.contains("SecurityException") -> "IDENTITY/SECURITY"
             normalized.contains("PROCESS COLLISION") -> "PROCESS-COLLISION"
             normalized.contains("resource probe failed", true) || normalized.contains("NotFoundException") -> "RESOURCES"
-            tag == "PROVIDER3" && normalized.contains("failed", true) -> "PROVIDER"
             tag == "SERVICE" && normalized.contains("failed", true) -> "SERVICE"
             tag == "RECEIVER" && normalized.contains("failed", true) -> "RECEIVER"
             else -> return
@@ -152,6 +153,7 @@ object RuntimeIssueLedger {
     private fun classifyThrowable(error: Throwable): String = when {
         error is SecurityException -> "IDENTITY/SECURITY"
         error.javaClass.name.contains("ActivityNotFoundException") -> "ACTIVITY-ROUTE"
+        error.javaClass.name.contains("ContentProvider") || error.message.orEmpty().contains("provider", true) || error.message.orEmpty().contains("authority", true) -> "PROVIDER"
         error.javaClass.name.contains("Resources") || error.message.orEmpty().contains("resource", true) -> "RESOURCES"
         error.javaClass.name.contains("OutOfMemoryError") -> "LOW-MEMORY"
         error.message.orEmpty().contains("manifest", true) || error.message.orEmpty().contains("meta-data", true) -> "MANIFEST"
