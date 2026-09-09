@@ -58,7 +58,7 @@ internal object RuntimeBinderIdentitySanitizer {
                 if (value.packageName == physicalPackage) ApplicationInfo(value).apply { packageName = guest } else value
             }
             is PackageInfo -> {
-                if (value.packageName == physicalPackage) PackageInfo(value).apply {
+                if (value.packageName == physicalPackage) value.apply {
                     packageName = guest
                     applicationInfo = applicationInfo?.let { info -> ApplicationInfo(info).apply { packageName = guest } }
                 } else value
