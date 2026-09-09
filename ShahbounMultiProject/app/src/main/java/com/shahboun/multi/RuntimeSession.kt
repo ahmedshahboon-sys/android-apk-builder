@@ -79,6 +79,13 @@ class RuntimeSession(
         } else Application()
 
         try {
+            // Android's LoadedApk publishes the Application object before attachBaseContext executes.
+            // Do the same here. RuntimeGuestContext.getApplicationContext() must never transiently
+            // expose itself as an application context; heavy apps such as TikTok legitimately cast
+            // applicationContext to Application during very early bootstrap.
+            attachedApplication = app
+            RuntimeDiagnostics.log("BOOT7", "guest Application object published before attach ${runtimePackage.packageName}/${runtimePackage.slot} class=${app.javaClass.name}")
+
             val guestContext = RuntimeGuestContext(base, this, slotDir)
             val attached = runCatching {
                 val attach = Application::class.java.getDeclaredMethod("attach", Context::class.java).apply { isAccessible = true }
@@ -92,7 +99,6 @@ class RuntimeSession(
                 baseField.set(app, guestContext)
             }
 
-            attachedApplication = app
             transition(BootstrapState.ATTACHED)
             RuntimeDiagnostics.log("RUNTIME", "guest Application attached ${runtimePackage.packageName}/${runtimePackage.slot} attached=$attached class=${app.javaClass.name}")
 
@@ -114,6 +120,10 @@ class RuntimeSession(
             RuntimeDiagnostics.log("BOOT7", "bootstrap state=RUNNING ${runtimePackage.packageName}/${runtimePackage.slot}")
             return app
         } catch (error: Throwable) {
+            runCatching { componentHost?.close() }
+            componentHost = null
+            guestApplication = null
+            attachedApplication = null
             bootstrapFailure = error
             transition(BootstrapState.FAILED, allowTerminal = true)
             RuntimeDiagnostics.log("RUNTIME", "guest bootstrap failed ${runtimePackage.packageName}/${runtimePackage.slot}: ${error.stackTraceToString()}")
