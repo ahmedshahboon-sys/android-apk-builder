@@ -2,7 +2,7 @@ name: Build Shahboun Multi Runtime
 
 on:
   push:
-    branches: [main, shahboun-multi-runtime-3]
+    branches: [main, shahboun-multi-runtime-3, shahboun-multi-runtime-4]
     paths:
       - 'ShahbounMultiProject/**'
       - '.github/workflows/build-shahboun-multi-modern-v2.yml'
@@ -90,13 +90,13 @@ jobs:
           set -euo pipefail
           APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
           test -n "$APK" && test -s "$APK"
-          cp "$APK" ShahbounMulti-Runtime6.apk
-          sha256sum ShahbounMulti-Runtime6.apk > ShahbounMulti-Runtime6.apk.sha256
+          cp "$APK" ShahbounMulti-Runtime7.apk
+          sha256sum ShahbounMulti-Runtime7.apk > ShahbounMulti-Runtime7.apk.sha256
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ShahbounMulti-Runtime6-APK
+          name: ShahbounMulti-Runtime7-APK
           path: |
-            ShahbounMulti-Runtime6.apk
-            ShahbounMulti-Runtime6.apk.sha256
+            ShahbounMulti-Runtime7.apk
+            ShahbounMulti-Runtime7.apk.sha256
           if-no-files-found: error
