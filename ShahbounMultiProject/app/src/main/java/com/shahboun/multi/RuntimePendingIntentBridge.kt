@@ -16,6 +16,9 @@ object RuntimePendingIntentBridge {
     private const val INTENT_SENDER_ACTIVITY = 2
     private const val INTENT_SENDER_SERVICE = 4
     private const val INTENT_SENDER_FOREGROUND_SERVICE = 5
+    private val restrictedGuestQueries = setOf(
+        "getHistoricalProcessExitReasons"
+    )
     @Volatile private var installed = false
 
     fun install(context: Context): Result<Unit> = runCatching {
@@ -57,6 +60,14 @@ object RuntimePendingIntentBridge {
             if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
             val session = RuntimeExecutionScope.current()
 
+            if (session != null && method.name in restrictedGuestQueries) {
+                RuntimeDiagnostics.log(
+                    "AMS",
+                    "virtualized protected query ${method.name} ${session.runtimePackage.packageName}/${session.runtimePackage.slot}"
+                )
+                return neutralFor(method.returnType)
+            }
+
             if (session != null && method.name in setOf("setServiceForeground", "stopServiceToken", "getForegroundServiceType")) {
                 return routeGuestServiceTokenCall(session, method, args)
             }
@@ -82,8 +93,6 @@ object RuntimePendingIntentBridge {
         }
 
         private fun findSenderType(method: Method, args: Array<Any?>): Int? {
-            // getIntentSender* historically starts with int type, but OEM/API variants can add
-            // leading binder/user fields. Pick the first Int that is one of the known sender types.
             method.parameterTypes.indices.forEach { index ->
                 if (method.parameterTypes[index] == Int::class.javaPrimitiveType) {
                     val value = args.getOrNull(index) as? Int
@@ -136,6 +145,14 @@ object RuntimePendingIntentBridge {
                 }
                 else -> original
             }
+        }
+
+        private fun neutralFor(type: Class<*>): Any? = when {
+            java.util.List::class.java.isAssignableFrom(type) -> mutableListOf<Any>()
+            type == Boolean::class.javaPrimitiveType -> false
+            type == Int::class.javaPrimitiveType -> 0
+            type == Long::class.javaPrimitiveType -> 0L
+            else -> null
         }
 
         private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
