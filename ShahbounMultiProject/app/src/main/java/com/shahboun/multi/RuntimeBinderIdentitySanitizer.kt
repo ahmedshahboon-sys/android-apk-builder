@@ -1,16 +1,17 @@
 package com.shahboun.multi
 
 import android.content.AttributionSource
+import android.content.ComponentName
 import android.content.Context
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 
 /**
- * Rewrites virtual package identity only at the boundary to real Android Binder services.
+ * Central identity translation at Binder boundaries.
  *
- * Never derive the physical package from a guest-patched Context/LoadedApk. Runtime 3 deliberately
- * changes what guest code sees, so Context.packageName may legitimately be the logical guest name.
- * system_server, however, validates Binder calls against the APK that owns Process.myUid(): the
- * fixed BuildConfig.APPLICATION_ID. Mixing those two identities caused Android 16 SettingsProvider
- * and AppOps failures such as "Package ... does not belong to uid".
+ * Outbound calls must use the physical host identity because system_server validates the Linux UID.
+ * Returned self-identity can be translated back to the logical guest package where that translation
+ * is safe. Runtime-local virtualUid is deliberately NOT presented as a real Android/Linux UID.
  */
 internal object RuntimeBinderIdentitySanitizer {
     private val physicalPackage: String get() = BuildConfig.APPLICATION_ID
@@ -26,6 +27,10 @@ internal object RuntimeBinderIdentitySanitizer {
                     changed = true
                     physicalPackage
                 }
+                value is ComponentName && value.packageName == guestPackage -> {
+                    changed = true
+                    ComponentName(physicalPackage, value.className)
+                }
                 value is AttributionSource && value.packageName == guestPackage -> {
                     changed = true
                     physicalAttribution(context, value)
@@ -35,16 +40,36 @@ internal object RuntimeBinderIdentitySanitizer {
         }
         if (changed) {
             RuntimeDiagnostics.log(
-                "IDENTITY",
-                "Binder identity sanitized ${guestPackage}/${session.runtimePackage.slot} -> $physicalPackage"
+                "IDENTITY7",
+                "Binder outbound identity sanitized ${guestPackage}/${session.runtimePackage.slot} -> $physicalPackage"
             )
         }
         return out
     }
 
+    /** Translate safe returned self-identity back to the logical guest package. */
+    fun restoreResult(session: RuntimeSession?, value: Any?): Any? {
+        if (session == null || value == null) return value
+        val guest = session.runtimePackage.packageName
+        return when (value) {
+            is String -> if (value == physicalPackage) guest else value
+            is ComponentName -> if (value.packageName == physicalPackage) ComponentName(guest, value.className) else value
+            is ApplicationInfo -> {
+                if (value.packageName == physicalPackage) ApplicationInfo(value).apply { packageName = guest } else value
+            }
+            is PackageInfo -> {
+                if (value.packageName == physicalPackage) PackageInfo(value).apply {
+                    packageName = guest
+                    applicationInfo = applicationInfo?.let { info -> ApplicationInfo(info).apply { packageName = guest } }
+                } else value
+            }
+            is List<*> -> value.map { restoreResult(session, it) }
+            is Array<*> -> Array<Any?>(value.size) { restoreResult(session, value[it]) }
+            else -> value
+        }
+    }
+
     private fun physicalAttribution(context: Context, original: AttributionSource): AttributionSource {
-        // applicationContext.attributionSource is captured from the installed host package. If an
-        // OEM exposes a guest-patched source here, rebuild the minimal source with the physical UID.
         val host = context.applicationContext.attributionSource
         if (host.packageName == physicalPackage) return host
         return runCatching {
