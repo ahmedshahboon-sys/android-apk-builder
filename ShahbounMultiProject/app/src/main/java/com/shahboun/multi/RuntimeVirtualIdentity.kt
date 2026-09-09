@@ -1,7 +1,8 @@
 package com.shahboun.multi
 
 import android.os.Process
-import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
+import java.util.WeakHashMap
 
 /**
  * One canonical description of the identity owned by a clone session.
@@ -27,7 +28,7 @@ data class RuntimeVirtualIdentity(
 
 /** Canonical identity registry. Bridges must consume this object instead of inventing package/uid values. */
 internal object RuntimeVirtualIdentityRegistry {
-    private val identities = ConcurrentHashMap<String, RuntimeVirtualIdentity>()
+    private val identities = Collections.synchronizedMap(WeakHashMap<RuntimeSession, MutableMap<String, RuntimeVirtualIdentity>>())
 
     fun forSession(session: RuntimeSession): RuntimeVirtualIdentity =
         forSession(session, session.runtimePackage.packageName)
@@ -35,26 +36,26 @@ internal object RuntimeVirtualIdentityRegistry {
     fun forSession(session: RuntimeSession, virtualProcessName: String): RuntimeVirtualIdentity {
         val pkg = session.runtimePackage
         val normalizedProcess = normalizeProcessName(pkg.packageName, virtualProcessName)
-        val sessionId = sessionId(session)
-        val cacheKey = "$sessionId@$normalizedProcess"
-        return identities.getOrPut(cacheKey) {
-            RuntimeVirtualIdentity(
-                guestPackage = pkg.packageName,
-                cloneId = pkg.slot,
-                virtualUid = virtualUid(pkg.packageName, pkg.slot),
-                virtualUserId = pkg.slot,
-                virtualProcessName = normalizedProcess,
-                hostUid = Process.myUid(),
-                hostPackage = BuildConfig.APPLICATION_ID,
-                physicalProcess = RuntimeGuestProcessIdentity.hostProcessName(),
-                sessionId = sessionId
-            )
+        synchronized(identities) {
+            val byProcess = identities.getOrPut(session) { linkedMapOf() }
+            return byProcess.getOrPut(normalizedProcess) {
+                RuntimeVirtualIdentity(
+                    guestPackage = pkg.packageName,
+                    cloneId = pkg.slot,
+                    virtualUid = virtualUid(pkg.packageName, pkg.slot),
+                    virtualUserId = pkg.slot,
+                    virtualProcessName = normalizedProcess,
+                    hostUid = Process.myUid(),
+                    hostPackage = BuildConfig.APPLICATION_ID,
+                    physicalProcess = RuntimeGuestProcessIdentity.hostProcessName(),
+                    sessionId = sessionId(session)
+                )
+            }
         }
     }
 
     fun release(session: RuntimeSession) {
-        val prefix = sessionId(session) + "@"
-        identities.keys.removeIf { it.startsWith(prefix) }
+        synchronized(identities) { identities.remove(session) }
     }
 
     internal fun sessionId(session: RuntimeSession): String {
