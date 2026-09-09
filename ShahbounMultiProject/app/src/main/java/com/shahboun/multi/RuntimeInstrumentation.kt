@@ -36,13 +36,22 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
             val requested = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY)
             if (!packageName.isNullOrBlank() && slot >= 0 && !requested.isNullOrBlank()) {
                 val app = MultiApplication.current ?: error("Shahboun application runtime غير متاح")
+
+                // Authenticate immutable snapshot fields BEFORE sessionFor(). sessionFor() creates
+                // ClassLoader/LoadedApk/providers/Application and therefore must never be reachable
+                // from forged Runtime extras.
+                val snapshot = app.engine.runtimePackageFor(packageName, slot)
+                require(snapshot.ownsActivity(requested)) { "Activity غير مسجلة في Snapshot النسخة" }
+                require(RuntimeIntentRouter.verifyWrapper(app, snapshot, intent, requested)) {
+                    "Runtime Activity route authentication failed"
+                }
+
                 val session = app.engine.sessionFor(packageName, slot)
-                require(session.runtimePackage.ownsActivity(requested)) { "Activity غير مسجلة في Snapshot النسخة" }
-                require(RuntimeIntentRouter.verifyWrapper(app, session, intent, requested)) { "Runtime Activity route authentication failed" }
+                require(session.runtimePackage.ownsActivity(requested)) { "Activity غير مسجلة في RuntimeSession" }
                 val resolved = session.runtimePackage.resolveActivity(requested)
                 val incoming = className.orEmpty()
                 require(RuntimeProcessPool.isActivityStubName(incoming) || incoming == resolved || incoming == requested) { "Launch Activity غير متوقعة: incoming=$incoming expected=$resolved" }
-                RuntimeDiagnostics.log("RUNTIME", "newActivity incoming=$incoming requested=$requested resolved=$resolved package=$packageName/$slot loader=${session.classLoader.javaClass.simpleName} auth=true")
+                RuntimeDiagnostics.log("RUNTIME", "newActivity incoming=$incoming requested=$requested resolved=$resolved package=$packageName/$slot loader=${session.classLoader.javaClass.simpleName} auth=prebootstrap")
                 return RuntimeExecutionScope.withSession(session) { base.newActivity(session.classLoader, resolved, intent) }
             }
         }
