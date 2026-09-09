@@ -12,20 +12,38 @@ import java.lang.reflect.Proxy
 /** Binder-facing identity rewrite for Android system services. */
 object RuntimeIdentityServiceBridge {
     @Volatile private var accountPublicApiOnly = false
+    @Volatile private var physicalAccountManager: AccountManager? = null
 
     fun install(context: Context): Result<Unit> = runCatching {
         val app = context.applicationContext
         installManager(app.getSystemService(AppOpsManager::class.java), app.packageName, "APPOPS", listOf("IAppOpsService"), listOf("mService"))
-        installManager(AccountManager.get(app), app.packageName, "ACCOUNT", listOf("IAccountManager", "AccountManagerService"), listOf("mService", "sService"))
+
+        // Resolve and cache AccountManager while we are still in the physical Shahboun context.
+        // Guest RuntimeGuestContext.getSystemService(ACCOUNT_SERVICE) must never call back through
+        // AccountManager.get(guestApplicationContext), otherwise Android may re-enter the same
+        // virtual service path and trigger GUARD5 recursion.
+        val accountManager = AccountManager.get(app)
+        physicalAccountManager = accountManager
+        installManager(accountManager, app.packageName, "ACCOUNT", listOf("IAccountManager", "AccountManagerService"), listOf("mService", "sService"))
+
         installManager(app.getSystemService(UserManager::class.java), app.packageName, "USER", listOf("IUserManager", "UserManagerService"), listOf("mService"))
-        RuntimeDiagnostics.log("IDENTITY", "AppOps/Account/User identity bridges ready")
+        RuntimeDiagnostics.log("IDENTITY", "AppOps/Account/User identity bridges ready accountCached=${physicalAccountManager != null}")
     }
 
     fun accountManagerFor(context: Context, session: RuntimeSession): AccountManager {
-        if (accountPublicApiOnly) {
-            RuntimeDiagnostics.log("IDENTITY", "ACCOUNT public-api service ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
+        physicalAccountManager?.let {
+            if (accountPublicApiOnly) {
+                RuntimeDiagnostics.log("IDENTITY", "ACCOUNT cached public-api service ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
+            }
+            return it
         }
-        return AccountManager.get(context.applicationContext)
+
+        // Last-resort recovery uses the physical MultiApplication, never the guest application.
+        val physicalContext = MultiApplication.current ?: context
+        val recovered = AccountManager.get(physicalContext)
+        physicalAccountManager = recovered
+        RuntimeDiagnostics.log("IDENTITY", "ACCOUNT physical manager recovered ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
+        return recovered
     }
 
     fun accountUsesPublicApi(): Boolean = accountPublicApiOnly
