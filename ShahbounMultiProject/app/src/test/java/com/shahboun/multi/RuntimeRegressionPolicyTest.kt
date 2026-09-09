@@ -16,6 +16,20 @@ class RuntimeRegressionPolicyTest {
     }
 
     @Test
+    fun binderIdentityRewritePreservesStringArrayRuntimeType() {
+        val guest = "com.example.guest"
+        val host = "com.shahboun.multi"
+        val source = arrayOf(guest, "feature", guest)
+        val rewritten = RuntimeBinderIdentitySanitizer.rewriteStringArrayForTest(source, guest, host)
+        assertEquals(Array<String>::class.java, rewritten.javaClass)
+        @Suppress("UNCHECKED_CAST")
+        rewritten as Array<String>
+        assertEquals(host, rewritten[0])
+        assertEquals("feature", rewritten[1])
+        assertEquals(host, rewritten[2])
+    }
+
+    @Test
     fun jobIdsAreCloneAndNamespaceScoped() {
         val base = RuntimeJobSchedulerBridge.hostJobId("com.shahboun.test", 0, null, 17)
         val otherClone = RuntimeJobSchedulerBridge.hostJobId("com.shahboun.test", 1, null, 17)
