@@ -17,9 +17,14 @@ object Runtime3ProcessEnvironment {
             return@synchronized
         }
 
+        // Keep every Java/native process path aligned with RuntimeGuestContext and LoadedApk.
+        // Previous builds accidentally recreated legacy <slot>/cache and <slot>/files while
+        // Context APIs used <slot>/data/cache and <slot>/data/files, giving libraries two homes.
         val data = File(slotDir, "data").apply { require(exists() || mkdirs()) }
-        val cache = File(slotDir, "cache").apply { require(exists() || mkdirs()) }
-        val files = File(slotDir, "files").apply { require(exists() || mkdirs()) }
+        val cache = File(data, "cache").apply { require(exists() || mkdirs()) }
+        val files = File(data, "files").apply { require(exists() || mkdirs()) }
+        File(data, "code_cache").apply { require(exists() || mkdirs()) }
+        File(data, "no_backup").apply { require(exists() || mkdirs()) }
 
         System.setProperty("java.io.tmpdir", cache.absolutePath)
         System.setProperty("user.home", data.absolutePath)
@@ -33,9 +38,8 @@ object Runtime3ProcessEnvironment {
         runCatching { Os.setenv("FILES_DIR", files.absolutePath, true) }
             .onFailure { RuntimeDiagnostics.log("ENV3", "FILES_DIR fallback ${it.javaClass.simpleName}: ${it.message}") }
 
-        // Android keeps a Java-visible process name in ActivityThread and a native argv[0].
-        // RuntimeGuestProcessIdentity handles ActivityThread; this optional call aligns argv[0]
-        // when the platform still exposes Process.setArgV0. Failure is safe and diagnostic only.
+        // Framework-visible process aliases are handled separately. argv[0] is best-effort only;
+        // kernel pid/uid and SELinux identity are never forged.
         runCatching {
             val method = Process::class.java.getDeclaredMethod("setArgV0", String::class.java).apply { isAccessible = true }
             method.invoke(null, pkg.packageName)
