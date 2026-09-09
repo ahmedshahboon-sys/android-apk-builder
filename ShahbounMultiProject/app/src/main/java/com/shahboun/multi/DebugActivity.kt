@@ -18,10 +18,7 @@ import android.widget.TextView
 import android.widget.Toast
 
 class DebugActivity : Activity() {
-    companion object {
-        // Keep enough headroom for the PART header/footer while reducing dozens of tiny messages.
-        private const val COPY_PART_TARGET = 30_000
-    }
+    companion object { private const val COPY_PART_TARGET = 30_000 }
 
     private lateinit var output: TextView
     private lateinit var partsBox: LinearLayout
@@ -45,17 +42,11 @@ class DebugActivity : Activity() {
             setPadding(dp(14), dp(12), dp(14), dp(12))
             setBackgroundColor(Color.rgb(13, 11, 18))
         }
-
-        val titleView = TextView(this).apply {
-            text = "المشاكل المسجلة"
-            textSize = 22f
-            setTextColor(Color.WHITE)
-            typeface = CairoFontManager.typeface(this@DebugActivity, 700)
-            gravity = Gravity.END
-            includeFontPadding = false
-            setPadding(0, 0, 0, dp(10))
-        }
-        root.addView(titleView, LinearLayout.LayoutParams(-1, -2))
+        root.addView(TextView(this).apply {
+            text = "المشاكل المسجلة"; textSize = 22f; setTextColor(Color.WHITE)
+            typeface = CairoFontManager.typeface(this@DebugActivity, 700); gravity = Gravity.END
+            includeFontPadding = false; setPadding(0, 0, 0, dp(10))
+        }, LinearLayout.LayoutParams(-1, -2))
 
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         row1.addView(button("فحص تلقائي") { auditAll() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
@@ -67,50 +58,34 @@ class DebugActivity : Activity() {
         row2.addView(button("مشاركة") { shareCurrent() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(4) })
         row2.addView(button("السجل الكامل") { toggleDetails() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
         row2.addView(button("مسح التقارير") { RuntimeDiagnostics.clear(); auditAll() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(4) })
-        root.addView(row2, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        root.addView(row2, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+
+        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        row3.addView(button("الأخطاء فقط") { showIssuesOnly() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(4) })
+        row3.addView(button("نسخ الأخطاء فقط") { copyIssuesOnly() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(4) })
+        root.addView(row3, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
 
         partsTitle = TextView(this).apply {
-            text = "أجزاء التقرير: ستظهر بعد اكتمال الفحص"
-            textSize = 12f
-            setTextColor(Color.rgb(194, 188, 205))
-            typeface = CairoFontManager.typeface(this@DebugActivity, 500)
-            gravity = Gravity.END
-            includeFontPadding = false
-            setPadding(0, dp(3), 0, dp(5))
+            text = "أجزاء التقرير: ستظهر بعد اكتمال الفحص"; textSize = 12f
+            setTextColor(Color.rgb(194, 188, 205)); typeface = CairoFontManager.typeface(this@DebugActivity, 500)
+            gravity = Gravity.END; includeFontPadding = false; setPadding(0, dp(3), 0, dp(5))
         }
         root.addView(partsTitle, LinearLayout.LayoutParams(-1, -2))
 
-        partsBox = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutDirection = View.LAYOUT_DIRECTION_RTL
-        }
-        val partsScroll = HorizontalScrollView(this).apply {
+        partsBox = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL }
+        root.addView(HorizontalScrollView(this).apply {
             isFillViewport = false
             addView(partsBox, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
-        root.addView(partsScroll, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(8) })
+        }, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(8) })
 
         output = TextView(this).apply {
-            typeface = CairoFontManager.typeface(this@DebugActivity, 400)
-            textSize = 12f
-            setTextColor(Color.rgb(235, 231, 240))
-            setTextIsSelectable(true)
-            gravity = Gravity.START or Gravity.TOP
-            layoutDirection = View.LAYOUT_DIRECTION_LTR
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            setBackgroundColor(Color.rgb(24, 21, 32))
-            includeFontPadding = false
+            typeface = CairoFontManager.typeface(this@DebugActivity, 400); textSize = 12f
+            setTextColor(Color.rgb(235, 231, 240)); setTextIsSelectable(true)
+            gravity = Gravity.START or Gravity.TOP; layoutDirection = View.LAYOUT_DIRECTION_LTR
+            setPadding(dp(10), dp(10), dp(10), dp(10)); setBackgroundColor(Color.rgb(24, 21, 32)); includeFontPadding = false
         }
-
-        val horizontal = HorizontalScrollView(this).apply {
-            isFillViewport = true
-            addView(output, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
-        val vertical = ScrollView(this).apply {
-            isFillViewport = true
-            addView(horizontal, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
+        val horizontal = HorizontalScrollView(this).apply { isFillViewport = true; addView(output, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
+        val vertical = ScrollView(this).apply { isFillViewport = true; addView(horizontal, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
         root.addView(vertical, LinearLayout.LayoutParams(-1, 0, 1f))
 
         setContentView(root)
@@ -119,15 +94,9 @@ class DebugActivity : Activity() {
     }
 
     private fun button(label: String, action: () -> Unit) = Button(this).apply {
-        text = label
-        textSize = 11f
-        setTextColor(Color.WHITE)
-        typeface = CairoFontManager.typeface(this@DebugActivity, 500)
-        setBackgroundColor(Color.rgb(255, 122, 0))
-        minWidth = 0
-        minHeight = 0
-        setPadding(dp(4), 0, dp(4), 0)
-        setOnClickListener { action() }
+        text = label; textSize = 11f; setTextColor(Color.WHITE)
+        typeface = CairoFontManager.typeface(this@DebugActivity, 500); setBackgroundColor(Color.rgb(255, 122, 0))
+        minWidth = 0; minHeight = 0; setPadding(dp(4), 0, dp(4), 0); setOnClickListener { action() }
     }
 
     private fun auditAll() {
@@ -136,9 +105,7 @@ class DebugActivity : Activity() {
         clearPartButtons()
         output.text = if (clones.isEmpty()) "لا توجد نسخ للفحص." else "جاري فحص ${clones.size} نسخة تلقائيًا…"
         Thread {
-            val reports = clones.map { clone ->
-                clone to runCatching { RuntimeCompatibilityAudit.run(this@DebugActivity, app.engine, clone.packageName, clone.slot) }
-            }
+            val reports = clones.map { clone -> clone to runCatching { RuntimeCompatibilityAudit.run(this@DebugActivity, app.engine, clone.packageName, clone.slot) } }
             val structuralIssues = reports.flatMap { (clone, result) ->
                 result.fold(
                     onSuccess = { report -> report.checks.filter { it.status == CompatibilityCheck.Status.FAIL || (it.status == CompatibilityCheck.Status.WARN && it.name != "Runtime live test") }.map { issue -> Triple(clone, issueCode(issue), issue.detail.replace('\n', ' ').take(360)) } },
@@ -157,9 +124,7 @@ class DebugActivity : Activity() {
             }.trimEnd()
             val full = buildString {
                 appendLine("=== SHAHBOUN DEEP COMPATIBILITY AUDIT ==="); appendLine("Session: ${RuntimeDiagnostics.currentSessionGroup()}"); appendLine()
-                reports.forEach { (clone, result) ->
-                    appendLine(result.fold(onSuccess = { it.render() }, onFailure = { "✕ ${clone.customName} (${clone.packageName} #${clone.slot + 1})\n${it.stackTraceToString()}" })); appendLine()
-                }
+                reports.forEach { (_, result) -> appendLine(result.fold(onSuccess = { it.render() }, onFailure = { it.stackTraceToString() })); appendLine() }
                 appendLine("=== LIVE RUNTIME DIAGNOSTICS ==="); append(RuntimeDiagnostics.snapshot())
             }.trimEnd()
             RuntimeDiagnostics.log("AUDIT", "segmented deep audit completed clones=${clones.size} structuralIssues=${structuralIssues.size}")
@@ -175,6 +140,13 @@ class DebugActivity : Activity() {
         issue.name.contains("مساحة", true) -> "STORAGE"; else -> "CHECK"
     }
 
+    private fun showIssuesOnly() { fullMode = false; output.text = RuntimeIssueLedger.renderCompact() }
+    private fun copyIssuesOnly() {
+        val text = RuntimeIssueLedger.renderCompact()
+        (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Shahboun Errors Only", text))
+        output.text = text
+        Toast.makeText(this, "تم نسخ الأخطاء فقط", Toast.LENGTH_SHORT).show()
+    }
     private fun showCompact() { fullMode = false; lastCompactReport = RuntimeDiagnostics.compactSnapshot(); output.text = lastCompactReport }
     private fun toggleDetails() { fullMode = !fullMode; output.text = if (fullMode) (lastFullAudit.ifBlank { RuntimeDiagnostics.snapshot() }) else (lastCompactReport.ifBlank { RuntimeDiagnostics.compactSnapshot() }) }
     private fun prepareCopyParts() { val source = lastFullAudit.ifBlank { RuntimeDiagnostics.snapshot() }; copyParts = buildTransferParts(source); renderPartButtons(); Toast.makeText(this, "تم تجهيز ${copyParts.size} جزء للنسخ • حتى 30,000 حرف للجزء", Toast.LENGTH_SHORT).show() }
