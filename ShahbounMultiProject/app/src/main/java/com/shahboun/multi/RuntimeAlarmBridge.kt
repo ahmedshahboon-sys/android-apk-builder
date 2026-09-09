@@ -7,10 +7,7 @@ import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
-/**
- * Keeps AlarmManager calls valid under the host UID while clone-visible identity stays virtual.
- * PendingIntent routing remains owned by RuntimePendingIntentBridge, so alarms return to the right slot.
- */
+/** Keeps AlarmManager calls valid under the physical host UID while preserving clone namespaces. */
 object RuntimeAlarmBridge {
     @Volatile private var installed = false
 
@@ -30,35 +27,44 @@ object RuntimeAlarmBridge {
         }
         val interfaces = RuntimeCompatibility.collectInterfaces(delegate.javaClass)
         require(interfaces.isNotEmpty()) { "واجهة IAlarmManager غير متاحة" }
-        val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate, context.packageName))
+        val proxy = Proxy.newProxyInstance(
+            interfaces.first().classLoader,
+            interfaces,
+            Handler(context.applicationContext, delegate)
+        )
         require(RuntimeCompatibility.write(field, manager, proxy)) { "تعذر تثبيت AlarmManager proxy" }
         installed = true
-        RuntimeDiagnostics.log("ALARM", "clone-aware AlarmManager bridge installed field=${field.name} owner=${field.declaringClass.name}")
+        RuntimeDiagnostics.log(
+            "ALARM",
+            "clone-aware AlarmManager bridge installed field=${field.name} owner=${field.declaringClass.name}"
+        )
     }
 
-    private class Handler(private val delegate: Any, private val hostPackage: String) : InvocationHandler {
+    private class Handler(private val context: Context, private val delegate: Any) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
-            if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
-            val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
-            val guestPackage = session.runtimePackage.packageName
-            val source = args ?: return invokeDelegate(method, args)
+            if (method.declaringClass == Any::class.java) return invokeDelegate(method, args, null)
+            val session = RuntimeExecutionScope.current()
+            if (session == null) return invokeDelegate(method, args, null)
+
+            val source = args ?: emptyArray()
             val mutable = Array<Any?>(source.size) { source[it] }
-            var changed = false
+            val guestPackage = session.runtimePackage.packageName
+            // Namespace listener tags only. Package/opPackage/AttributionSource rewriting is handled
+            // centrally below so Android 14/15/16 signature changes keep exact declared types.
             source.forEachIndexed { index, value ->
-                if (value is String && value == guestPackage) {
-                    mutable[index] = hostPackage
-                    changed = true
-                } else if (value is String && (method.name.contains("set", true) || method.name.contains("alarm", true)) && value.startsWith(guestPackage)) {
-                    mutable[index] = "shahboun:${guestPackage}:${session.runtimePackage.slot}:$value"
-                    changed = true
+                if (value is String && value.startsWith(guestPackage) && value != guestPackage &&
+                    (method.name.contains("set", true) || method.name.contains("alarm", true))) {
+                    mutable[index] = "shahboun:${session.runtimePackage.slot}:$value"
                 }
             }
-            if (changed) RuntimeDiagnostics.log("ALARM", "${method.name} routed $guestPackage/${session.runtimePackage.slot}")
-            return invokeDelegate(method, mutable)
+            RuntimeDiagnostics.log("ALARM", "${method.name} routed $guestPackage/${session.runtimePackage.slot}")
+            return invokeDelegate(method, mutable, session)
         }
 
-        private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
-            method.invoke(delegate, *(args ?: emptyArray()))
+        private fun invokeDelegate(method: Method, args: Array<out Any?>?, session: RuntimeSession?): Any? = try {
+            val safe = RuntimeBinderIdentitySanitizer.sanitize(context, session, method, args)
+            val result = method.invoke(delegate, *(safe ?: emptyArray()))
+            RuntimeBinderIdentitySanitizer.restoreResult(session, result)
         } catch (e: InvocationTargetException) {
             throw (e.targetException ?: e)
         }
