@@ -84,8 +84,8 @@ object RuntimeDiagnostics {
         val status = readiness.lineSequence().firstOrNull { it.startsWith("Status:") }?.substringAfter(':')?.trim().orEmpty().ifBlank { "NOT TESTED" }
         val blocker = readiness.lineSequence().firstOrNull { it.startsWith("Current blocker:") }?.substringAfter(':')?.trim().orEmpty().ifBlank { "none" }
         val crashes = extractCrashSummaries(raw)
-        val failBridges = raw.lineSequence().filter { it.contains("[BRIDGE]") && (it.contains("=fail") || it.contains("=failed")) }.takeLast(8).toList()
-        val fallbackBridges = raw.lineSequence().filter { it.contains("[BRIDGE]") && it.contains("=fallback") }.takeLast(8).toList()
+        val failBridges = raw.lineSequence().filter { it.contains("[BRIDGE]") && (it.contains("=fail") || it.contains("=failed")) }.toList().takeLast(8)
+        val fallbackBridges = raw.lineSequence().filter { it.contains("[BRIDGE]") && it.contains("=fallback") }.toList().takeLast(8)
         val partial = RuntimeGapAudit.current().filter { it.state == RuntimeGapAudit.State.PARTIAL }.take(8)
         val exit = raw.lineSequence().lastOrNull { it.contains("process exit", ignoreCase = true) || it.contains("Last process exit", ignoreCase = true) }
         return buildString {
