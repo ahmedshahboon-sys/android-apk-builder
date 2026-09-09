@@ -216,11 +216,11 @@ object RuntimeLoadedApkBridge {
             writeField(loadedApk, session, arrayOf("mLibDir"), appInfo.nativeLibraryDir)
         }
 
-        // Android 13-16 ContextImpl derives mBasePackageName/mOpPackageName from LoadedApk.mPackageName
-        // before Activity.attach(). Keep that framework-facing identity as the real host package so
-        // SettingsProvider/AppOps package+UID validation succeeds. Guest-visible package identity is
-        // restored by RuntimeGuestContext before guest onCreate().
-        writeField(loadedApk, session, arrayOf("mPackageName"), BuildConfig.APPLICATION_ID)
+        // Keep LoadedApk's logical package as the guest. RuntimeGuestContext.getOpPackageName()
+        // and the Binder bridges expose the physical host identity only where Android validates UID.
+        // This preserves framework-level app identity expected by Facebook/Instagram while avoiding
+        // package/UID SecurityException at real system-service boundaries.
+        writeField(loadedApk, session, arrayOf("mPackageName"), pkg.packageName)
         writeField(loadedApk, session, arrayOf("mClassLoader"), session.classLoader)
         writeField(loadedApk, session, arrayOf("mResources"), session.resources)
         writeField(loadedApk, session, arrayOf("mApplication"), session.guestApplication)
@@ -228,7 +228,7 @@ object RuntimeLoadedApkBridge {
 
         RuntimeDiagnostics.log(
             "LOADEDAPK",
-            "patched ${pkg.packageName}/${pkg.slot} appInfoPath=${if (appInfoApplied) "framework" else "field-fallback"} frameworkPackage=${BuildConfig.APPLICATION_ID} guestPackage=${pkg.packageName} data=${appInfo.dataDir}"
+            "patched ${pkg.packageName}/${pkg.slot} appInfoPath=${if (appInfoApplied) "framework" else "field-fallback"} frameworkPackage=${pkg.packageName} binderPackage=${BuildConfig.APPLICATION_ID} data=${appInfo.dataDir}"
         )
     }
 
