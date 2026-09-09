@@ -48,7 +48,7 @@ internal object RuntimeVirtualIdentityRegistry {
                     hostUid = Process.myUid(),
                     hostPackage = BuildConfig.APPLICATION_ID,
                     physicalProcess = RuntimeGuestProcessIdentity.hostProcessName(),
-                    sessionId = sessionId(session)
+                    sessionId = sessionId(pkg)
                 )
             }
         }
@@ -58,10 +58,11 @@ internal object RuntimeVirtualIdentityRegistry {
         synchronized(identities) { identities.remove(session) }
     }
 
-    internal fun sessionId(session: RuntimeSession): String {
-        val pkg = session.runtimePackage
-        return "${pkg.packageName}#${pkg.slot}:${pkg.versionCode}:${pkg.sha256.take(12)}"
-    }
+    internal fun sessionId(session: RuntimeSession): String = sessionId(session.runtimePackage)
+
+    /** Stable route/session identity derived only from the immutable clone snapshot. */
+    internal fun sessionId(pkg: RuntimePackage): String =
+        "${pkg.packageName}#${pkg.slot}:${pkg.versionCode}:${pkg.sha256.take(12)}"
 
     internal fun normalizeProcessName(packageName: String, requested: String?): String {
         val value = requested?.trim().orEmpty()
