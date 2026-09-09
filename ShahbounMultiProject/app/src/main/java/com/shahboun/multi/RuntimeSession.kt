@@ -16,7 +16,6 @@ import dalvik.system.DexClassLoader
 import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
-import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipFile
 
 class RuntimeSession(
@@ -27,42 +26,72 @@ class RuntimeSession(
     private val loaderHostResources: Resources?,
     private val closeables: List<Closeable>
 ) : Closeable {
+    enum class BootstrapState { NEW, ATTACHED, PROVIDERS_READY, APPLICATION_READY, FAILED, CLOSED }
+
     @Volatile var guestApplication: Application? = null
+        private set
+    @Volatile private var attachedApplication: Application? = null
+    @Volatile var bootstrapState: BootstrapState = BootstrapState.NEW
+        private set
+    @Volatile var bootstrapFailure: Throwable? = null
         private set
     @Volatile var componentHost: RuntimeComponentHost? = null
         private set
 
+    fun applicationForContext(): Application? = guestApplication ?: attachedApplication
+    fun isApplicationReady(): Boolean = bootstrapState == BootstrapState.APPLICATION_READY && guestApplication != null
+
     @Synchronized
     fun ensureGuestApplication(base: Context, slotDir: File): Application {
         guestApplication?.let { return it }
+        check(bootstrapState != BootstrapState.CLOSED) { "RuntimeSession مغلقة" }
+        if (bootstrapState == BootstrapState.FAILED) throw IllegalStateException("Guest bootstrap فشل سابقًا", bootstrapFailure)
+
         val appClass = runtimePackage.applicationClass?.let { classLoader.loadClass(it) }
         val app = if (appClass != null) {
             require(Application::class.java.isAssignableFrom(appClass)) { "Application class غير صالح" }
             appClass.getDeclaredConstructor().newInstance() as Application
         } else Application()
-        val guestContext = RuntimeGuestContext(base, this, slotDir)
-        val attached = runCatching {
-            val attach = Application::class.java.getDeclaredMethod("attach", Context::class.java).apply { isAccessible = true }
-            attach.invoke(app, guestContext); true
-        }.onFailure {
-            RuntimeDiagnostics.log("RUNTIME", "guest Application.attach fallback ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}")
-        }.getOrDefault(false)
-        if (!attached) {
-            val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
-            baseField.set(app, guestContext)
+
+        try {
+            val guestContext = RuntimeGuestContext(base, this, slotDir)
+            val attached = runCatching {
+                val attach = Application::class.java.getDeclaredMethod("attach", Context::class.java).apply { isAccessible = true }
+                attach.invoke(app, guestContext)
+                true
+            }.onFailure {
+                RuntimeDiagnostics.log("RUNTIME", "guest Application.attach fallback ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}")
+            }.getOrDefault(false)
+            if (!attached) {
+                val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
+                baseField.set(app, guestContext)
+            }
+
+            attachedApplication = app
+            bootstrapState = BootstrapState.ATTACHED
+            RuntimeDiagnostics.log("RUNTIME", "guest Application attached ${runtimePackage.packageName}/${runtimePackage.slot} attached=$attached class=${app.javaClass.name}")
+
+            val components = RuntimeComponentHost(base, this, slotDir)
+            componentHost = components
+            RuntimeDiagnostics.log("RUNTIME", "initializing guest providers ${runtimePackage.packageName}/${runtimePackage.slot}")
+            RuntimeExecutionScope.withSession(this) { components.initializeProviders() }
+            bootstrapState = BootstrapState.PROVIDERS_READY
+            RuntimeDiagnostics.log("RUNTIME", "guest providers ready ${runtimePackage.packageName}/${runtimePackage.slot}")
+
+            RuntimeDiagnostics.log("RUNTIME", "calling guest Application.onCreate ${runtimePackage.packageName}/${runtimePackage.slot}")
+            RuntimeGuestProcessIdentity.withGuestMainProcess(this) { app.onCreate() }
+            RuntimeInstrumentationInstaller.reassert("guest-app:${runtimePackage.packageName}/${runtimePackage.slot}").getOrElse { throw it }
+
+            guestApplication = app
+            bootstrapState = BootstrapState.APPLICATION_READY
+            RuntimeDiagnostics.log("RUNTIME", "guest Application ready ${runtimePackage.packageName}/${runtimePackage.slot} state=$bootstrapState")
+            return app
+        } catch (error: Throwable) {
+            bootstrapFailure = error
+            bootstrapState = BootstrapState.FAILED
+            RuntimeDiagnostics.log("RUNTIME", "guest bootstrap failed ${runtimePackage.packageName}/${runtimePackage.slot}: ${error.stackTraceToString()}")
+            throw error
         }
-        guestApplication = app
-        RuntimeDiagnostics.log("RUNTIME", "guest Application attached ${runtimePackage.packageName}/${runtimePackage.slot} attached=$attached class=${app.javaClass.name}")
-        val components = RuntimeComponentHost(base, this, slotDir)
-        componentHost = components
-        RuntimeDiagnostics.log("RUNTIME", "initializing guest providers ${runtimePackage.packageName}/${runtimePackage.slot}")
-        RuntimeExecutionScope.withSession(this) { components.initializeProviders() }
-        RuntimeDiagnostics.log("RUNTIME", "guest providers ready ${runtimePackage.packageName}/${runtimePackage.slot}")
-        RuntimeDiagnostics.log("RUNTIME", "calling guest Application.onCreate ${runtimePackage.packageName}/${runtimePackage.slot}")
-        RuntimeExecutionScope.withSession(this) { app.onCreate() }
-        RuntimeInstrumentationInstaller.reassert("guest-app:${runtimePackage.packageName}/${runtimePackage.slot}").getOrElse { throw it }
-        RuntimeDiagnostics.log("RUNTIME", "guest Application ready ${runtimePackage.packageName}/${runtimePackage.slot}")
-        return app
     }
 
     fun attachLoaderTo(target: Resources): Boolean {
@@ -76,9 +105,12 @@ class RuntimeSession(
     }
 
     override fun close() {
+        bootstrapState = BootstrapState.CLOSED
         runCatching { componentHost?.close() }
         componentHost = null
         guestApplication = null
+        attachedApplication = null
+        bootstrapFailure = null
         val loader = resourcesLoader
         val host = loaderHostResources
         if (loader != null && host != null) runCatching { host.removeLoaders(loader) }
@@ -132,8 +164,7 @@ class RuntimeSessionFactory(private val context: Context) {
         val nativeResult = NativeLibraryExtractor.extract(allApks, nativeDir)
         RuntimeDiagnostics.log(
             "NATIVE",
-            "extract package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} libraries=${nativeResult.files.size} " +
-                "names=${nativeResult.files.joinToString { it.name }}"
+            "extract package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} libraries=${nativeResult.files.size} names=${nativeResult.files.joinToString { it.name }}"
         )
         RuntimeDiagnostics.log("DEX", "loading package=${pkg.packageName} slot=${pkg.slot} apks=${allApks.size} " + allApks.joinToString { "${it.name}:r=${it.canRead()}:w=${it.canWrite()}:size=${it.length()}" })
 
@@ -168,10 +199,7 @@ class RuntimeSessionFactory(private val context: Context) {
             theme = effectivePkg.appTheme
         }
         val resources = context.packageManager.getResourcesForApplication(archiveInfo)
-        RuntimeDiagnostics.log(
-            "RES",
-            "archive resource graph attached package=${effectivePkg.packageName} apks=${allApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets}"
-        )
+        RuntimeDiagnostics.log("RES", "archive resource graph attached package=${effectivePkg.packageName} apks=${allApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets}")
 
         var runtimeResourcesLoader: ResourcesLoader? = null
         var loaderHostResources: Resources? = null
@@ -179,9 +207,7 @@ class RuntimeSessionFactory(private val context: Context) {
             runCatching {
                 val resLoader = ResourcesLoader()
                 allApks.forEach { apk ->
-                    val provider = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                        ResourcesProvider.loadFromApk(pfd)
-                    }
+                    val provider = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd -> ResourcesProvider.loadFromApk(pfd) }
                     resLoader.addProvider(provider)
                     closeables += provider
                 }
@@ -233,11 +259,7 @@ class RuntimeSessionFactory(private val context: Context) {
     }
 
     private fun containsDexCode(apk: File): Boolean = runCatching {
-        ZipFile(apk).use { zip ->
-            zip.entries().asSequence().any { entry ->
-                !entry.isDirectory && entry.name.matches(Regex("classes(\\d*)?\\.dex"))
-            }
-        }
+        ZipFile(apk).use { zip -> zip.entries().asSequence().any { entry -> !entry.isDirectory && entry.name.matches(Regex("classes(\\d*)?\\.dex")) } }
     }.getOrDefault(false)
 }
 
