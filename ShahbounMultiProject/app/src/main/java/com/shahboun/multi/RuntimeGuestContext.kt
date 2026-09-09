@@ -43,12 +43,6 @@ class RuntimeGuestContext(
     private val guestJobScheduler by lazy { RuntimeJobSchedulerBridge.facadeFor(baseContext, session) }
 
     override fun getPackageName(): String {
-        // Android system services validate a calling package against the real UID. Google Play
-        // Dynamite modules often call Context.getPackageName() from code loaded outside the guest
-        // class loader and then send that value across Binder. Sending the virtual guest package
-        // causes SecurityException("Unknown calling package") because only the Shahboun host owns
-        // this UID. Keep guest identity for guest code, but expose the physical host identity to
-        // Google/Play/Firebase service code.
         if (RuntimeSystemPackageIdentity.requiresPhysicalPackage()) return baseContext.packageName
         return session.runtimePackage.packageName
     }
@@ -57,7 +51,7 @@ class RuntimeGuestContext(
     override fun getAssets() = session.resources.assets
     override fun getTheme(): Resources.Theme = guestTheme
     override fun setTheme(resid: Int) { if (resid != 0) guestTheme.applyStyle(resid, true) }
-    override fun getApplicationContext(): Context = session.guestApplication ?: this
+    override fun getApplicationContext(): Context = session.applicationForContext() ?: this
     override fun getPackageCodePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getContentResolver(): ContentResolver = cloneContentResolver
@@ -196,12 +190,6 @@ class RuntimeGuestContext(
     }
 }
 
-/**
- * Chooses the package string exposed to code that crosses into real system/Google services.
- * StackTraceElement.toString() on Android includes Dynamite module identity even when the Java
- * class name itself is obfuscated (for example m7.*), which makes this independent of a specific
- * obfuscation prefix/version.
- */
 private object RuntimeSystemPackageIdentity {
     private val physicalMarkers = arrayOf(
         "com.google.android.gms",
