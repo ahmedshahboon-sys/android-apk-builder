@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 39
-        versionName = "0.8.1-runtime3"
+        versionCode = 40
+        versionName = "0.9.0-runtime3"
         manifestPlaceholders["debugActivityEnabled"] = "true"
     }
 
@@ -59,9 +59,7 @@ android {
     packaging { resources.excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*") }
 }
 
-kotlin {
-    jvmToolchain(17)
-}
+kotlin { jvmToolchain(17) }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
