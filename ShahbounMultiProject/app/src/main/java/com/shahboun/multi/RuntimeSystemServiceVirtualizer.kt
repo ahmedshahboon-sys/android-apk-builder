@@ -2,6 +2,7 @@ package com.shahboun.multi
 
 import android.content.Context
 import java.lang.reflect.InvocationHandler
+import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
 import java.util.Collections
 import java.util.IdentityHashMap
@@ -73,12 +74,12 @@ internal object RuntimeSystemServiceVirtualizer {
         }
         val field = findServiceField(manager.javaClass) ?: run {
             capabilities[serviceName] = Capability(State.PASSTHROUGH, "binder field unavailable on ${manager.javaClass.simpleName}")
-            RuntimeDiagnostics.log("SERVICE6", "$serviceName passthrough binder-field-unavailable manager=${manager.javaClass.name}")
+            RuntimeDiagnostics.log("SERVICE7", "$serviceName passthrough binder-field-unavailable manager=${manager.javaClass.name}")
             return
         }
         val original = runCatching { field.isAccessible = true; field.get(manager) }.getOrElse {
             capabilities[serviceName] = Capability(State.FAIL, "binder delegate read failed: ${it.javaClass.simpleName}")
-            RuntimeDiagnostics.log("SERVICE6", "$serviceName failed delegate-read ${it.javaClass.simpleName}: ${it.message}")
+            RuntimeDiagnostics.log("SERVICE7", "$serviceName failed delegate-read ${it.javaClass.simpleName}: ${it.message}")
             return
         } ?: run {
             capabilities[serviceName] = Capability(State.PASSTHROUGH, "binder delegate is null")
@@ -91,33 +92,44 @@ internal object RuntimeSystemServiceVirtualizer {
         val interfaces = collectInterfaces(original.javaClass)
         if (interfaces.isEmpty()) {
             capabilities[serviceName] = Capability(State.PASSTHROUGH, "service interface unavailable")
-            RuntimeDiagnostics.log("SERVICE6", "$serviceName passthrough service-interface-unavailable ${original.javaClass.name}")
+            RuntimeDiagnostics.log("SERVICE7", "$serviceName passthrough service-interface-unavailable ${original.javaClass.name}")
             return
         }
         val handler = InvocationHandler { _, method, args ->
-            val safe = RuntimeBinderIdentitySanitizer.sanitize(context, session, args)
-            try {
-                method.invoke(original, *(safe ?: emptyArray()))
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw (e.targetException ?: e)
+            RuntimeRecursionGuard.call(
+                key = "binder-call:$serviceName:${method.name}",
+                fallback = {
+                    capabilities[serviceName] = Capability(State.FALLBACK, "recursive binder invocation blocked method=${method.name}")
+                    invokeOriginal(original, method, args)
+                }
+            ) {
+                val safe = RuntimeBinderIdentitySanitizer.sanitize(context, session, args)
+                val result = invokeOriginal(original, method, safe)
+                RuntimeBinderIdentitySanitizer.restoreResult(session, result)
             }
         }
         val loader = interfaces.firstOrNull()?.classLoader ?: original.javaClass.classLoader
         val proxy = runCatching { Proxy.newProxyInstance(loader, interfaces.toTypedArray(), handler) }.getOrElse {
             capabilities[serviceName] = Capability(State.FAIL, "proxy create failed: ${it.javaClass.simpleName}")
-            RuntimeDiagnostics.log("SERVICE6", "$serviceName failed proxy-create ${it.javaClass.simpleName}: ${it.message}")
+            RuntimeDiagnostics.log("SERVICE7", "$serviceName failed proxy-create ${it.javaClass.simpleName}: ${it.message}")
             return
         }
         runCatching { field.isAccessible = true; field.set(manager, proxy) }
             .onSuccess {
-                capabilities[serviceName] = Capability(State.PARTIAL, "binder identity proxy installed field=${field.name}; callbacks/live semantics require validation")
-                RuntimeDiagnostics.log("SERVICE6", "$serviceName partial binder-identity field=${field.name} manager=${manager.javaClass.simpleName}")
+                capabilities[serviceName] = Capability(State.PARTIAL, "binder args/results identity translation installed field=${field.name}; callbacks/live semantics require validation")
+                RuntimeDiagnostics.log("SERVICE7", "$serviceName partial binder-identity field=${field.name} manager=${manager.javaClass.simpleName}")
             }
             .onFailure {
                 patched.remove(manager)
                 capabilities[serviceName] = Capability(State.FAIL, "proxy write failed: ${it.javaClass.simpleName}")
-                RuntimeDiagnostics.log("SERVICE6", "$serviceName failed proxy-write ${it.javaClass.simpleName}: ${it.message}")
+                RuntimeDiagnostics.log("SERVICE7", "$serviceName failed proxy-write ${it.javaClass.simpleName}: ${it.message}")
             }
+    }
+
+    private fun invokeOriginal(original: Any, method: java.lang.reflect.Method, args: Array<out Any?>?): Any? = try {
+        method.invoke(original, *(args ?: emptyArray()))
+    } catch (e: InvocationTargetException) {
+        throw (e.targetException ?: e)
     }
 
     private fun findServiceField(type: Class<*>): java.lang.reflect.Field? {
