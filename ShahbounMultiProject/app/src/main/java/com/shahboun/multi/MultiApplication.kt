@@ -28,6 +28,7 @@ class MultiApplication : Application() {
         safeStartup("COMPAT") { RuntimeCompatibility.logProfile() }
         safeStartup("NATIVE4") { RuntimeNativeRuntime.initialize() }
         safeStartup("WEBVIEW") { installWebViewIsolation() }
+        safeStartup("WEB-GMS4") { RuntimeWebGmsCompatibility.prepareProcess(this, processName) }
         safeStartup("BARS") { SystemBarsFitter.install(this) }
         if (processName == packageName) safeStartup("DIAG-PROMPT") { installDiagnosticsPrompt() }
 
