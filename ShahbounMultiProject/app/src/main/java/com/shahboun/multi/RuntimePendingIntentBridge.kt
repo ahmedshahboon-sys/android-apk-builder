@@ -161,8 +161,9 @@ object RuntimePendingIntentBridge {
          * a calling package/AttributionSource against the real host UID before guest Activity.onCreate.
          */
         private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
-            val safeArgs = RuntimeBinderIdentitySanitizer.sanitize(context, RuntimeExecutionScope.current(), args)
-            method.invoke(delegate, *(safeArgs ?: emptyArray()))
+            val safeArgs = RuntimeBinderIdentitySanitizer.sanitize(context, RuntimeExecutionScope.current(), method, args)
+            val result = method.invoke(delegate, *(safeArgs ?: emptyArray()))
+            RuntimeBinderIdentitySanitizer.restoreResult(RuntimeExecutionScope.current(), result)
         } catch (e: InvocationTargetException) {
             throw (e.targetException ?: e)
         }
