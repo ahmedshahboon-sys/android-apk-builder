@@ -16,9 +16,7 @@ object RuntimePendingIntentBridge {
     private const val INTENT_SENDER_ACTIVITY = 2
     private const val INTENT_SENDER_SERVICE = 4
     private const val INTENT_SENDER_FOREGROUND_SERVICE = 5
-    private val restrictedGuestQueries = setOf(
-        "getHistoricalProcessExitReasons"
-    )
+    private val restrictedGuestQueries = setOf("getHistoricalProcessExitReasons")
     @Volatile private var installed = false
 
     fun install(context: Context): Result<Unit> = runCatching {
@@ -49,10 +47,7 @@ object RuntimePendingIntentBridge {
         val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate))
         require(RuntimeCompatibility.write(instanceField, singleton, proxy)) { "تعذر تثبيت IActivityManager proxy" }
         installed = true
-        RuntimeDiagnostics.log(
-            "PENDING",
-            "slot-aware ActivityManager/PendingIntent bridge installed singleton=${singletonField.name} field=${instanceField.name}"
-        )
+        RuntimeDiagnostics.log("PENDING", "slot-aware ActivityManager/PendingIntent bridge installed singleton=${singletonField.name} field=${instanceField.name}")
     }
 
     private class Handler(private val context: Context, private val delegate: Any) : InvocationHandler {
@@ -61,10 +56,7 @@ object RuntimePendingIntentBridge {
             val session = RuntimeExecutionScope.current()
 
             if (session != null && method.name in restrictedGuestQueries) {
-                RuntimeDiagnostics.log(
-                    "AMS",
-                    "virtualized protected query ${method.name} ${session.runtimePackage.packageName}/${session.runtimePackage.slot}"
-                )
+                RuntimeDiagnostics.log("AMS", "virtualized protected query ${method.name} ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
                 return neutralFor(method.returnType)
             }
 
@@ -84,11 +76,11 @@ object RuntimePendingIntentBridge {
             val routed = Array(intents.size) { index -> route(session, senderType, intents[index] as? Intent ?: Intent()) }
             mutable[intentsIndex] = routed
 
-            val guestPackage = session.runtimePackage.packageName
+            val identity = RuntimeVirtualIdentityRegistry.forSession(session)
             method.parameterTypes.indices.filter { method.parameterTypes[it] == String::class.java }.forEach { index ->
-                if (mutable[index] == guestPackage) mutable[index] = BuildConfig.APPLICATION_ID
+                if (mutable[index] == identity.guestPackage) mutable[index] = identity.hostPackage
             }
-            RuntimeDiagnostics.log("PENDING", "routed method=${method.name} type=$senderType $guestPackage/${session.runtimePackage.slot} count=${routed.size}")
+            RuntimeDiagnostics.log("PENDING", "routed method=${method.name} type=$senderType ${identity.guestPackage}/${identity.cloneId} count=${routed.size}")
             return invokeDelegate(method, mutable)
         }
 
@@ -105,13 +97,13 @@ object RuntimePendingIntentBridge {
         private fun routeGuestServiceTokenCall(session: RuntimeSession, method: Method, args: Array<out Any?>?): Any? {
             val source = args ?: emptyArray()
             val mutable = Array<Any?>(source.size) { source[it] }
-            val pkg = session.runtimePackage
-            val hostComponent = ComponentName(BuildConfig.APPLICATION_ID, RuntimeProcessPool.serviceStub(pkg.packageName, pkg.slot).name)
+            val identity = RuntimeVirtualIdentityRegistry.forSession(session)
+            val hostComponent = ComponentName(identity.hostPackage, RuntimeProcessPool.serviceStub(identity.guestPackage, identity.cloneId).name)
             mutable.indices.forEach { index ->
                 val component = mutable[index] as? ComponentName ?: return@forEach
-                if (component.packageName == pkg.packageName) mutable[index] = hostComponent
+                if (component.packageName == identity.guestPackage) mutable[index] = hostComponent
             }
-            RuntimeDiagnostics.log("SERVICE", "AMS ${method.name} routed ${pkg.packageName}/${pkg.slot} -> ${hostComponent.className}")
+            RuntimeDiagnostics.log("SERVICE", "AMS ${method.name} routed ${identity.guestPackage}/${identity.cloneId} -> ${hostComponent.className}")
             return invokeDelegate(method, mutable)
         }
 
@@ -127,6 +119,7 @@ object RuntimePendingIntentBridge {
                                 putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
                                 putExtra(EXTRA_RUNTIME_SERVICE, component.className)
                                 putExtra(EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT, Intent(original))
+                                RuntimeIntentSecurity.sign(context, this, session, "service", component.className)
                             }
                         } else original
                     } ?: original
@@ -139,6 +132,7 @@ object RuntimePendingIntentBridge {
                                 putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
                                 putExtra(EXTRA_RUNTIME_RECEIVER, component.className)
                                 putExtra(EXTRA_RUNTIME_ORIGINAL_RECEIVER_INTENT, Intent(original))
+                                RuntimeIntentSecurity.sign(context, this, session, "receiver", component.className)
                             }
                         } else original
                     } ?: original
@@ -155,14 +149,11 @@ object RuntimePendingIntentBridge {
             else -> null
         }
 
-        /**
-         * Every call that reaches system_server is sanitized here, not only PendingIntent calls.
-         * This covers SettingsProvider/getContentProvider and other Android 16 AMS paths that check
-         * a calling package/AttributionSource against the real host UID before guest Activity.onCreate.
-         */
         private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
-            val safeArgs = RuntimeBinderIdentitySanitizer.sanitize(context, RuntimeExecutionScope.current(), args)
-            method.invoke(delegate, *(safeArgs ?: emptyArray()))
+            val current = RuntimeExecutionScope.current()
+            val safeArgs = RuntimeBinderIdentitySanitizer.sanitize(context, current, args)
+            val result = method.invoke(delegate, *(safeArgs ?: emptyArray()))
+            RuntimeBinderResultVirtualizer.restore(current, result)
         } catch (e: InvocationTargetException) {
             throw (e.targetException ?: e)
         }
