@@ -6,5 +6,12 @@ add_library(shahboun_runtime SHARED shahboun_runtime.cpp)
 target_compile_features(shahboun_runtime PRIVATE cxx_std_20)
 target_compile_options(shahboun_runtime PRIVATE -Wall -Wextra -Werror=return-type -fvisibility=hidden)
 
+# Android 15+ supports 16 KB memory-page devices. Keep our own native runtime loadable even when
+# the CI image uses an NDK older than r28, where this alignment is not automatic.
+target_link_options(shahboun_runtime PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)
+
 find_library(log-lib log)
 target_link_libraries(shahboun_runtime PRIVATE ${log-lib})
