@@ -40,7 +40,7 @@ class RuntimeSession(
         private set
 
     fun applicationForContext(): Application? = guestApplication ?: attachedApplication
-    fun isApplicationReady(): Boolean = bootstrapState in setOf(BootstrapState.APPLICATION_READY, BootstrapState.RUNNING) && guestApplication != null
+    fun isApplicationReady(): Boolean = bootstrapState == BootstrapState.RUNNING && guestApplication != null
 
     @Synchronized
     fun ensureGuestApplication(base: Context, slotDir: File): Application {
@@ -63,7 +63,10 @@ class RuntimeSession(
                 attach.invoke(app, guestContext)
                 true
             }.onFailure {
-                RuntimeDiagnostics.log("RUNTIME", "guest Application.attach fallback ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}: ${it.message}")
+                RuntimeDiagnostics.log(
+                    "RUNTIME",
+                    "guest Application.attach fallback ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}: ${it.message}"
+                )
             }.getOrDefault(false)
             if (!attached) {
                 val baseField = ContextWrapper::class.java.getDeclaredField("mBase").apply { isAccessible = true }
@@ -73,7 +76,10 @@ class RuntimeSession(
             attachedApplication = app
             bootstrapState = BootstrapState.ATTACHED
             RuntimeProcessApplicationBridge.bind(this)
-            RuntimeDiagnostics.log("RUNTIME", "guest Application attached ${runtimePackage.packageName}/${runtimePackage.slot} attached=$attached class=${app.javaClass.name}")
+            RuntimeDiagnostics.log(
+                "RUNTIME",
+                "guest Application attached ${runtimePackage.packageName}/${runtimePackage.slot} attached=$attached class=${app.javaClass.name}"
+            )
 
             val components = RuntimeComponentHost(base, this, slotDir)
             componentHost = components
@@ -102,9 +108,15 @@ class RuntimeSession(
 
     fun attachLoaderTo(target: Resources): Boolean {
         val loader = resourcesLoader ?: return false
-        return runCatching { target.addLoaders(loader); true }
-            .onFailure { RuntimeDiagnostics.log("RES", "attach loader failed ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}: ${it.message}") }
-            .getOrDefault(false)
+        return runCatching {
+            target.addLoaders(loader)
+            true
+        }.onFailure {
+            RuntimeDiagnostics.log(
+                "RES",
+                "attach loader failed ${runtimePackage.packageName}/${runtimePackage.slot}: ${it.javaClass.simpleName}: ${it.message}"
+            )
+        }.getOrDefault(false)
     }
 
     override fun close() {
@@ -128,7 +140,9 @@ private class GuestDexClassLoader(
     nativeSearchPath: String,
     parent: ClassLoader
 ) : DexClassLoader(dexPath, optimizedDirectory, nativeSearchPath, parent) {
-    private val parentFirstPrefixes = arrayOf("java.", "javax.", "android.", "dalvik.", "sun.", "org.xml.", "org.w3c.")
+    private val parentFirstPrefixes = arrayOf(
+        "java.", "javax.", "android.", "dalvik.", "sun.", "org.xml.", "org.w3c."
+    )
 
     @Synchronized
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
@@ -147,7 +161,10 @@ private class GuestDexClassLoader(
             return direct.absolutePath
         }
         val inherited = super.findLibrary(name)
-        RuntimeDiagnostics.log("NATIVE", "library lookup name=$name mapped=$mapped direct=${direct.exists()} inherited=${inherited ?: "missing"} dir=${guestNativeDir.absolutePath}")
+        RuntimeDiagnostics.log(
+            "NATIVE",
+            "library lookup name=$name mapped=$mapped direct=${direct.exists()} inherited=${inherited ?: "missing"} dir=${guestNativeDir.absolutePath}"
+        )
         return inherited
     }
 }
@@ -156,29 +173,59 @@ class RuntimeSessionFactory(private val context: Context) {
     fun create(pkg: RuntimePackage, slotDir: File): RuntimeSession {
         val allApks = listOf(pkg.baseApk) + pkg.splitApks
         RuntimeCodeSecurity.prepareApks(allApks)
-        val dataDir = File(slotDir, "data").apply { require(exists() || mkdirs()) }
-        val codeCache = File(dataDir, "code_cache").apply { require(exists() || mkdirs()) }
-        val nativeDir = File(slotDir, "native").apply { if (exists()) deleteRecursively(); require(mkdirs()) }
+        val credentialDir = File(slotDir, "data").apply { require(exists() || mkdirs()) }
+        val codeCache = File(credentialDir, "code_cache").apply { require(exists() || mkdirs()) }
+        val nativeDir = File(slotDir, "native").apply {
+            if (exists()) deleteRecursively()
+            require(mkdirs())
+        }
         val nativeResult = NativeLibraryExtractor.extract(allApks, nativeDir)
-        RuntimeDiagnostics.log("NATIVE", "extract package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} libraries=${nativeResult.files.size} names=${nativeResult.files.joinToString { it.name }}")
-        RuntimeDiagnostics.log("DEX", "loading package=${pkg.packageName} slot=${pkg.slot} apks=${allApks.size} " + allApks.joinToString { "${it.name}:r=${it.canRead()}:w=${it.canWrite()}:size=${it.length()}" })
+        RuntimeDiagnostics.log(
+            "NATIVE",
+            "extract package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} libraries=${nativeResult.files.size} names=${nativeResult.files.joinToString { it.name }}"
+        )
+        RuntimeDiagnostics.log(
+            "DEX",
+            "loading package=${pkg.packageName} slot=${pkg.slot} apks=${allApks.size} " +
+                allApks.joinToString { "${it.name}:r=${it.canRead()}:w=${it.canWrite()}:size=${it.length()}" }
+        )
 
         val codeApks = allApks.filter(::containsDexCode)
         require(codeApks.isNotEmpty()) { "لا توجد ملفات DEX قابلة للتشغيل داخل حزمة التطبيق" }
         val dexPath = codeApks.joinToString(File.pathSeparator) { it.absolutePath }
-        RuntimeDiagnostics.log("DEX", "code-bearing apks package=${pkg.packageName} count=${codeApks.size}/${allApks.size} names=${codeApks.joinToString { it.name }}")
+        RuntimeDiagnostics.log(
+            "DEX",
+            "code-bearing apks package=${pkg.packageName} count=${codeApks.size}/${allApks.size} names=${codeApks.joinToString { it.name }}"
+        )
 
         val hostLoader = context.classLoader
         val platformParent = hostLoader.parent ?: ClassLoader.getSystemClassLoader().parent ?: ClassLoader.getSystemClassLoader()
-        val apkNativePaths = nativeResult.abi?.let { abi -> allApks.map { "${it.absolutePath}!/lib/$abi" } }.orEmpty()
-        val nativeSearchPath = (listOf(nativeDir.absolutePath) + apkNativePaths).distinct().joinToString(File.pathSeparator)
-        val loader = GuestDexClassLoader(dexPath, codeCache.absolutePath, nativeDir, nativeSearchPath, platformParent)
-        RuntimeDiagnostics.log("NATIVE", "search-path package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} entries=${1 + apkNativePaths.size}")
-        RuntimeDiagnostics.log("DEX", "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}")
+        val apkNativePaths = nativeResult.abi?.let { abi ->
+            allApks.map { "${it.absolutePath}!/lib/$abi" }
+        }.orEmpty()
+        val nativeSearchPath = (listOf(nativeDir.absolutePath) + apkNativePaths)
+            .distinct()
+            .joinToString(File.pathSeparator)
+        val loader = GuestDexClassLoader(
+            dexPath,
+            codeCache.absolutePath,
+            nativeDir,
+            nativeSearchPath,
+            platformParent
+        )
+        RuntimeDiagnostics.log(
+            "NATIVE",
+            "search-path package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} entries=${1 + apkNativePaths.size}"
+        )
+        RuntimeDiagnostics.log(
+            "DEX",
+            "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}"
+        )
 
         val effectivePkg = resolveLauncherTarget(pkg, loader)
         val closeables = mutableListOf<Closeable>()
         val splitPaths = effectivePkg.splitApks.map { it.absolutePath }.toTypedArray()
+        val deviceDir = File(slotDir, "device_data").apply { require(exists() || mkdirs()) }
         val archiveInfo = ApplicationInfo().apply {
             packageName = effectivePkg.packageName
             sourceDir = effectivePkg.baseApk.absolutePath
@@ -186,9 +233,9 @@ class RuntimeSessionFactory(private val context: Context) {
             splitSourceDirs = splitPaths
             splitPublicSourceDirs = splitPaths
             if (Build.VERSION.SDK_INT >= 26) splitNames = effectivePkg.splitNames.toTypedArray()
-            dataDir = dataDir.absolutePath
-            if (Build.VERSION.SDK_INT >= 24) credentialProtectedDataDir = dataDir.absolutePath
-            deviceProtectedDataDir = File(slotDir, "device_data").apply { mkdirs() }.absolutePath
+            dataDir = credentialDir.absolutePath
+            if (Build.VERSION.SDK_INT >= 24) credentialProtectedDataDir = credentialDir.absolutePath
+            deviceProtectedDataDir = deviceDir.absolutePath
             nativeLibraryDir = nativeDir.absolutePath
             targetSdkVersion = effectivePkg.targetSdk
             if (Build.VERSION.SDK_INT >= 24) minSdkVersion = effectivePkg.minSdk
@@ -196,7 +243,10 @@ class RuntimeSessionFactory(private val context: Context) {
             theme = effectivePkg.appTheme
         }
         val resources = context.packageManager.getResourcesForApplication(archiveInfo)
-        RuntimeDiagnostics.log("RES", "archive resource graph attached package=${effectivePkg.packageName} apks=${allApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets}")
+        RuntimeDiagnostics.log(
+            "RES",
+            "archive resource graph attached package=${effectivePkg.packageName} apks=${allApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets}"
+        )
 
         var runtimeResourcesLoader: ResourcesLoader? = null
         var loaderHostResources: Resources? = null
@@ -204,25 +254,45 @@ class RuntimeSessionFactory(private val context: Context) {
             runCatching {
                 val resLoader = ResourcesLoader()
                 allApks.forEach { apk ->
-                    val provider = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd -> ResourcesProvider.loadFromApk(pfd) }
+                    val provider = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                        ResourcesProvider.loadFromApk(pfd)
+                    }
                     resLoader.addProvider(provider)
                     closeables += provider
                 }
-                // Never attach guest archives to host Application.resources. That leaks resources
-                // between clones in the same installed package. Attach only to this session graph.
+                // Session-local only: never mutate host Application.resources with guest archives.
                 resources.addLoaders(resLoader)
                 runtimeResourcesLoader = resLoader
                 loaderHostResources = resources
-                RuntimeDiagnostics.log("RES", "session loader installed ${effectivePkg.packageName}/${effectivePkg.slot} providers=${allApks.size}")
+                RuntimeDiagnostics.log(
+                    "RES",
+                    "session loader installed ${effectivePkg.packageName}/${effectivePkg.slot} providers=${allApks.size}"
+                )
             }.onFailure {
-                RuntimeDiagnostics.log("RES", "session loader fallback ${effectivePkg.packageName}/${effectivePkg.slot}: ${it.javaClass.simpleName}: ${it.message}")
+                RuntimeDiagnostics.log(
+                    "RES",
+                    "session loader fallback ${effectivePkg.packageName}/${effectivePkg.slot}: ${it.javaClass.simpleName}: ${it.message}"
+                )
             }
         }
 
         val launcher = loader.loadClass(effectivePkg.launchActivity)
-        require(android.app.Activity::class.java.isAssignableFrom(launcher)) { "شاشة تشغيل التطبيق ليست Activity صالحة" }
-        effectivePkg.applicationClass?.let { name -> require(Application::class.java.isAssignableFrom(loader.loadClass(name))) { "Application class غير صالح" } }
-        return RuntimeSession(effectivePkg, loader, resources, runtimeResourcesLoader, loaderHostResources, closeables)
+        require(android.app.Activity::class.java.isAssignableFrom(launcher)) {
+            "شاشة تشغيل التطبيق ليست Activity صالحة"
+        }
+        effectivePkg.applicationClass?.let { name ->
+            require(Application::class.java.isAssignableFrom(loader.loadClass(name))) {
+                "Application class غير صالح"
+            }
+        }
+        return RuntimeSession(
+            effectivePkg,
+            loader,
+            resources,
+            runtimeResourcesLoader,
+            loaderHostResources,
+            closeables
+        )
     }
 
     private fun resolveLauncherTarget(pkg: RuntimePackage, loader: ClassLoader): RuntimePackage {
@@ -230,19 +300,30 @@ class RuntimeSessionFactory(private val context: Context) {
         val resolved = runCatching {
             val pm = context.packageManager
             val launcher = pm.getLaunchIntentForPackage(pkg.packageName)?.component ?: return@runCatching null
-            val info = if (Build.VERSION.SDK_INT >= 33) pm.getActivityInfo(launcher, PackageManager.ComponentInfoFlags.of(0))
-            else { @Suppress("DEPRECATION") pm.getActivityInfo(launcher, 0) }
+            val info = if (Build.VERSION.SDK_INT >= 33) {
+                pm.getActivityInfo(launcher, PackageManager.ComponentInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getActivityInfo(launcher, 0)
+            }
             info.targetActivity?.takeIf { it.isNotBlank() } ?: info.name?.takeIf { it.isNotBlank() }
         }.getOrNull()
         if (!resolved.isNullOrBlank() && runCatching { loader.loadClass(resolved) }.isSuccess) {
-            RuntimeDiagnostics.log("DEX", "launcher alias resolved ${pkg.packageName}: ${pkg.launchActivity} -> $resolved")
+            RuntimeDiagnostics.log(
+                "DEX",
+                "launcher alias resolved ${pkg.packageName}: ${pkg.launchActivity} -> $resolved"
+            )
             return pkg.copy(launchActivity = resolved)
         }
         return pkg
     }
 
     private fun containsDexCode(apk: File): Boolean = runCatching {
-        ZipFile(apk).use { zip -> zip.entries().asSequence().any { entry -> !entry.isDirectory && entry.name.matches(Regex("classes(\\d*)?\\.dex")) } }
+        ZipFile(apk).use { zip ->
+            zip.entries().asSequence().any { entry ->
+                !entry.isDirectory && entry.name.matches(Regex("classes(\\d*)?\\.dex"))
+            }
+        }
     }.getOrDefault(false)
 }
 
@@ -252,7 +333,9 @@ private object RuntimeCodeSecurity {
         apks.forEach { apk ->
             require(apk.isFile && apk.length() > 0) { "ملف APK غير صالح: ${apk.name}" }
             runCatching { Os.chmod(apk.absolutePath, 0b100100100) }
-                .recoverCatching { require(apk.setReadOnly()) { "تعذر حماية ملف APK: ${apk.name}" } }.getOrThrow()
+                .recoverCatching {
+                    require(apk.setReadOnly()) { "تعذر حماية ملف APK: ${apk.name}" }
+                }.getOrThrow()
             require(apk.canRead()) { "ملف APK غير قابل للقراءة: ${apk.name}" }
             require(!apk.canWrite()) { "ملف APK ما زال قابلاً للكتابة: ${apk.name}" }
         }
@@ -270,12 +353,23 @@ private object NativeLibraryExtractor {
             apks.forEach { apk ->
                 ZipFile(apk).use { zip ->
                     zip.entries().asSequence()
-                        .filter { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") }
+                        .filter {
+                            !it.isDirectory &&
+                                it.name.startsWith("lib/$abi/") &&
+                                it.name.endsWith(".so")
+                        }
                         .forEach { entry ->
                             val fileName = entry.name.substringAfterLast('/')
-                            require(fileName.matches(Regex("[A-Za-z0-9._+-]+\\.so"))) { "Unsafe native library name: $fileName" }
-                            val temp = File(targetDir, ".$fileName.${android.os.Process.myPid()}.tmp")
-                            zip.getInputStream(entry).use { input -> FileOutputStream(temp).use(input::copyTo) }
+                            require(fileName.matches(Regex("[A-Za-z0-9._+-]+\\.so"))) {
+                                "Unsafe native library name: $fileName"
+                            }
+                            val temp = File(
+                                targetDir,
+                                ".$fileName.${android.os.Process.myPid()}.tmp"
+                            )
+                            zip.getInputStream(entry).use { input ->
+                                FileOutputStream(temp).use(input::copyTo)
+                            }
                             val digest = sha256(temp)
                             val existing = extracted[fileName]
                             if (existing != null) {
@@ -286,9 +380,13 @@ private object NativeLibraryExtractor {
                                 return@forEach
                             }
                             val out = File(targetDir, fileName)
-                            require(temp.renameTo(out)) { "Unable to commit native library $fileName" }
+                            require(temp.renameTo(out)) {
+                                "Unable to commit native library $fileName"
+                            }
                             runCatching { Os.chmod(out.absolutePath, 0b101101101) }
-                            require(out.canonicalFile.parentFile == targetDir.canonicalFile) { "Native library escaped clone directory" }
+                            require(out.canonicalFile.parentFile == targetDir.canonicalFile) {
+                                "Native library escaped clone directory"
+                            }
                             extracted[fileName] = out to digest
                         }
                 }
@@ -298,7 +396,13 @@ private object NativeLibraryExtractor {
     }
 
     private fun containsAbi(apk: File, abi: String): Boolean = runCatching {
-        ZipFile(apk).use { zip -> zip.entries().asSequence().any { !it.isDirectory && it.name.startsWith("lib/$abi/") && it.name.endsWith(".so") } }
+        ZipFile(apk).use { zip ->
+            zip.entries().asSequence().any {
+                !it.isDirectory &&
+                    it.name.startsWith("lib/$abi/") &&
+                    it.name.endsWith(".so")
+            }
+        }
     }.getOrDefault(false)
 
     private fun sha256(file: File): String {
