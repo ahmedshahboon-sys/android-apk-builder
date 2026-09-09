@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 50
-        versionName = "1.3.5-runtime7"
+        versionCode = 51
+        versionName = "1.3.6-runtime7"
         manifestPlaceholders["debugActivityEnabled"] = "true"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild {
@@ -42,18 +42,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures {
-        viewBinding = false
-        buildConfig = true
-    }
-    testOptions {
-        unitTests.isReturnDefaultValues = true
-    }
+    buildFeatures { viewBinding = false; buildConfig = true }
+    testOptions { unitTests.isReturnDefaultValues = true }
     externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
+        cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
     }
     buildTypes {
         debug {
