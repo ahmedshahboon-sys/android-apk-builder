@@ -1,6 +1,7 @@
 package com.shahboun.multi
 
 import android.os.Process
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * One canonical description of the identity owned by a clone session.
@@ -21,22 +22,55 @@ data class RuntimeVirtualIdentity(
     val sessionId: String
 ) {
     val key: String get() = "$guestPackage#$cloneId"
+    val processKey: String get() = "$key@$virtualProcessName"
 }
 
+/** Canonical identity registry. Bridges must consume this object instead of inventing package/uid values. */
 internal object RuntimeVirtualIdentityRegistry {
-    fun forSession(session: RuntimeSession): RuntimeVirtualIdentity {
+    private val identities = ConcurrentHashMap<String, RuntimeVirtualIdentity>()
+
+    fun forSession(session: RuntimeSession): RuntimeVirtualIdentity =
+        forSession(session, session.runtimePackage.packageName)
+
+    fun forSession(session: RuntimeSession, virtualProcessName: String): RuntimeVirtualIdentity {
         val pkg = session.runtimePackage
-        return RuntimeVirtualIdentity(
-            guestPackage = pkg.packageName,
-            cloneId = pkg.slot,
-            virtualUid = virtualUid(pkg.packageName, pkg.slot),
-            virtualUserId = pkg.slot,
-            virtualProcessName = pkg.packageName,
-            hostUid = Process.myUid(),
-            hostPackage = BuildConfig.APPLICATION_ID,
-            physicalProcess = RuntimeGuestProcessIdentity.hostProcessName(),
-            sessionId = "${pkg.packageName}#${pkg.slot}:${pkg.versionCode}:${pkg.sha256.take(12)}"
-        )
+        val normalizedProcess = normalizeProcessName(pkg.packageName, virtualProcessName)
+        val sessionId = sessionId(session)
+        val cacheKey = "$sessionId@$normalizedProcess"
+        return identities.getOrPut(cacheKey) {
+            RuntimeVirtualIdentity(
+                guestPackage = pkg.packageName,
+                cloneId = pkg.slot,
+                virtualUid = virtualUid(pkg.packageName, pkg.slot),
+                virtualUserId = pkg.slot,
+                virtualProcessName = normalizedProcess,
+                hostUid = Process.myUid(),
+                hostPackage = BuildConfig.APPLICATION_ID,
+                physicalProcess = RuntimeGuestProcessIdentity.hostProcessName(),
+                sessionId = sessionId
+            )
+        }
+    }
+
+    fun release(session: RuntimeSession) {
+        val prefix = sessionId(session) + "@"
+        identities.keys.removeIf { it.startsWith(prefix) }
+    }
+
+    internal fun sessionId(session: RuntimeSession): String {
+        val pkg = session.runtimePackage
+        return "${pkg.packageName}#${pkg.slot}:${pkg.versionCode}:${pkg.sha256.take(12)}"
+    }
+
+    internal fun normalizeProcessName(packageName: String, requested: String?): String {
+        val value = requested?.trim().orEmpty()
+        if (value.isBlank()) return packageName
+        return when {
+            value == packageName -> packageName
+            value.startsWith(":") -> packageName + value
+            value.startsWith("$packageName:") -> value
+            else -> value
+        }
     }
 
     /** Deterministic Runtime-local UID. It is never passed to Android as a real Linux UID. */
