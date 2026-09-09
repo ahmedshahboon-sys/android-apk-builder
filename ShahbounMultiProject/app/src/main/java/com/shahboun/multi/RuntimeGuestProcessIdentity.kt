@@ -51,6 +51,7 @@ object RuntimeGuestProcessIdentity {
     fun <T> withGuestMainProcess(session: RuntimeSession, block: () -> T): T {
         pin(session)
         ensurePersistentProcessAlias(session.runtimePackage.packageName, session.runtimePackage.slot)
+        RuntimeProcessApplicationBridge.bind(session)
         return block()
     }
 
