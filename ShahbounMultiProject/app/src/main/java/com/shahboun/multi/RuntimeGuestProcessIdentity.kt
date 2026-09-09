@@ -51,8 +51,8 @@ object RuntimeGuestProcessIdentity {
 
     /**
      * The process is permanently assigned to one clone slot, therefore the guest-facing alias may
-     * remain active until the process dies. We intentionally do not mutate the kernel process name
-     * or Android's system-server bookkeeping.
+     * remain active until the process dies. We intentionally do not mutate the kernel process name,
+     * packageName or Android's system-server bookkeeping.
      */
     fun <T> withGuestMainProcess(session: RuntimeSession, block: () -> T): T {
         pin(session)
@@ -92,17 +92,13 @@ object RuntimeGuestProcessIdentity {
                         processField.isAccessible = true
                         processField.set(appInfo, packageName)
                     }
-                    RuntimeCompatibility.findField(appInfo.javaClass, "packageName")?.let { packageField ->
-                        packageField.isAccessible = true
-                        packageField.set(appInfo, packageName)
-                    }
                 }
             }
 
             persistentAliasGuest = packageName
             RuntimeDiagnostics.log(
                 "IDENTITY",
-                "persistent guest process alias active guest=$packageName physical=$realHostProcessName linuxNameUntouched=true"
+                "persistent guest process alias active guest=$packageName physical=$realHostProcessName packageIdentityUntouched=true"
             )
         }.onFailure {
             RuntimeDiagnostics.log("IDENTITY", "persistent guest process alias unavailable: ${it.javaClass.simpleName}: ${it.message}")
