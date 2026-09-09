@@ -2,7 +2,7 @@ name: Build Shahboun Multi Runtime
 
 on:
   push:
-    branches: [main, shahboun-multi-runtime-3, shahboun-multi-runtime-4]
+    branches: [main, shahboun-multi-runtime-3, shahboun-multi-runtime-4, runtime7-deepfix-auth-app-48]
     paths:
       - 'ShahbounMultiProject/**'
       - '.github/workflows/build-shahboun-multi-modern-v2.yml'
