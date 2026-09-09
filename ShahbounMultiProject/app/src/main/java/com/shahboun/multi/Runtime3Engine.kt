@@ -36,7 +36,7 @@ class ShahbounRuntime3Engine {
         }
         RuntimeDiagnostics.log(
             "ENGINE3",
-            "initialized root=${rootDir.absolutePath} processCapacity=${RuntimeProcessPool.size} role=${if (isHostProcess()) "host" else "clone"}"
+            "initialized root=${rootDir.absolutePath} processCapacity=${RuntimeProcessPool.size} role=${if (isHostProcess()) "host" else "clone"} physicalProcess=${hostProcessName()}"
         )
     }
 
@@ -124,11 +124,12 @@ class ShahbounRuntime3Engine {
                 RuntimeLoadedApkBridge.bind(appContext, session).getOrThrow()
                 session.ensureGuestApplication(appContext, dir)
                 RuntimeLoadedApkBridge.bind(appContext, session).getOrThrow()
-                RuntimeDiagnostics.log("ENGINE3", "session ready $packageName/$slot process=${hostProcessName()}")
+                RuntimeDiagnostics.log("ENGINE3", "session ready $packageName/$slot physicalProcess=${hostProcessName()} guestProcess=${RuntimeVirtualIdentityRegistry.forSession(session).virtualProcessName}")
                 return session
             } catch (t: Throwable) {
                 RuntimeRegistry.remove(packageName, slot)
                 RuntimeExecutionScope.clearProcessSession(session)
+                RuntimeVirtualIdentityRegistry.release(session)
                 throw t
             }
         }
@@ -259,15 +260,26 @@ class ShahbounRuntime3Engine {
 
     private fun requireCloneProcess(packageName: String, slot: Int) {
         val expected = "${BuildConfig.APPLICATION_ID}:clone${RuntimeProcessPool.processIndex(packageName, slot)}"
-        check(hostProcessName() == expected) { "Runtime 3 process mismatch: actual=${hostProcessName()} expected=$expected" }
+        val physical = hostProcessName()
+        check(physical == expected) {
+            "Runtime 3 physical process mismatch: physical=$physical expected=$expected guestAlias=${RuntimeGuestProcessIdentity.pinnedKey() ?: "none"}"
+        }
     }
 
     private fun requireHostProcess() {
-        check(isHostProcess()) { "Runtime 3 host-only operation attempted from ${hostProcessName()}" }
+        check(isHostProcess()) { "Runtime 3 host-only operation attempted from physical=${hostProcessName()}" }
     }
 
     private fun isHostProcess(): Boolean = hostProcessName() == BuildConfig.APPLICATION_ID
-    private fun hostProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
+
+    /**
+     * SECURITY INVARIANT: engine authorization must always use the immutable physical Android
+     * process captured before guest aliases are installed. Application.getProcessName() is guest-
+     * visible after RuntimeGuestProcessIdentity pins a clone and must never be used as an internal
+     * trust anchor.
+     */
+    private fun hostProcessName(): String = RuntimeGuestProcessIdentity.hostProcessName()
+
     private fun prefPrefix(packageName: String, slot: Int) = "clone_${packageName}_${slot}_"
 
     private fun deleteCloneSharedPreferences(packageName: String, slot: Int) {
