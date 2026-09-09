@@ -96,7 +96,6 @@ class RuntimeGuestContext(
             if (Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
             dataDir = if (deviceProtected) device.absolutePath else credential.absolutePath
             deviceProtectedDataDir = device.absolutePath
-            credentialProtectedDataDir = credential.absolutePath
             nativeLibraryDir = bucket("native").absolutePath
             theme = pkg.appTheme
             targetSdkVersion = pkg.targetSdk
@@ -113,9 +112,6 @@ class RuntimeGuestContext(
 
     override fun createDeviceProtectedStorageContext(): Context =
         RuntimeGuestContext(baseContext.createDeviceProtectedStorageContext(), session, slotDir, true)
-
-    override fun createCredentialProtectedStorageContext(): Context =
-        RuntimeGuestContext(baseContext.createCredentialProtectedStorageContext(), session, slotDir, false)
 
     override fun createAttributionContext(attributionTag: String?): Context =
         RuntimeGuestContext(baseContext.createAttributionContext(attributionTag), session, slotDir, deviceProtected)
@@ -138,7 +134,7 @@ class RuntimeGuestContext(
     }
 
     override fun deleteFile(name: String): Boolean = File(filesDir, RuntimePathPolicy.safeLeaf(name)).delete()
-    override fun fileList(): Array<String> = filesDir.list().orEmpty()
+    override fun fileList(): Array<String> = filesDir.list()?.copyOf() ?: emptyArray()
 
     override fun getExternalFilesDir(type: String?): File {
         val base = bucket("external/files")
@@ -164,7 +160,7 @@ class RuntimeGuestContext(
         else SQLiteDatabase.openOrCreateDatabase(path, factory)
     }
     override fun deleteDatabase(name: String): Boolean = SQLiteDatabase.deleteDatabase(getDatabasePath(name))
-    override fun databaseList(): Array<String> = dataChild("databases").list().orEmpty()
+    override fun databaseList(): Array<String> = dataChild("databases").list()?.copyOf() ?: emptyArray()
 
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
         val safe = RuntimePathPolicy.safeLeaf(name)
