@@ -6,10 +6,11 @@ import android.os.Build
 /**
  * Pins one immutable guest identity to one Runtime 3 clone process for its full lifetime.
  *
- * Android must keep the real process name (`com.shahboun.multi:cloneN`) as its permanent
- * bookkeeping/security identity. Some large apps however decide whether to run their main-process
- * bootstrap by reading ActivityThread's process name during Application.onCreate(). For that narrow
- * bootstrap window we expose a reversible guest alias and restore the physical name immediately.
+ * Android keeps the real Linux/process-manager identity (`com.shahboun.multi:cloneN`) for
+ * security and bookkeeping. Inside the already-dedicated clone process we keep ActivityThread's
+ * public-facing process metadata on the guest package for the entire guest lifetime. Large apps
+ * frequently perform main-process checks after Application.onCreate (during Activities, providers,
+ * jobs and background initialization), so a temporary bootstrap-only alias is insufficient.
  */
 object RuntimeGuestProcessIdentity {
     private val lock = Any()
@@ -17,6 +18,7 @@ object RuntimeGuestProcessIdentity {
         if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
 
     @Volatile private var pinnedGuest: String? = null
+    @Volatile private var persistentAliasGuest: String? = null
 
     fun hostProcessName(): String = realHostProcessName
 
@@ -28,14 +30,16 @@ object RuntimeGuestProcessIdentity {
         val existing = pinnedGuest
         if (existing == packageName) {
             session?.let { bindRuntime3Environment(it) }
+            ensurePersistentProcessAlias(packageName)
             return@synchronized
         }
         require(existing == null) { "رفض تغيير هوية عملية clone من $existing إلى $packageName" }
         pinnedGuest = packageName
         session?.let { bindRuntime3Environment(it) }
+        ensurePersistentProcessAlias(packageName)
         RuntimeDiagnostics.log(
             "IDENTITY",
-            "Runtime3 guest identity pinned $packageName/$slot physical=$realHostProcessName mode=virtual-scoped-bootstrap-alias"
+            "Runtime3 guest identity pinned $packageName/$slot physical=$realHostProcessName mode=virtual-persistent-process-alias"
         )
     }
 
@@ -45,52 +49,66 @@ object RuntimeGuestProcessIdentity {
         Runtime3ProcessEnvironment.activate(session, app.engine.runtimeSlotDir(pkg.packageName, pkg.slot))
     }
 
+    /**
+     * The process is permanently assigned to one clone slot, therefore the guest-facing alias may
+     * remain active until the process dies. We intentionally do not mutate the kernel process name
+     * or Android's system-server bookkeeping.
+     */
     fun <T> withGuestMainProcess(session: RuntimeSession, block: () -> T): T {
         pin(session)
-        val pkg = session.runtimePackage.packageName
-        val patch = patchProcessAlias(pkg)
-        return try {
-            RuntimeExecutionScope.withSession(session, block)
-        } finally {
-            patch?.restore()
+        ensurePersistentProcessAlias(session.runtimePackage.packageName)
+        return RuntimeExecutionScope.withSession(session, block)
+    }
+
+    fun ensureGuestAlias(session: RuntimeSession) {
+        pin(session)
+        ensurePersistentProcessAlias(session.runtimePackage.packageName)
+    }
+
+    private fun ensurePersistentProcessAlias(packageName: String) = synchronized(lock) {
+        if (!isDedicatedCloneProcess()) return@synchronized
+        if (persistentAliasGuest == packageName) return@synchronized
+        val existing = persistentAliasGuest
+        require(existing == null || existing == packageName) { "رفض تبديل process alias من $existing إلى $packageName" }
+
+        runCatching {
+            val threadClass = Class.forName("android.app.ActivityThread")
+            val thread = threadClass.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }.invoke(null)
+                ?: error("ActivityThread غير متاح")
+            val boundField = RuntimeCompatibility.findField(threadClass, "mBoundApplication")
+                ?: error("ActivityThread.mBoundApplication غير متاح")
+            val bound = boundField.get(thread) ?: error("AppBindData غير متاح")
+
+            RuntimeCompatibility.findField(bound.javaClass, "processName")?.let { field ->
+                field.isAccessible = true
+                field.set(bound, packageName)
+            } ?: error("AppBindData.processName غير متاح")
+
+            RuntimeCompatibility.findField(bound.javaClass, "appInfo")?.let { field ->
+                field.isAccessible = true
+                val appInfo = field.get(bound)
+                if (appInfo != null) {
+                    RuntimeCompatibility.findField(appInfo.javaClass, "processName")?.let { processField ->
+                        processField.isAccessible = true
+                        processField.set(appInfo, packageName)
+                    }
+                    RuntimeCompatibility.findField(appInfo.javaClass, "packageName")?.let { packageField ->
+                        packageField.isAccessible = true
+                        packageField.set(appInfo, packageName)
+                    }
+                }
+            }
+
+            persistentAliasGuest = packageName
+            RuntimeDiagnostics.log(
+                "IDENTITY",
+                "persistent guest process alias active guest=$packageName physical=$realHostProcessName linuxNameUntouched=true"
+            )
+        }.onFailure {
+            RuntimeDiagnostics.log("IDENTITY", "persistent guest process alias unavailable: ${it.javaClass.simpleName}: ${it.message}")
         }
     }
 
-    private data class AliasPatch(
-        val bound: Any,
-        val processField: java.lang.reflect.Field,
-        val oldProcess: Any?,
-        val appInfo: Any?,
-        val appInfoProcessField: java.lang.reflect.Field?,
-        val oldAppInfoProcess: Any?
-    ) {
-        fun restore() {
-            runCatching { processField.set(bound, oldProcess) }
-            appInfoProcessField?.let { field -> appInfo?.let { info -> runCatching { field.set(info, oldAppInfoProcess) } } }
-            RuntimeDiagnostics.log("IDENTITY", "bootstrap process alias restored physical=${RuntimeGuestProcessIdentity.hostProcessName()}")
-        }
-    }
-
-    private fun patchProcessAlias(packageName: String): AliasPatch? = runCatching {
-        val threadClass = Class.forName("android.app.ActivityThread")
-        val thread = threadClass.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }.invoke(null)
-            ?: return@runCatching null
-        val boundField = RuntimeCompatibility.findField(threadClass, "mBoundApplication") ?: return@runCatching null
-        val bound = boundField.get(thread) ?: return@runCatching null
-        val processField = RuntimeCompatibility.findField(bound.javaClass, "processName") ?: return@runCatching null
-        processField.isAccessible = true
-        val oldProcess = processField.get(bound)
-        processField.set(bound, packageName)
-
-        val appInfoField = RuntimeCompatibility.findField(bound.javaClass, "appInfo")
-        val appInfo = appInfoField?.let { runCatching { it.get(bound) }.getOrNull() }
-        val appInfoProcessField = appInfo?.let { RuntimeCompatibility.findField(it.javaClass, "processName") }
-        val oldAppInfoProcess = appInfoProcessField?.let { field -> appInfo?.let { info -> runCatching { field.get(info) }.getOrNull() } }
-        appInfoProcessField?.let { field -> appInfo?.let { info -> runCatching { field.set(info, packageName) } } }
-
-        RuntimeDiagnostics.log("IDENTITY", "bootstrap process alias active guest=$packageName physical=$realHostProcessName")
-        AliasPatch(bound, processField, oldProcess, appInfo, appInfoProcessField, oldAppInfoProcess)
-    }.onFailure {
-        RuntimeDiagnostics.log("IDENTITY", "bootstrap process alias unavailable: ${it.javaClass.simpleName}: ${it.message}")
-    }.getOrNull()
+    private fun isDedicatedCloneProcess(): Boolean =
+        realHostProcessName.startsWith("${BuildConfig.APPLICATION_ID}:clone")
 }
