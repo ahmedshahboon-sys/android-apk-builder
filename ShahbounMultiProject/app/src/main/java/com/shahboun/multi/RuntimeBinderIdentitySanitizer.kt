@@ -8,24 +8,13 @@ import android.content.pm.PackageInfo
 import java.lang.reflect.Array as ReflectArray
 import java.lang.reflect.Method
 
-/**
- * Central identity translation at Binder boundaries.
- *
- * Outbound calls must use the physical host identity because system_server validates the Linux UID.
- * Returned self-identity can be translated back to the logical guest package where that translation
- * is safe. Runtime-local virtualUid is deliberately NOT presented as a real Android/Linux UID.
- */
+/** Central guest<->physical identity translation at Binder boundaries. */
 internal object RuntimeBinderIdentitySanitizer {
     private val physicalPackage: String get() = BuildConfig.APPLICATION_ID
 
     fun sanitize(context: Context, session: RuntimeSession?, args: Array<out Any?>?): Array<Any?>? =
         sanitize(context, session, null, args)
 
-    /**
-     * Method-aware sanitizer. The top-level argument vector may be Object[], but every individual
-     * Binder argument must retain the exact declared runtime type expected by the AIDL proxy.
-     * In particular String[] must never be rebuilt as Object[] on Android 16.
-     */
     fun sanitize(context: Context, session: RuntimeSession?, method: Method?, args: Array<out Any?>?): Array<Any?>? {
         if (args == null) return null
         if (session == null) return Array(args.size) { args[it] }
@@ -38,12 +27,7 @@ internal object RuntimeBinderIdentitySanitizer {
             if (rewritten !== original || rewritten != original) changed = true
             rewritten
         }
-        if (changed) {
-            RuntimeDiagnostics.log(
-                "IDENTITY7",
-                "Binder outbound identity sanitized ${guestPackage}/${session.runtimePackage.slot} -> $physicalPackage method=${method?.name ?: "unknown"}"
-            )
-        }
+        if (changed) RuntimeDiagnostics.log("IDENTITY7", "Binder outbound identity sanitized ${guestPackage}/${session.runtimePackage.slot} -> $physicalPackage method=${method?.name ?: "unknown"}")
         return out
     }
 
@@ -53,19 +37,32 @@ internal object RuntimeBinderIdentitySanitizer {
             value is String && value == guestPackage -> physicalPackage
             value is ComponentName && value.packageName == guestPackage -> ComponentName(physicalPackage, value.className)
             value is AttributionSource && value.packageName == guestPackage -> physicalAttribution(context, value)
-            value.javaClass.isArray -> rewriteArray(value, guestPackage, expectedType) { item, itemExpected ->
-                rewriteOutboundValue(context, item, guestPackage, itemExpected)
+            value.javaClass.isArray -> rewriteArray(value, guestPackage, expectedType) { item, itemExpected -> rewriteOutboundValue(context, item, guestPackage, itemExpected) }
+            value is List<*> -> {
+                var changed = false
+                val mapped = ArrayList<Any?>(value.size)
+                value.forEach { item ->
+                    val out = rewriteOutboundValue(context, item, guestPackage, null)
+                    if (out !== item || out != item) changed = true
+                    mapped += out
+                }
+                if (changed) mapped else value
+            }
+            value is Set<*> -> {
+                var changed = false
+                val mapped = LinkedHashSet<Any?>(value.size)
+                value.forEach { item ->
+                    val out = rewriteOutboundValue(context, item, guestPackage, null)
+                    if (out !== item || out != item) changed = true
+                    mapped += out
+                }
+                if (changed) mapped else value
             }
             else -> value
         }
     }
 
-    private fun rewriteArray(
-        source: Any,
-        guestPackage: String,
-        expectedType: Class<*>?,
-        rewrite: (Any?, Class<*>?) -> Any?
-    ): Any {
+    private fun rewriteArray(source: Any, guestPackage: String, expectedType: Class<*>?, rewrite: (Any?, Class<*>?) -> Any?): Any {
         val sourceType = source.javaClass
         val component = when {
             expectedType?.isArray == true -> expectedType.componentType
@@ -82,30 +79,24 @@ internal object RuntimeBinderIdentitySanitizer {
             ReflectArray.set(out, index, after)
         }
         if (!changed && expectedType == null && out.javaClass == sourceType) return source
-        if (out.javaClass != sourceType && expectedType == null) {
-            RuntimeDiagnostics.log("IDENTITY7", "array type normalized ${sourceType.name} -> ${out.javaClass.name} guest=$guestPackage")
-        }
+        if (out.javaClass != sourceType && expectedType == null) RuntimeDiagnostics.log("IDENTITY7", "array type normalized ${sourceType.name} -> ${out.javaClass.name} guest=$guestPackage")
         return out
     }
 
-    /** Translate safe returned self-identity back to the logical guest package without changing array types. */
     fun restoreResult(session: RuntimeSession?, value: Any?): Any? {
         if (session == null || value == null) return value
         val guest = session.runtimePackage.packageName
         return when {
             value is String -> if (value == physicalPackage) guest else value
             value is ComponentName -> if (value.packageName == physicalPackage) ComponentName(guest, value.className) else value
-            value is ApplicationInfo -> {
-                if (value.packageName == physicalPackage) ApplicationInfo(value).apply { packageName = guest } else value
-            }
-            value is PackageInfo -> {
-                if (value.packageName == physicalPackage) value.apply {
-                    packageName = guest
-                    applicationInfo = applicationInfo?.let { info -> ApplicationInfo(info).apply { packageName = guest } }
-                } else value
-            }
+            value is ApplicationInfo -> if (value.packageName == physicalPackage) ApplicationInfo(value).apply { packageName = guest } else value
+            value is PackageInfo -> if (value.packageName == physicalPackage) PackageInfo(value).apply {
+                packageName = guest
+                applicationInfo = applicationInfo?.let { info -> ApplicationInfo(info).apply { packageName = guest } }
+            } else value
             value.javaClass.isArray -> restoreArray(session, value)
             value is List<*> -> value.map { restoreResult(session, it) }
+            value is Set<*> -> value.mapTo(LinkedHashSet()) { restoreResult(session, it) }
             else -> value
         }
     }
