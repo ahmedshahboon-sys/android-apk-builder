@@ -38,6 +38,34 @@ class RuntimeRegressionPolicyTest {
     }
 
     @Test
+    fun processNamesNormalizeDeterministically() {
+        assertEquals("com.test", RuntimeVirtualIdentityRegistry.normalizeProcessName("com.test", null))
+        assertEquals("com.test", RuntimeVirtualIdentityRegistry.normalizeProcessName("com.test", "com.test"))
+        assertEquals("com.test:remote", RuntimeVirtualIdentityRegistry.normalizeProcessName("com.test", ":remote"))
+        assertEquals("com.test:remote", RuntimeVirtualIdentityRegistry.normalizeProcessName("com.test", "com.test:remote"))
+    }
+
+    @Test
+    fun intentAuthPayloadBindsCloneComponentAndSession() {
+        val a = RuntimeIntentSecurity.payload("activity", "com.test", 0, "com.test.Main", "s1")
+        val b = RuntimeIntentSecurity.payload("activity", "com.test", 1, "com.test.Main", "s1")
+        val c = RuntimeIntentSecurity.payload("activity", "com.test", 0, "com.test.Other", "s1")
+        val d = RuntimeIntentSecurity.payload("activity", "com.test", 0, "com.test.Main", "s2")
+        assertNotEquals(a, b)
+        assertNotEquals(a, c)
+        assertNotEquals(a, d)
+        assertEquals(a, RuntimeIntentSecurity.payload("activity", "com.test", 0, "com.test.Main", "s1"))
+    }
+
+    @Test
+    fun gapAuditNeverClaimsUnsafeNativeHooks() {
+        val audit = RuntimeGapAudit.current().associateBy { it.area }
+        assertEquals(RuntimeGapAudit.State.UNSUPPORTED, audit.getValue("Native libc interception").state)
+        assertEquals(RuntimeGapAudit.State.UNSUPPORTED, audit.getValue("Linker namespace virtualization").state)
+        assertEquals(RuntimeGapAudit.State.LIVE_VALIDATION_REQUIRED, audit.getValue("Samsung SM-G990E Android 16 heavy apps").state)
+    }
+
+    @Test
     fun leafPolicyRejectsTraversalAndSeparators() {
         assertEquals("profile.db", RuntimePathPolicy.safeLeaf("profile.db"))
         assertRejected("..")
