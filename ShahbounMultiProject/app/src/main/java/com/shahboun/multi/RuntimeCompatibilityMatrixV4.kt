@@ -49,25 +49,42 @@ internal object RuntimeCompatibilityMatrixV4 {
 
         val nativeLoaded = RuntimeNativeRuntime.initialize()
         result += when {
-            !nativeLoaded -> Entry("native", "FAIL", "shahboun_runtime unavailable")
-            RuntimeNativeRuntime.hasSyscallInterception() -> Entry("native", "FULL", "path mapping + syscall interception")
-            else -> Entry("native", "PARTIAL", "path mapping/reverse mapping active; guest native syscall interception not yet proven")
+            !nativeLoaded -> Entry("native:path", "FAIL", "shahboun_runtime unavailable")
+            else -> Entry("native:path", "PARTIAL", "path-map-v4 + reverse + relative logical mapping active; live JNI/native .so calls still require validation")
         }
+        result += Entry(
+            "native:syscall-interception",
+            if (RuntimeNativeRuntime.hasSyscallInterception()) "FULL" else "UNSUPPORTED",
+            if (RuntimeNativeRuntime.hasSyscallInterception()) "interception proven" else "no libc/syscall hook installed; deliberate stability boundary on Android 16"
+        )
+        result += Entry(
+            "native:linker-namespace",
+            if (RuntimeNativeRuntime.hasLinkerNamespaceIsolation()) "FULL" else "PARTIAL",
+            if (RuntimeNativeRuntime.hasLinkerNamespaceIsolation()) "isolated linker namespace proven" else "clone-specific extraction/search path exists; kernel/linker namespace isolation not claimed"
+        )
 
         serviceNames.forEach { (label, name) ->
             val manager = runCatching { context.getSystemService(name) }.getOrNull()
-            result += if (manager != null) Entry("service:$label", "PRESENT", manager.javaClass.name)
-            else Entry("service:$label", "NOT TESTED", "manager unavailable on this device/profile")
+            if (manager == null) {
+                result += Entry("service:$label", "NOT TESTED", "manager unavailable on this device/profile")
+            } else {
+                val capability = RuntimeSystemServiceVirtualizer.stateFor(name)
+                result += if (capability == null) {
+                    Entry("service:$label", "NOT TESTED", "manager present (${manager.javaClass.name}); guest Binder path not exercised")
+                } else {
+                    Entry("service:$label", capability.state.name, capability.detail)
+                }
+            }
         }
 
         val webView = runCatching { WebView.getCurrentWebViewPackage() }.getOrNull()
-        result += if (webView != null) Entry("webview", "PRESENT", "${webView.packageName}@${webView.versionName}")
+        result += if (webView != null) Entry("webview", "PARTIAL", "${webView.packageName}@${webView.versionName}; provider present, clone login/media/OAuth require live validation")
         else Entry("webview", "FAIL", "provider missing")
 
         val gms = runCatching { context.packageManager.getPackageInfo("com.google.android.gms", 0) }.getOrNull()
         result += if (gms != null) {
             val code = if (Build.VERSION.SDK_INT >= 28) gms.longVersionCode else @Suppress("DEPRECATION") gms.versionCode.toLong()
-            Entry("gms", "PRESENT", "version=$code; live auth/push still requires guest validation")
+            Entry("gms", "PARTIAL", "version=$code; auth/push/account callbacks require live guest validation")
         } else Entry("gms", "NOT TESTED", "Google Play services not installed")
 
         val regressions = RuntimeRegressionSuite.run(context)
@@ -77,16 +94,15 @@ internal object RuntimeCompatibilityMatrixV4 {
             "pass=${regressions.count { it.passed }} fail=${regressions.count { !it.passed }}"
         )
 
-        result.forEach { RuntimeDiagnostics.log("MATRIX5", "${it.state} ${it.name} ${it.detail}") }
+        result.forEach { RuntimeDiagnostics.log("MATRIX7", "${it.state} ${it.name} ${it.detail}") }
         return result
     }
 
     fun summary(context: Context): String {
         val entries = run(context)
-        val fail = entries.count { it.state == "FAIL" }
-        val partial = entries.count { it.state == "PARTIAL" }
-        val notTested = entries.count { it.state == "NOT TESTED" }
-        val full = entries.size - fail - partial - notTested
-        return "Runtime5 matrix full=$full partial=$partial fail=$fail notTested=$notTested total=${entries.size}"
+        val counts = entries.groupingBy { it.state }.eachCount().toSortedMap()
+        val blocked = entries.any { it.state == "FAIL" }
+        val state = if (blocked) "BLOCKED" else if (entries.all { it.state == "FULL" }) "READY" else "PARTIAL"
+        return "Runtime7 matrix state=$state " + counts.entries.joinToString(" ") { "${it.key.lowercase()}=${it.value}" } + " total=${entries.size}"
     }
 }
