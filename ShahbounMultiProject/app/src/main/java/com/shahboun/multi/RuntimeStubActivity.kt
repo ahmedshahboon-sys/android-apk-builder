@@ -1,9 +1,11 @@
 package com.shahboun.multi
 
 import android.app.Activity
+import android.app.Application
 import android.app.Service
 import android.app.job.JobService
 import android.content.BroadcastReceiver
+import android.os.Build
 import android.os.Bundle
 import android.widget.TextView
 
@@ -80,6 +82,10 @@ object RuntimeProcessPool {
 
     fun processIndex(packageName: String, slot: Int): Int {
         val app = MultiApplication.current ?: error("Runtime 3 application not initialized")
+        val actual = currentCloneIndex()
+        if (actual != null) {
+            return RuntimeProcessAllocator.reconcileRunningProcess(app, packageName, slot, actual, size)
+        }
         return RuntimeProcessAllocator.lookup(app, packageName, slot, size)
             ?: RuntimeProcessAllocator.allocate(app, packageName, slot, size)
     }
@@ -93,4 +99,9 @@ object RuntimeProcessPool {
     fun receiverStub(packageName: String, slot: Int): Class<out BroadcastReceiver> = receiverStubs[processIndex(packageName, slot)]
     fun jobServiceStub(packageName: String, slot: Int): Class<out JobService> = jobServiceStubs[processIndex(packageName, slot)]
     fun isActivityStubName(name: String?): Boolean = name == RuntimeStubActivity::class.java.name || activityStubs.any { it.name == name }
+
+    private fun currentCloneIndex(): Int? {
+        val process = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else return null
+        return Regex(":clone([0-9]+)$").find(process)?.groupValues?.getOrNull(1)?.toIntOrNull()?.takeIf { it in 0 until size }
+    }
 }
