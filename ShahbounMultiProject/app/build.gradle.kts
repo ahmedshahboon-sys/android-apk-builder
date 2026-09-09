@@ -14,9 +14,13 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 41
-        versionName = "0.9.1-runtime3"
+        versionCode = 42
+        versionName = "1.0.0-runtime4"
         manifestPlaceholders["debugActivityEnabled"] = "true"
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        externalNativeBuild {
+            cmake { cppFlags += listOf("-std=c++20", "-fvisibility=hidden", "-fexceptions", "-frtti") }
+        }
     }
 
     if (hasStableSigning) {
@@ -42,6 +46,12 @@ android {
         viewBinding = false
         buildConfig = true
     }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
     buildTypes {
         debug {
             isDebuggable = true
@@ -56,7 +66,10 @@ android {
             if (hasStableSigning) signingConfig = signingConfigs.getByName("shahbounStable")
         }
     }
-    packaging { resources.excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*") }
+    packaging {
+        resources.excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
+        jniLibs.useLegacyPackaging = false
+    }
 }
 
 kotlin { jvmToolchain(17) }
