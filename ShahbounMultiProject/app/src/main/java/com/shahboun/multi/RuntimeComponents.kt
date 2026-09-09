@@ -36,14 +36,10 @@ class RuntimeComponentHost(
         if (Build.VERSION.SDK_INT >= 29) {
             val count = Runtime3ProviderRegistry.install(guestContext, session).getOrThrow()
             providersInitialized = true
-            RuntimeDiagnostics.log(
-                "PROVIDER3",
-                "framework provider registry ready ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=$count"
-            )
+            RuntimeDiagnostics.log("PROVIDER7", "framework provider registry ready ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=$count")
             return
         }
 
-        // Legacy Android fallback. Modern Android uses ActivityThread's real local-provider map above.
         session.runtimePackage.providers.forEach { snapshot ->
             val name = snapshot.name
             runCatching {
@@ -68,10 +64,7 @@ class RuntimeComponentHost(
                 snapshot.authority.orEmpty().split(';').forEach { providersByAuthority.remove(it.trim()) }
                 val optionalSplitProvider = error is ClassNotFoundException || error.cause is ClassNotFoundException
                 if (optionalSplitProvider) {
-                    RuntimeDiagnostics.log(
-                        "PROVIDER",
-                        "skipped unavailable provider ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority} reason=${error.javaClass.simpleName}: ${error.message}"
-                    )
+                    RuntimeDiagnostics.log("PROVIDER", "skipped unavailable provider ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority} reason=${error.javaClass.simpleName}: ${error.message}")
                 } else {
                     RuntimeDiagnostics.log("PROVIDER", "failed $name: ${error.stackTraceToString()}")
                     throw error
@@ -108,12 +101,13 @@ class RuntimeComponentHost(
         val target = resolveGuestService(original) ?: return null
         val pkg = session.runtimePackage
         val stub = RuntimeProcessPool.serviceStub(pkg.packageName, pkg.slot)
-        return Intent(hostContext, stub).apply {
+        val wrapped = Intent(hostContext, stub).apply {
             putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
             putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
             putExtra(EXTRA_RUNTIME_SERVICE, target)
             putExtra(EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT, Intent(original))
         }
+        return RuntimeIntentSecurity.sign(hostContext, wrapped, session, "service", target)
     }
 
     private fun resolveGuestService(intent: Intent): String? {
@@ -170,6 +164,7 @@ open class RuntimeStubService : Service() {
 
         RuntimeRegistry.getOrNull(packageName, slot)?.let { session ->
             RuntimeExecutionScope.clearProcessSession(session)
+            RuntimeVirtualIdentityRegistry.release(session)
             RuntimeRegistry.remove(packageName, slot)
         }
         RuntimeDiagnostics.log("SERVICE", "stopped clone runtime $packageName/$slot services=${entries.size} owner=${RuntimeExecutionScope.processOwner()}")
@@ -221,7 +216,11 @@ open class RuntimeStubService : Service() {
             return null
         }
         if (!session.runtimePackage.ownsService(serviceName)) {
-            RuntimeDiagnostics.log("SERVICE", "rejected unknown component $packageName/$slot $serviceName")
+            RuntimeDiagnostics.log("SECURITY7", "service rejected unknown component $packageName/$slot $serviceName")
+            return null
+        }
+        if (!RuntimeIntentSecurity.verify(applicationContext, intent, session, "service", serviceName)) {
+            RuntimeDiagnostics.log("SECURITY7", "service auth rejected $packageName/$slot $serviceName")
             return null
         }
         val original = readOriginalServiceIntent(intent) ?: Intent().setComponent(ComponentName(packageName, serviceName))
