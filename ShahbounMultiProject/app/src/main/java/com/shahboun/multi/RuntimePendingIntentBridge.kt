@@ -155,8 +155,14 @@ object RuntimePendingIntentBridge {
             else -> null
         }
 
+        /**
+         * Every call that reaches system_server is sanitized here, not only PendingIntent calls.
+         * This covers SettingsProvider/getContentProvider and other Android 16 AMS paths that check
+         * a calling package/AttributionSource against the real host UID before guest Activity.onCreate.
+         */
         private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
-            method.invoke(delegate, *(args ?: emptyArray()))
+            val safeArgs = RuntimeBinderIdentitySanitizer.sanitize(context, RuntimeExecutionScope.current(), args)
+            method.invoke(delegate, *(safeArgs ?: emptyArray()))
         } catch (e: InvocationTargetException) {
             throw (e.targetException ?: e)
         }
