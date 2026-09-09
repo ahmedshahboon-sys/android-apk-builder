@@ -9,8 +9,10 @@ internal const val EXTRA_RUNTIME_ORIGINAL_INTENT = "shahboun.runtime.original_in
 
 /** Routes intents owned by the current guest back through the declared host stub. */
 object RuntimeIntentRouter {
+    private const val PURPOSE_ACTIVITY = "activity"
+
     fun wrap(context: Context, session: RuntimeSession, original: Intent): Intent {
-        if (original.hasExtra(EXTRA_RUNTIME_PACKAGE)) return original
+        if (original.hasExtra(EXTRA_RUNTIME_PACKAGE) && original.hasExtra(EXTRA_RUNTIME_AUTH)) return original
         val pkg = session.runtimePackage
         val target = resolveGuestActivity(context, pkg, original) ?: return original
         val hostPackage = BuildConfig.APPLICATION_ID
@@ -23,12 +25,16 @@ object RuntimeIntentRouter {
             putExtra(EXTRA_RUNTIME_ACTIVITY, target)
             putExtra(EXTRA_RUNTIME_ORIGINAL_INTENT, normalizePublicIntent(pkg, target, original))
         }
+        RuntimeIntentSecurity.sign(context, wrapped, session, PURPOSE_ACTIVITY, target)
         RuntimeDiagnostics.log(
             "ROUTE",
-            "activity ${pkg.packageName}/${pkg.slot} target=$target from=${original.component?.flattenToShortString() ?: original.action} via=${wrapped.component?.flattenToShortString()}"
+            "activity ${pkg.packageName}/${pkg.slot} target=$target from=${original.component?.flattenToShortString() ?: original.action} via=${wrapped.component?.flattenToShortString()} auth=true"
         )
         return wrapped
     }
+
+    fun verifyWrapper(context: Context, session: RuntimeSession, wrapper: Intent, target: String): Boolean =
+        RuntimeIntentSecurity.verify(context, wrapper, session, PURPOSE_ACTIVITY, target)
 
     fun launchIntent(context: Context, session: RuntimeSession): Intent {
         val pkg = session.runtimePackage
@@ -48,9 +54,6 @@ object RuntimeIntentRouter {
     private fun resolveGuestActivity(context: Context, pkg: RuntimePackage, intent: Intent): String? {
         intent.component?.let { component ->
             val className = component.className
-            // Android-created guest Activities may still expose the host package through their
-            // framework Context. Intent(this, GuestActivity::class.java) therefore becomes
-            // hostPackage/guestClass. Treat it as guest-owned when the class is in the snapshot.
             if (pkg.ownsActivity(className) &&
                 (component.packageName == pkg.packageName || component.packageName == BuildConfig.APPLICATION_ID)
             ) return className
