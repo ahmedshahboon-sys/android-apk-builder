@@ -32,18 +32,13 @@ class RuntimeComponentHost(
     @Synchronized
     fun initializeProviders() {
         if (providersInitialized) return
-
         if (Build.VERSION.SDK_INT >= 29) {
             val count = Runtime3ProviderRegistry.install(guestContext, session).getOrThrow()
             providersInitialized = true
-            RuntimeDiagnostics.log(
-                "PROVIDER3",
-                "framework provider registry ready ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=$count"
-            )
+            RuntimeDiagnostics.log("PROVIDER7", "framework provider registry ready ${session.runtimePackage.packageName}/${session.runtimePackage.slot} count=$count")
             return
         }
 
-        // Legacy Android fallback. Modern Android uses ActivityThread's real local-provider map above.
         session.runtimePackage.providers.forEach { snapshot ->
             val name = snapshot.name
             runCatching {
@@ -63,19 +58,12 @@ class RuntimeComponentHost(
                     provider.attachInfo(guestContext, providerInfo)
                     providers.add(provider)
                 }
-                RuntimeDiagnostics.log("PROVIDER", "initialized legacy ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
+                RuntimeDiagnostics.log("PROVIDER7", "initialized legacy ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
             }.onFailure { error ->
                 snapshot.authority.orEmpty().split(';').forEach { providersByAuthority.remove(it.trim()) }
                 val optionalSplitProvider = error is ClassNotFoundException || error.cause is ClassNotFoundException
-                if (optionalSplitProvider) {
-                    RuntimeDiagnostics.log(
-                        "PROVIDER",
-                        "skipped unavailable provider ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority} reason=${error.javaClass.simpleName}: ${error.message}"
-                    )
-                } else {
-                    RuntimeDiagnostics.log("PROVIDER", "failed $name: ${error.stackTraceToString()}")
-                    throw error
-                }
+                if (optionalSplitProvider) RuntimeDiagnostics.log("PROVIDER7", "skipped unavailable provider ${session.runtimePackage.packageName}/${session.runtimePackage.slot} $name authority=${snapshot.authority}")
+                else { RuntimeDiagnostics.log("PROVIDER7", "failed $name: ${error.stackTraceToString()}"); throw error }
             }
         }
         providersInitialized = true
@@ -98,22 +86,21 @@ class RuntimeComponentHost(
             }
             RuntimeDiagnostics.log("RECEIVER", "delivered ${pkg.packageName}/${pkg.slot} $name")
             true
-        }.getOrElse {
-            RuntimeDiagnostics.log("RECEIVER", "failed $name: ${it.stackTraceToString()}")
-            throw it
-        }
+        }.getOrElse { RuntimeDiagnostics.log("RECEIVER", "failed $name: ${it.stackTraceToString()}"); throw it }
     }
 
     fun wrapServiceIntent(original: Intent): Intent? {
         val target = resolveGuestService(original) ?: return null
         val pkg = session.runtimePackage
         val stub = RuntimeProcessPool.serviceStub(pkg.packageName, pkg.slot)
-        return Intent(hostContext, stub).apply {
+        val wrapper = Intent(hostContext, stub).apply {
             putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
             putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
             putExtra(EXTRA_RUNTIME_SERVICE, target)
             putExtra(EXTRA_RUNTIME_ORIGINAL_SERVICE_INTENT, Intent(original))
         }
+        RuntimeIntentSecurity.sign(hostContext, wrapper, session, "service", target)
+        return wrapper
     }
 
     private fun resolveGuestService(intent: Intent): String? {
@@ -131,9 +118,7 @@ class RuntimeComponentHost(
     }
 
     override fun close() {
-        providersByAuthority.clear()
-        providers.clear()
-        providersInitialized = false
+        providersByAuthority.clear(); providers.clear(); providersInitialized = false
     }
 }
 
@@ -146,7 +131,14 @@ open class RuntimeStubService : Service() {
         if (intent?.action == ACTION_RUNTIME_STOP_CLONE) {
             val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return START_NOT_STICKY
             val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
-            if (slot >= 0) stopCloneRuntime(packageName, slot)
+            if (slot < 0) return START_NOT_STICKY
+            val app = applicationContext as? MultiApplication ?: return START_NOT_STICKY
+            val pkg = runCatching { app.engine.runtimePackageFor(packageName, slot) }.getOrNull() ?: return START_NOT_STICKY
+            if (!RuntimeIntentSecurity.verify(app, intent, pkg, "stop", ACTION_RUNTIME_STOP_CLONE)) {
+                RuntimeDiagnostics.log("SECURITY7", "rejected forged stop request $packageName/$slot")
+                return START_NOT_STICKY
+            }
+            stopCloneRuntime(packageName, slot)
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -162,14 +154,13 @@ open class RuntimeStubService : Service() {
         val prefix = "$packageName#$slot#"
         val entries = running.entries.filter { it.key.startsWith(prefix) }
         entries.forEach { entry ->
-            if (running.remove(entry.key, entry.value)) {
-                runCatching { RuntimeExecutionScope.withSession(entry.value.session) { entry.value.service.onDestroy() } }
-                    .onFailure { RuntimeDiagnostics.log("SERVICE", "stop failed ${entry.key}: ${it.stackTraceToString()}") }
-            }
+            if (running.remove(entry.key, entry.value)) runCatching { RuntimeExecutionScope.withSession(entry.value.session) { entry.value.service.onDestroy() } }
+                .onFailure { RuntimeDiagnostics.log("SERVICE", "stop failed ${entry.key}: ${it.stackTraceToString()}") }
         }
-
         RuntimeRegistry.getOrNull(packageName, slot)?.let { session ->
             RuntimeExecutionScope.clearProcessSession(session)
+            RuntimeLoadedApkBridge.release(session)
+            runCatching { session.close() }
             RuntimeRegistry.remove(packageName, slot)
         }
         RuntimeDiagnostics.log("SERVICE", "stopped clone runtime $packageName/$slot services=${entries.size} owner=${RuntimeExecutionScope.processOwner()}")
@@ -197,16 +188,13 @@ open class RuntimeStubService : Service() {
     override fun onRebind(intent: Intent?) {
         val request = parseRequest(intent) ?: return
         val key = key(request.packageName, request.slot, request.serviceName)
-        running[key]?.let { guest ->
-            runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onRebind(request.original) } }
-                .onFailure { RuntimeDiagnostics.log("SERVICE", "onRebind failed $key: ${it.stackTraceToString()}") }
-        }
+        running[key]?.let { guest -> runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onRebind(request.original) } }
+            .onFailure { RuntimeDiagnostics.log("SERVICE", "onRebind failed $key: ${it.stackTraceToString()}") } }
     }
 
     override fun onDestroy() {
         running.values.forEach { guest -> runCatching { RuntimeExecutionScope.withSession(guest.session) { guest.service.onDestroy() } } }
-        running.clear()
-        super.onDestroy()
+        running.clear(); super.onDestroy()
     }
 
     private fun parseRequest(intent: Intent?): ServiceRequest? {
@@ -216,20 +204,22 @@ open class RuntimeStubService : Service() {
         val serviceName = intent.getStringExtra(EXTRA_RUNTIME_SERVICE) ?: return null
         if (slot < 0) return null
         val hostApp = applicationContext as? MultiApplication ?: return null
-        val session = runCatching { hostApp.engine.sessionFor(packageName, slot) }.getOrElse {
-            RuntimeDiagnostics.log("SERVICE", "session restore failed $packageName/$slot: ${it.stackTraceToString()}")
+        val pkg = runCatching { hostApp.engine.runtimePackageFor(packageName, slot) }.getOrElse {
+            RuntimeDiagnostics.log("SERVICE", "snapshot restore failed $packageName/$slot: ${it.message}"); return null
+        }
+        if (!pkg.ownsService(serviceName) || !RuntimeIntentSecurity.verify(hostApp, intent, pkg, "service", serviceName)) {
+            RuntimeDiagnostics.log("SECURITY7", "rejected service envelope $packageName/$slot $serviceName")
             return null
         }
-        if (!session.runtimePackage.ownsService(serviceName)) {
-            RuntimeDiagnostics.log("SERVICE", "rejected unknown component $packageName/$slot $serviceName")
-            return null
+        val session = runCatching { hostApp.engine.sessionFor(packageName, slot) }.getOrElse {
+            RuntimeDiagnostics.log("SERVICE", "session restore failed $packageName/$slot: ${it.stackTraceToString()}"); return null
         }
         val original = readOriginalServiceIntent(intent) ?: Intent().setComponent(ComponentName(packageName, serviceName))
         return ServiceRequest(packageName, slot, serviceName, session, original)
     }
 
-    private fun createGuestService(session: RuntimeSession, serviceName: String, packageName: String, slot: Int): GuestService {
-        return RuntimeExecutionScope.withSession(session) {
+    private fun createGuestService(session: RuntimeSession, serviceName: String, packageName: String, slot: Int): GuestService =
+        RuntimeExecutionScope.withSession(session) {
             val clazz = session.classLoader.loadClass(serviceName)
             require(Service::class.java.isAssignableFrom(clazz)) { "Service class غير صالح: $serviceName" }
             val service = clazz.getDeclaredConstructor().newInstance() as Service
@@ -237,34 +227,22 @@ open class RuntimeStubService : Service() {
             val guestContext = RuntimeGuestContext(baseContext, session, hostApp.engine.runtimeSlotDir(packageName, slot))
             attachGuestService(service, guestContext, session, serviceName)
             service.onCreate()
-            RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName process=${if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else packageName} attached=true")
+            RuntimeDiagnostics.log("SERVICE", "created $packageName/$slot $serviceName process=${RuntimeGuestProcessIdentity.hostProcessName()} attached=true")
             GuestService(service, session)
         }
-    }
 
     private fun attachGuestService(service: Service, guestContext: Context, session: RuntimeSession, serviceName: String) {
         RuntimeCompatibility.findField(ContextWrapper::class.java, "mBase")?.let { RuntimeCompatibility.write(it, service, guestContext) }
             ?: error("ContextWrapper.mBase غير متاح")
         val serviceClass = Service::class.java
-        RuntimeCompatibility.findField(serviceClass, "mApplication")?.let { RuntimeCompatibility.write(it, service, session.guestApplication ?: application) }
+        RuntimeCompatibility.findField(serviceClass, "mApplication")?.let { RuntimeCompatibility.write(it, service, session.applicationForContext() ?: application) }
         RuntimeCompatibility.findField(serviceClass, "mClassName")?.let { RuntimeCompatibility.write(it, service, serviceName) }
-
-        val fieldGroups = listOf(
-            listOf("mThread", "mActivityThread"),
-            listOf("mToken"),
-            listOf("mActivityManager", "mAm"),
-            listOf("mStartCompatibility")
-        )
+        val fieldGroups = listOf(listOf("mThread", "mActivityThread"), listOf("mToken"), listOf("mActivityManager", "mAm"), listOf("mStartCompatibility"))
         fieldGroups.forEach { names ->
             val field = RuntimeCompatibility.findField(serviceClass, *names.toTypedArray())
-            if (field == null) {
-                RuntimeDiagnostics.log("SERVICE", "attach field ${names.joinToString("/")} unavailable for $serviceName")
-            } else {
-                runCatching {
-                    field.isAccessible = true
-                    field.set(service, field.get(this))
-                }.onFailure { RuntimeDiagnostics.log("SERVICE", "attach field ${field.name} failed for $serviceName: ${it.javaClass.simpleName}") }
-            }
+            if (field == null) RuntimeDiagnostics.log("SERVICE", "attach field ${names.joinToString("/")} unavailable for $serviceName")
+            else runCatching { field.isAccessible = true; field.set(service, field.get(this)) }
+                .onFailure { RuntimeDiagnostics.log("SERVICE", "attach field ${field.name} failed for $serviceName: ${it.javaClass.simpleName}") }
         }
     }
 
