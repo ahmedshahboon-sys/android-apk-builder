@@ -13,9 +13,9 @@ internal object RuntimeNativeRuntime {
     fun initialize(): Boolean {
         if (attempted.compareAndSet(false, true)) {
             loaded = runCatching { System.loadLibrary("shahboun_runtime"); true }
-                .onFailure { RuntimeDiagnostics.log("NATIVE6", "load failed: ${it.javaClass.simpleName}: ${it.message}") }
+                .onFailure { RuntimeDiagnostics.log("NATIVE7", "load failed: ${it.javaClass.simpleName}: ${it.message}") }
                 .getOrDefault(false)
-            if (loaded) RuntimeDiagnostics.log("NATIVE6", "Shahboun native runtime ready path-map-v3 syscall-intercept=false")
+            if (loaded) RuntimeDiagnostics.log("NATIVE7", "Shahboun native runtime ready path-map-v4 syscall-intercept=false")
         }
         return loaded
     }
@@ -23,8 +23,8 @@ internal object RuntimeNativeRuntime {
     fun register(packageName: String, slot: Int, root: File): Boolean {
         if (!initialize()) return false
         return runCatching { nativeRegisterRoot(packageName, slot, root.canonicalPath) }
-            .onSuccess { ok -> if (ok) RuntimeDiagnostics.log("NATIVE6", "registered root $packageName/$slot root=${root.canonicalPath}") }
-            .onFailure { RuntimeDiagnostics.log("NATIVE6", "register failed $packageName/$slot: ${it.javaClass.simpleName}: ${it.message}") }
+            .onSuccess { ok -> if (ok) RuntimeDiagnostics.log("NATIVE7", "registered root $packageName/$slot root=${root.canonicalPath}") }
+            .onFailure { RuntimeDiagnostics.log("NATIVE7", "register failed $packageName/$slot: ${it.javaClass.simpleName}: ${it.message}") }
             .getOrDefault(false)
     }
 
@@ -39,6 +39,17 @@ internal object RuntimeNativeRuntime {
         if (!initialize()) return path
         val mapped = runCatching { nativeMapGuestPath(packageName, slot, path) }.getOrNull()
         return mapped?.takeIf { it.isNotBlank() } ?: path
+    }
+
+    /**
+     * Resolves a guest relative path against a logical guest directory, then maps it into the clone root.
+     * This models openat-style relative semantics without pretending that libc/syscall interception exists.
+     */
+    fun mapAt(packageName: String, slot: Int, logicalDirectory: String, path: String): String? {
+        if (!initialize()) return null
+        return runCatching { nativeMapGuestPathAt(packageName, slot, logicalDirectory, path) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
     }
 
     fun reverseMap(packageName: String, slot: Int, path: File): File = File(reverseMap(packageName, slot, path.absolutePath))
@@ -59,6 +70,9 @@ internal object RuntimeNativeRuntime {
     /** Deliberately false until third-party native libc calls are actually intercepted and proven. */
     fun hasSyscallInterception(): Boolean = false
 
+    /** Full linker namespace virtualization is not implemented and must never be reported as ready. */
+    fun hasLinkerNamespaceIsolation(): Boolean = false
+
     /** General lexical absolute-path check; it is not an authorization decision. */
     fun isSafe(path: File): Boolean = !initialize() || runCatching { nativeIsSafePath(path.absolutePath) }.getOrDefault(false)
 
@@ -73,6 +87,7 @@ internal object RuntimeNativeRuntime {
     @JvmStatic private external fun nativeRegisterRoot(packageName: String, slot: Int, rootPath: String): Boolean
     @JvmStatic private external fun nativeUnregisterRoot(packageName: String, slot: Int)
     @JvmStatic private external fun nativeMapGuestPath(packageName: String, slot: Int, path: String): String
+    @JvmStatic private external fun nativeMapGuestPathAt(packageName: String, slot: Int, dirLogicalPath: String, path: String): String
     @JvmStatic private external fun nativeReverseMapGuestPath(packageName: String, slot: Int, path: String): String
     @JvmStatic private external fun nativeDescribePolicy(packageName: String, slot: Int): String
     @JvmStatic private external fun nativeIsSafePath(path: String): Boolean
