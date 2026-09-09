@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 42
-        versionName = "1.0.0-runtime4"
+        versionCode = 43
+        versionName = "1.1.0-runtime5"
         manifestPlaceholders["debugActivityEnabled"] = "true"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild {
@@ -45,6 +45,9 @@ android {
     buildFeatures {
         viewBinding = false
         buildConfig = true
+    }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
     externalNativeBuild {
         cmake {
@@ -81,4 +84,5 @@ dependencies {
     implementation("com.google.android.material:material:1.13.0")
     implementation("com.google.android.gms:play-services-base:18.10.1")
     implementation(fileTree("libs") { include("*.aar", "*.jar") })
+    testImplementation("junit:junit:4.13.2")
 }

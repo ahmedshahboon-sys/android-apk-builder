@@ -44,7 +44,11 @@ class RuntimeGuestContext(
     private val guestJobScheduler by lazy { RuntimeJobSchedulerBridge.facadeFor(baseContext, session) }
 
     init {
-        RuntimeNativeRuntime.register(session.runtimePackage.packageName, session.runtimePackage.slot, slotDir)
+        val registered = RuntimeNativeRuntime.register(session.runtimePackage.packageName, session.runtimePackage.slot, slotDir)
+        RuntimeDiagnostics.log(
+            "CONTEXT5",
+            "guest context init ${session.runtimePackage.packageName}/${session.runtimePackage.slot} nativeRegistered=$registered root=${slotDir.absolutePath}"
+        )
         RuntimeWebGmsCompatibility.prepareCloneStorage(baseContext, session, slotDir)
     }
 
@@ -62,6 +66,11 @@ class RuntimeGuestContext(
     override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getContentResolver(): ContentResolver = cloneContentResolver
 
+    /*
+     * Binder-facing managers are created from the physical Context and sanitize guest arguments at
+     * the service boundary. Keeping op/attribution physical here avoids Android 14-16 AppOps UID
+     * rejection while getPackageName() remains logical for normal guest code.
+     */
     override fun getOpPackageName(): String = baseContext.opPackageName
     override fun getAttributionTag(): String? = baseContext.attributionTag
     override fun getAttributionSource(): AttributionSource = baseContext.attributionSource
@@ -91,9 +100,12 @@ class RuntimeGuestContext(
         }
     }
 
-    override fun createPackageContext(packageName: String, flags: Int): Context = if (packageName == session.runtimePackage.packageName) this else super.createPackageContext(packageName, flags)
-    override fun createConfigurationContext(overrideConfiguration: Configuration): Context = RuntimeGuestContext(baseContext.createConfigurationContext(overrideConfiguration), session, slotDir)
-    override fun createDeviceProtectedStorageContext(): Context = RuntimeGuestContext(baseContext.createDeviceProtectedStorageContext(), session, slotDir)
+    override fun createPackageContext(packageName: String, flags: Int): Context =
+        if (packageName == session.runtimePackage.packageName) this else super.createPackageContext(packageName, flags)
+    override fun createConfigurationContext(overrideConfiguration: Configuration): Context =
+        RuntimeGuestContext(baseContext.createConfigurationContext(overrideConfiguration), session, slotDir)
+    override fun createDeviceProtectedStorageContext(): Context =
+        RuntimeGuestContext(baseContext.createDeviceProtectedStorageContext(), session, slotDir)
 
     override fun getDataDir(): File = cloneDir("data")
     override fun getFilesDir(): File = cloneDir("files")
@@ -103,11 +115,16 @@ class RuntimeGuestContext(
     override fun getDir(name: String, mode: Int): File = cloneDir("app_${safeName(name)}")
     override fun openFileInput(name: String): FileInputStream = FileInputStream(File(filesDir, safeName(name)))
     override fun openFileOutput(name: String, mode: Int): FileOutputStream {
-        val target = File(filesDir, safeName(name)); target.parentFile?.mkdirs(); return FileOutputStream(target, mode and Context.MODE_APPEND != 0)
+        val target = File(filesDir, safeName(name))
+        target.parentFile?.mkdirs()
+        return FileOutputStream(target, mode and Context.MODE_APPEND != 0)
     }
     override fun deleteFile(name: String): Boolean = File(filesDir, safeName(name)).delete()
     override fun fileList(): Array<String> = filesDir.list()?.map { it }.orEmpty().toTypedArray()
-    override fun getExternalFilesDir(type: String?): File { val base = cloneDir("external/files"); return if (type.isNullOrBlank()) base else File(base, safeName(type)).apply { mkdirs() } }
+    override fun getExternalFilesDir(type: String?): File {
+        val base = cloneDir("external/files")
+        return if (type.isNullOrBlank()) base else File(base, safeName(type)).apply { mkdirs() }
+    }
     override fun getExternalFilesDirs(type: String?): Array<File> = arrayOf(getExternalFilesDir(type))
     override fun getExternalCacheDir(): File = cloneDir("external/cache")
     override fun getExternalCacheDirs(): Array<File> = arrayOf(externalCacheDir)
@@ -115,8 +132,13 @@ class RuntimeGuestContext(
     override fun getObbDir(): File = cloneDir("external/obb")
     override fun getObbDirs(): Array<File> = arrayOf(obbDir)
     override fun getDatabasePath(name: String): File = File(cloneDir("databases"), safeName(name))
-    override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?): SQLiteDatabase { val path = getDatabasePath(name); path.parentFile?.mkdirs(); return SQLiteDatabase.openOrCreateDatabase(path, factory) }
-    override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?, errorHandler: DatabaseErrorHandler?): SQLiteDatabase { val path = getDatabasePath(name); path.parentFile?.mkdirs(); return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path.absolutePath, factory, errorHandler) else SQLiteDatabase.openOrCreateDatabase(path, factory) }
+    override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?): SQLiteDatabase {
+        val path = getDatabasePath(name); path.parentFile?.mkdirs(); return SQLiteDatabase.openOrCreateDatabase(path, factory)
+    }
+    override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?, errorHandler: DatabaseErrorHandler?): SQLiteDatabase {
+        val path = getDatabasePath(name); path.parentFile?.mkdirs()
+        return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path.absolutePath, factory, errorHandler) else SQLiteDatabase.openOrCreateDatabase(path, factory)
+    }
     override fun deleteDatabase(name: String): Boolean = SQLiteDatabase.deleteDatabase(getDatabasePath(name))
     override fun databaseList(): Array<String> = cloneDir("databases").list()?.map { it }.orEmpty().toTypedArray()
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
@@ -129,14 +151,29 @@ class RuntimeGuestContext(
         if (wrapper != null) return baseContext.startService(wrapper)
         return super.startService(service)
     }
-    override fun startForegroundService(service: Intent): android.content.ComponentName? { val wrapper = session.componentHost?.wrapServiceIntent(service); return if (wrapper != null) if (Build.VERSION.SDK_INT >= 26) baseContext.startForegroundService(wrapper) else baseContext.startService(wrapper) else super.startForegroundService(service) }
-    override fun stopService(name: Intent): Boolean { val wrapper = session.componentHost?.wrapServiceIntent(name); return if (wrapper != null) baseContext.stopService(wrapper) else super.stopService(name) }
-    override fun bindService(service: Intent, conn: ServiceConnection, flags: Int): Boolean { val wrapper = session.componentHost?.wrapServiceIntent(service); return if (wrapper != null) baseContext.bindService(wrapper, conn, flags) else super.bindService(service, conn, flags) }
+    override fun startForegroundService(service: Intent): android.content.ComponentName? {
+        val wrapper = session.componentHost?.wrapServiceIntent(service)
+        return if (wrapper != null) {
+            if (Build.VERSION.SDK_INT >= 26) baseContext.startForegroundService(wrapper) else baseContext.startService(wrapper)
+        } else super.startForegroundService(service)
+    }
+    override fun stopService(name: Intent): Boolean {
+        val wrapper = session.componentHost?.wrapServiceIntent(name)
+        return if (wrapper != null) baseContext.stopService(wrapper) else super.stopService(name)
+    }
+    override fun bindService(service: Intent, conn: ServiceConnection, flags: Int): Boolean {
+        val wrapper = session.componentHost?.wrapServiceIntent(service)
+        return if (wrapper != null) baseContext.bindService(wrapper, conn, flags) else super.bindService(service, conn, flags)
+    }
     override fun unbindService(conn: ServiceConnection) { baseContext.unbindService(conn) }
     override fun sendBroadcast(intent: Intent) { if (session.componentHost?.dispatchExplicitReceiver(intent) == true) return; super.sendBroadcast(intent) }
-    override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter): Intent? = if (receiver == null) baseContext.registerReceiver(null, filter) else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter)
-    override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter, flags: Int): Intent? = if (receiver == null) baseContext.registerReceiver(null, filter, flags) else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, flags)
-    override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter, broadcastPermission: String?, scheduler: Handler?): Intent? = if (receiver == null) baseContext.registerReceiver(null, filter, broadcastPermission, scheduler) else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, broadcastPermission, scheduler)
+    override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter): Intent? =
+        if (receiver == null) baseContext.registerReceiver(null, filter) else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter)
+    override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter, flags: Int): Intent? =
+        if (receiver == null) baseContext.registerReceiver(null, filter, flags) else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, flags)
+    override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter, broadcastPermission: String?, scheduler: Handler?): Intent? =
+        if (receiver == null) baseContext.registerReceiver(null, filter, broadcastPermission, scheduler)
+        else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, broadcastPermission, scheduler)
     override fun unregisterReceiver(receiver: BroadcastReceiver?) {
         if (receiver == null) {
             RuntimeDiagnostics.log("RECEIVER", "ignored unregisterReceiver(null) ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
@@ -156,12 +193,23 @@ class RuntimeGuestContext(
         }
     }
 
-    override fun getSystemService(name: String): Any? = when (name) {
-        Context.LAYOUT_INFLATER_SERVICE -> (baseContext.getSystemService(name) as? LayoutInflater)?.cloneInContext(this)
-        Context.JOB_SCHEDULER_SERVICE -> guestJobScheduler
-        Context.CLIPBOARD_SERVICE -> RuntimeClipboardBridge.serviceFor(baseContext, session)
-        Context.ACCOUNT_SERVICE -> RuntimeIdentityServiceBridge.accountManagerFor(baseContext, session)
-        else -> RuntimeSystemServiceVirtualizer.serviceFor(baseContext, session, name) ?: super.getSystemService(name)
+    override fun getSystemService(name: String): Any? {
+        val key = "guest-service:${session.runtimePackage.packageName}:${session.runtimePackage.slot}:$name"
+        return RuntimeRecursionGuard.call(
+            key = key,
+            fallback = {
+                RuntimeDiagnostics.log("CONTEXT5", "service recursion fallback ${session.runtimePackage.packageName}/${session.runtimePackage.slot} name=$name")
+                baseContext.getSystemService(name)
+            }
+        ) {
+            when (name) {
+                Context.LAYOUT_INFLATER_SERVICE -> (baseContext.getSystemService(name) as? LayoutInflater)?.cloneInContext(this)
+                Context.JOB_SCHEDULER_SERVICE -> guestJobScheduler
+                Context.CLIPBOARD_SERVICE -> RuntimeClipboardBridge.serviceFor(baseContext, session)
+                Context.ACCOUNT_SERVICE -> RuntimeIdentityServiceBridge.accountManagerFor(baseContext, session)
+                else -> RuntimeSystemServiceVirtualizer.serviceFor(baseContext, session, name) ?: baseContext.getSystemService(name)
+            }
+        }
     }
 
     private fun cloneDir(relative: String): File {
@@ -169,7 +217,12 @@ class RuntimeGuestContext(
         val mapped = RuntimeNativeRuntime.map(session.runtimePackage.packageName, session.runtimePackage.slot, direct)
         if (!mapped.exists()) require(mapped.mkdirs()) { "Unable to create clone directory: $relative" }
         check(RuntimeNativeRuntime.isSafe(mapped)) { "Unsafe clone path rejected: ${mapped.absolutePath}" }
-        return mapped
+        val canonicalRoot = slotDir.canonicalFile
+        val canonicalMapped = mapped.canonicalFile
+        check(canonicalMapped.path == canonicalRoot.path || canonicalMapped.path.startsWith(canonicalRoot.path + File.separator)) {
+            "Clone path escaped slot root: ${canonicalMapped.path}"
+        }
+        return canonicalMapped
     }
     private fun safeName(value: String): String = value.replace(Regex("[^A-Za-z0-9_.-]"), "_")
 
