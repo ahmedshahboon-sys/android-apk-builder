@@ -18,7 +18,8 @@ class RuntimeGuestJobScheduler(
     private val hostContext: Context,
     private val session: RuntimeSession,
     private val namespace: String? = null,
-    private val delegate: JobScheduler = hostContext.getSystemService(JobScheduler::class.java)
+    private val delegate: JobScheduler = (MultiApplication.current ?: hostContext.applicationContext)
+        .getSystemService(JobScheduler::class.java)
         ?: error("JobScheduler غير متاح")
 ) : JobScheduler() {
 
