@@ -30,6 +30,7 @@ class RuntimeGuestContext(
     private val slotDir: File
 ) : ContextWrapper(base) {
     private val dynamicReceivers = ConcurrentHashMap<BroadcastReceiver, BroadcastReceiver>()
+    private val preferenceStores = ConcurrentHashMap<String, SharedPreferences>()
     private val guestTheme: Resources.Theme by lazy {
         session.resources.newTheme().apply {
             val appTheme = session.runtimePackage.appTheme
@@ -41,6 +42,10 @@ class RuntimeGuestContext(
         if (host != null) RuntimeContentResolverBridge(session, host, baseContext.contentResolver).resolver else baseContext.contentResolver
     }
     private val guestJobScheduler by lazy { RuntimeJobSchedulerBridge.facadeFor(baseContext, session) }
+
+    init {
+        RuntimeNativeRuntime.register(session.runtimePackage.packageName, session.runtimePackage.slot, slotDir)
+    }
 
     override fun getPackageName(): String {
         if (RuntimeSystemPackageIdentity.requiresPhysicalPackage()) return baseContext.packageName
@@ -113,7 +118,10 @@ class RuntimeGuestContext(
     override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?, errorHandler: DatabaseErrorHandler?): SQLiteDatabase { val path = getDatabasePath(name); path.parentFile?.mkdirs(); return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path.absolutePath, factory, errorHandler) else SQLiteDatabase.openOrCreateDatabase(path, factory) }
     override fun deleteDatabase(name: String): Boolean = SQLiteDatabase.deleteDatabase(getDatabasePath(name))
     override fun databaseList(): Array<String> = cloneDir("databases").list()?.map { it }.orEmpty().toTypedArray()
-    override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = baseContext.getSharedPreferences("clone_${session.runtimePackage.packageName}_${session.runtimePackage.slot}_${safeName(name)}", mode)
+    override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
+        val safe = safeName(name)
+        return preferenceStores.getOrPut(safe) { RuntimeFileSharedPreferences(File(cloneDir("shared_prefs"), "$safe.json")) }
+    }
 
     override fun startService(service: Intent): android.content.ComponentName? {
         val wrapper = session.componentHost?.wrapServiceIntent(service)
@@ -147,10 +155,16 @@ class RuntimeGuestContext(
         Context.JOB_SCHEDULER_SERVICE -> guestJobScheduler
         Context.CLIPBOARD_SERVICE -> RuntimeClipboardBridge.serviceFor(baseContext, session)
         Context.ACCOUNT_SERVICE -> RuntimeIdentityServiceBridge.accountManagerFor(baseContext, session)
-        else -> super.getSystemService(name)
+        else -> RuntimeSystemServiceVirtualizer.serviceFor(baseContext, session, name) ?: super.getSystemService(name)
     }
 
-    private fun cloneDir(relative: String): File = File(slotDir, relative).apply { if (!exists()) require(mkdirs()) { "Unable to create clone directory: $relative" } }
+    private fun cloneDir(relative: String): File {
+        val direct = File(slotDir, relative)
+        val mapped = RuntimeNativeRuntime.map(session.runtimePackage.packageName, session.runtimePackage.slot, direct)
+        if (!mapped.exists()) require(mapped.mkdirs()) { "Unable to create clone directory: $relative" }
+        check(RuntimeNativeRuntime.isSafe(mapped)) { "Unsafe clone path rejected: ${mapped.absolutePath}" }
+        return mapped
+    }
     private fun safeName(value: String): String = value.replace(Regex("[^A-Za-z0-9_.-]"), "_")
 
     companion object {
