@@ -17,6 +17,7 @@ import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
 import android.os.Build
 import android.os.Handler
+import android.os.Process
 import android.view.LayoutInflater
 import java.io.File
 import java.io.FileInputStream
@@ -33,29 +34,21 @@ class RuntimeGuestContext(
     private val dynamicReceivers = ConcurrentHashMap<BroadcastReceiver, BroadcastReceiver>()
     private val preferenceStores = ConcurrentHashMap<String, SharedPreferences>()
     private val guestTheme: Resources.Theme by lazy {
-        session.resources.newTheme().apply {
-            val appTheme = session.runtimePackage.appTheme
-            if (appTheme != 0) applyStyle(appTheme, true)
-        }
+        session.resources.newTheme().apply { session.runtimePackage.appTheme.takeIf { it != 0 }?.let { applyStyle(it, true) } }
     }
     private val cloneContentResolver: ContentResolver by lazy {
         val host = session.componentHost
         if (host != null) RuntimeContentResolverBridge(session, host, baseContext.contentResolver).resolver else baseContext.contentResolver
     }
-    /* Always obtain the real scheduler from the physical base context. Never recurse through this wrapper. */
     private val guestJobScheduler by lazy { RuntimeJobSchedulerBridge.facadeFor(baseContext, session) }
 
     init {
         val registered = RuntimeNativeRuntime.register(session.runtimePackage.packageName, session.runtimePackage.slot, slotDir)
         if (!deviceProtected) migrateLegacyCredentialStorage()
-        RuntimeDiagnostics.log(
-            "CONTEXT6",
-            "guest context init ${session.runtimePackage.packageName}/${session.runtimePackage.slot} nativeRegistered=$registered root=${slotDir.absolutePath} deviceProtected=$deviceProtected"
-        )
+        RuntimeDiagnostics.log("CONTEXT7", "guest context init ${session.runtimePackage.packageName}/${session.runtimePackage.slot} nativeRegistered=$registered root=${slotDir.absolutePath} deviceProtected=$deviceProtected")
         RuntimeWebGmsCompatibility.prepareCloneStorage(baseContext, session, slotDir)
     }
 
-    /** Guest code always receives the logical package. Physical identity is handled only at Binder boundaries. */
     override fun getPackageName(): String = session.runtimePackage.packageName
     override fun getClassLoader(): ClassLoader = session.classLoader
     override fun getResources(): Resources = session.resources
@@ -67,11 +60,7 @@ class RuntimeGuestContext(
     override fun getPackageResourcePath(): String = session.runtimePackage.baseApk.absolutePath
     override fun getContentResolver(): ContentResolver = cloneContentResolver
 
-    /*
-     * system_server validates AppOps/attribution against the physical UID. Those values therefore
-     * remain physical here while ordinary guest package identity stays logical. Binder bridges also
-     * sanitize guest package/AttributionSource arguments before crossing the system boundary.
-     */
+    // Binder-facing AppOps identity remains physical. Ordinary app-facing package identity remains guest.
     override fun getOpPackageName(): String = baseContext.opPackageName
     override fun getAttributionTag(): String? = baseContext.attributionTag
     override fun getAttributionSource(): AttributionSource = baseContext.attributionSource
@@ -89,18 +78,21 @@ class RuntimeGuestContext(
             packageName = pkg.packageName
             className = pkg.applicationClass
             processName = pkg.packageName
+            // App-facing self UID must still correspond to the Linux identity backing Binder calls.
+            uid = Process.myUid()
             sourceDir = pkg.baseApk.absolutePath
             publicSourceDir = pkg.baseApk.absolutePath
             splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray()
             splitPublicSourceDirs = splitSourceDirs
             if (Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
             dataDir = if (deviceProtected) device.absolutePath else credential.absolutePath
+            if (Build.VERSION.SDK_INT >= 24) credentialProtectedDataDir = credential.absolutePath
             deviceProtectedDataDir = device.absolutePath
             nativeLibraryDir = bucket("native").absolutePath
             theme = pkg.appTheme
             targetSdkVersion = pkg.targetSdk
             if (Build.VERSION.SDK_INT >= 24) minSdkVersion = pkg.minSdk
-            flags = pkg.appFlags
+            flags = pkg.appFlags or ApplicationInfo.FLAG_HAS_CODE
         }
     }
 
@@ -112,6 +104,9 @@ class RuntimeGuestContext(
 
     override fun createDeviceProtectedStorageContext(): Context =
         RuntimeGuestContext(baseContext.createDeviceProtectedStorageContext(), session, slotDir, true)
+
+    override fun createCredentialProtectedStorageContext(): Context =
+        RuntimeGuestContext(baseContext.createCredentialProtectedStorageContext(), session, slotDir, false)
 
     override fun createAttributionContext(attributionTag: String?): Context =
         RuntimeGuestContext(baseContext.createAttributionContext(attributionTag), session, slotDir, deviceProtected)
@@ -126,13 +121,10 @@ class RuntimeGuestContext(
     override fun getDir(name: String, mode: Int): File = dataChild("app_${RuntimePathPolicy.safeLeaf(name)}")
 
     override fun openFileInput(name: String): FileInputStream = FileInputStream(File(filesDir, RuntimePathPolicy.safeLeaf(name)))
-
     override fun openFileOutput(name: String, mode: Int): FileOutputStream {
-        val target = File(filesDir, RuntimePathPolicy.safeLeaf(name))
-        target.parentFile?.mkdirs()
+        val target = File(filesDir, RuntimePathPolicy.safeLeaf(name)); target.parentFile?.mkdirs()
         return FileOutputStream(target, mode and Context.MODE_APPEND != 0)
     }
-
     override fun deleteFile(name: String): Boolean = File(filesDir, RuntimePathPolicy.safeLeaf(name)).delete()
     override fun fileList(): Array<String> = filesDir.list()?.copyOf() ?: emptyArray()
 
@@ -149,15 +141,11 @@ class RuntimeGuestContext(
 
     override fun getDatabasePath(name: String): File = File(dataChild("databases"), RuntimePathPolicy.safeLeaf(name))
     override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?): SQLiteDatabase {
-        val path = getDatabasePath(name)
-        path.parentFile?.mkdirs()
-        return SQLiteDatabase.openOrCreateDatabase(path, factory)
+        val path = getDatabasePath(name); path.parentFile?.mkdirs(); return SQLiteDatabase.openOrCreateDatabase(path, factory)
     }
     override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?, errorHandler: DatabaseErrorHandler?): SQLiteDatabase {
-        val path = getDatabasePath(name)
-        path.parentFile?.mkdirs()
-        return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path.absolutePath, factory, errorHandler)
-        else SQLiteDatabase.openOrCreateDatabase(path, factory)
+        val path = getDatabasePath(name); path.parentFile?.mkdirs()
+        return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path.absolutePath, factory, errorHandler) else SQLiteDatabase.openOrCreateDatabase(path, factory)
     }
     override fun deleteDatabase(name: String): Boolean = SQLiteDatabase.deleteDatabase(getDatabasePath(name))
     override fun databaseList(): Array<String> = dataChild("databases").list()?.copyOf() ?: emptyArray()
@@ -174,9 +162,8 @@ class RuntimeGuestContext(
     }
     override fun startForegroundService(service: Intent): android.content.ComponentName? {
         val wrapper = session.componentHost?.wrapServiceIntent(service)
-        return if (wrapper != null) {
-            if (Build.VERSION.SDK_INT >= 26) baseContext.startForegroundService(wrapper) else baseContext.startService(wrapper)
-        } else super.startForegroundService(service)
+        return if (wrapper != null) { if (Build.VERSION.SDK_INT >= 26) baseContext.startForegroundService(wrapper) else baseContext.startService(wrapper) }
+        else super.startForegroundService(service)
     }
     override fun stopService(name: Intent): Boolean {
         val wrapper = session.componentHost?.wrapServiceIntent(name)
@@ -196,10 +183,7 @@ class RuntimeGuestContext(
         if (receiver == null) baseContext.registerReceiver(null, filter, broadcastPermission, scheduler)
         else baseContext.registerReceiver(wrapDynamicReceiver(receiver), filter, broadcastPermission, scheduler)
     override fun unregisterReceiver(receiver: BroadcastReceiver?) {
-        if (receiver == null) {
-            RuntimeDiagnostics.log("RECEIVER", "ignored unregisterReceiver(null) ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
-            return
-        }
+        if (receiver == null) { RuntimeDiagnostics.log("RECEIVER", "ignored unregisterReceiver(null) ${session.runtimePackage.packageName}/${session.runtimePackage.slot}"); return }
         val wrapped = dynamicReceivers.remove(receiver) ?: receiver
         runCatching { baseContext.unregisterReceiver(wrapped) }
             .onFailure { RuntimeDiagnostics.log("RECEIVER", "unregister fallback ${session.runtimePackage.packageName}/${session.runtimePackage.slot}: ${it.javaClass.simpleName}: ${it.message}") }
@@ -218,10 +202,7 @@ class RuntimeGuestContext(
         val key = "guest-service:${session.runtimePackage.packageName}:${session.runtimePackage.slot}:$name"
         return RuntimeRecursionGuard.call(
             key = key,
-            fallback = {
-                RuntimeDiagnostics.log("CONTEXT6", "service recursion fallback ${session.runtimePackage.packageName}/${session.runtimePackage.slot} name=$name")
-                baseContext.getSystemService(name)
-            }
+            fallback = { RuntimeDiagnostics.log("CONTEXT7", "service recursion fallback ${session.runtimePackage.packageName}/${session.runtimePackage.slot} name=$name"); baseContext.getSystemService(name) }
         ) {
             when (name) {
                 Context.LAYOUT_INFLATER_SERVICE -> (baseContext.getSystemService(name) as? LayoutInflater)?.cloneInContext(this)
@@ -239,9 +220,7 @@ class RuntimeGuestContext(
         val direct = RuntimePathPolicy.child(slotDir, relative)
         if (!direct.exists()) require(direct.mkdirs()) { "Unable to create clone directory: $relative" }
         check(RuntimePathPolicy.isContained(slotDir, direct)) { "Clone path escaped slot root: ${direct.absolutePath}" }
-        check(RuntimeNativeRuntime.isWithinRoot(session.runtimePackage.packageName, session.runtimePackage.slot, direct)) {
-            "Native path policy rejected clone path: ${direct.absolutePath}"
-        }
+        check(RuntimeNativeRuntime.isWithinRoot(session.runtimePackage.packageName, session.runtimePackage.slot, direct)) { "Native path policy rejected clone path: ${direct.absolutePath}" }
         return direct.canonicalFile
     }
 
@@ -252,21 +231,15 @@ class RuntimeGuestContext(
         return direct.canonicalFile
     }
 
-    /** Runtime5 stored a few Context directories at slot root; move only guest data buckets once. */
     private fun migrateLegacyCredentialStorage() {
         val data = File(slotDir, "data").apply { mkdirs() }
-        listOf("files", "cache", "no_backup", "databases", "shared_prefs").forEach { name ->
+        listOf("files", "cache", "code_cache", "no_backup", "databases", "shared_prefs").forEach { name ->
             val old = File(slotDir, name)
             val target = File(data, name)
             if (!old.exists() || target.exists()) return@forEach
             runCatching {
-                if (!old.renameTo(target)) {
-                    old.copyRecursively(target, overwrite = false)
-                    old.deleteRecursively()
-                }
-            }.onFailure {
-                RuntimeDiagnostics.log("STORAGE6", "legacy migration skipped bucket=$name ${it.javaClass.simpleName}: ${it.message}")
-            }
+                if (!old.renameTo(target)) { old.copyRecursively(target, overwrite = false); old.deleteRecursively() }
+            }.onFailure { RuntimeDiagnostics.log("STORAGE7", "legacy migration skipped bucket=$name ${it.javaClass.simpleName}: ${it.message}") }
         }
     }
 
@@ -279,6 +252,14 @@ class RuntimeGuestContext(
             val packageName = explicitPackage ?: owner?.first ?: return
             val slot = if (explicitSlot >= 0) explicitSlot else owner?.second ?: return
             val hostApp = activity.applicationContext as? MultiApplication ?: return
+            if (wrapperIntent != null && explicitPackage != null && explicitSlot >= 0) {
+                val requested = wrapperIntent.getStringExtra(EXTRA_RUNTIME_ACTIVITY) ?: return
+                val snapshot = runCatching { hostApp.engine.runtimePackageFor(packageName, slot) }.getOrNull() ?: return
+                if (!RuntimeIntentSecurity.verify(hostApp, wrapperIntent, snapshot, "activity", requested)) {
+                    RuntimeDiagnostics.log("SECURITY7", "attachIfNeeded rejected unauthenticated activity $packageName/$slot")
+                    return
+                }
+            }
             val session = RuntimeRegistry.getOrNull(packageName, slot)
                 ?: runCatching { hostApp.engine.sessionFor(packageName, slot) }.getOrNull()
                 ?: return
