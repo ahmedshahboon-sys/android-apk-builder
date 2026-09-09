@@ -1,6 +1,5 @@
 package com.shahboun.multi
 
-import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -8,15 +7,9 @@ import android.os.Build
 import java.io.File
 import java.security.MessageDigest
 
-/**
- * Shahboun Runtime 3.0 orchestration layer.
- *
- * Runtime 3 has one host coordinator and isolated clone restore processes. Host-only operations
- * mutate snapshots/process allocations; :cloneN processes only restore their assigned immutable
- * snapshot. Runtime 2 storage is never read by this engine.
- */
+/** Internal Runtime3 storage/orchestration schema used by Shahboun Runtime 7. */
 class ShahbounRuntime3Engine {
-    val name: String = "Shahboun Runtime 3.0"
+    val name: String = "${RuntimeBuildInfo.ENGINE_NAME} ${RuntimeBuildInfo.ENGINE_VERSION}"
 
     private lateinit var appContext: Context
     private lateinit var rootDir: File
@@ -27,7 +20,7 @@ class ShahbounRuntime3Engine {
     fun initialize(context: Context): Result<Unit> = runCatching {
         appContext = context.applicationContext
         rootDir = File(appContext.filesDir, "clone_engine_v3")
-        require(rootDir.exists() || rootDir.mkdirs()) { "Unable to initialize Runtime 3 storage" }
+        require(rootDir.exists() || rootDir.mkdirs()) { "Unable to initialize Runtime storage" }
         installer = RuntimePackageInstaller(appContext)
         sessionFactory = RuntimeSessionFactory(appContext)
         if (isHostProcess()) {
@@ -35,8 +28,8 @@ class ShahbounRuntime3Engine {
             bootstrapExistingProfiles()
         }
         RuntimeDiagnostics.log(
-            "ENGINE3",
-            "initialized root=${rootDir.absolutePath} processCapacity=${RuntimeProcessPool.size} role=${if (isHostProcess()) "host" else "clone"}"
+            "ENGINE7",
+            "initialized schema=3 root=${rootDir.absolutePath} processCapacity=${RuntimeProcessPool.size} role=${if (isHostProcess()) "host" else "clone"}"
         )
     }
 
@@ -68,7 +61,7 @@ class ShahbounRuntime3Engine {
             installer.read(packageName, slot, dir)
             apkBackup.deleteRecursively(); metaBackup.delete()
             resetEphemeral(dir)
-            RuntimeDiagnostics.log("ENGINE3", "updated $packageName/$slot version=${updated.versionCode}")
+            RuntimeDiagnostics.log("ENGINE7", "updated $packageName/$slot version=${updated.versionCode}")
         } catch (t: Throwable) {
             File(dir, "apk").deleteRecursively(); File(dir, "runtime.meta").delete()
             require(apkBackup.renameTo(apkDir)) { "APK rollback failed" }
@@ -79,7 +72,7 @@ class ShahbounRuntime3Engine {
 
     fun launch(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized(); requireHostProcess()
-        (appContext as? MultiApplication)?.requireRuntimeBridge() ?: error("Runtime 3 application context invalid")
+        (appContext as? MultiApplication)?.requireRuntimeBridge() ?: error("Runtime application context invalid")
         val pkg = runtimePackageFor(packageName, slot)
         val processIndex = RuntimeProcessPool.allocateProcess(pkg.packageName, pkg.slot)
         val requested = pkg.launchAlias ?: pkg.launchActivity
@@ -97,14 +90,15 @@ class ShahbounRuntime3Engine {
             putExtra(EXTRA_RUNTIME_ORIGINAL_INTENT, Intent(original))
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        RuntimeDiagnostics.log("ENGINE3", "launch $packageName/$slot process=:clone$processIndex")
+        RuntimeIntentSecurity.sign(appContext, wrapper, pkg, "activity", requested)
+        RuntimeDiagnostics.log("ENGINE7", "launch $packageName/$slot process=:clone$processIndex auth=HMAC")
         appContext.startActivity(wrapper)
     }
 
     fun runtimePackageFor(packageName: String, slot: Int): RuntimePackage {
         requireInitialized()
         val dir = runtimeSlotDir(packageName, slot)
-        require(dir.isDirectory) { "Clone does not exist in Runtime 3" }
+        require(dir.isDirectory) { "Clone does not exist in Runtime" }
         return installer.read(packageName, slot, dir)
     }
 
@@ -123,11 +117,12 @@ class ShahbounRuntime3Engine {
                 RuntimeLoadedApkBridge.bind(appContext, session).getOrThrow()
                 session.ensureGuestApplication(appContext, dir)
                 RuntimeLoadedApkBridge.bind(appContext, session).getOrThrow()
-                RuntimeDiagnostics.log("ENGINE3", "session ready $packageName/$slot process=${hostProcessName()}")
+                RuntimeDiagnostics.log("ENGINE7", "session ready $packageName/$slot process=${hostProcessName()}")
                 return session
             } catch (t: Throwable) {
                 RuntimeRegistry.remove(packageName, slot)
                 RuntimeExecutionScope.clearProcessSession(session)
+                runCatching { session.close() }
                 throw t
             }
         }
@@ -143,18 +138,24 @@ class ShahbounRuntime3Engine {
 
     fun forceStop(packageName: String, slot: Int): Result<Unit> = runCatching {
         requireInitialized(); requireHostProcess()
+        val pkg = runtimePackageFor(packageName, slot)
         RuntimeActivityBindings.finishClone(packageName, slot)
         RuntimeJobSchedulerBridge.cancelClone(packageName, slot)
         runCatching {
-            appContext.startService(Intent(appContext, RuntimeProcessPool.serviceStub(packageName, slot)).apply {
+            val stop = Intent(appContext, RuntimeProcessPool.serviceStub(packageName, slot)).apply {
                 action = ACTION_RUNTIME_STOP_CLONE
                 putExtra(EXTRA_RUNTIME_PACKAGE, packageName)
                 putExtra(EXTRA_RUNTIME_SLOT, slot)
-            })
+            }
+            RuntimeIntentSecurity.sign(appContext, stop, pkg, "stop", ACTION_RUNTIME_STOP_CLONE)
+            appContext.startService(stop)
         }
-        RuntimeRegistry.getOrNull(packageName, slot)?.let { RuntimeExecutionScope.clearProcessSession(it) }
+        RuntimeRegistry.getOrNull(packageName, slot)?.let {
+            RuntimeExecutionScope.clearProcessSession(it)
+            runCatching { it.close() }
+        }
         RuntimeRegistry.remove(packageName, slot)
-        RuntimeDiagnostics.log("ENGINE3", "force-stop $packageName/$slot")
+        RuntimeDiagnostics.log("ENGINE7", "force-stop $packageName/$slot")
     }
 
     fun remove(packageName: String, slot: Int): Result<Unit> = runCatching {
@@ -164,7 +165,7 @@ class ShahbounRuntime3Engine {
         deleteCloneSharedPreferences(packageName, slot)
         runtimeSlotDir(packageName, slot).deleteRecursively()
         RuntimeProcessPool.releaseProcess(packageName, slot)
-        RuntimeDiagnostics.log("ENGINE3", "removed $packageName/$slot")
+        RuntimeDiagnostics.log("ENGINE7", "removed $packageName/$slot")
     }
 
     fun clearData(packageName: String, slot: Int): Result<Unit> = runCatching {
@@ -182,7 +183,7 @@ class ShahbounRuntime3Engine {
         requireInitialized(); requireHostProcess()
         forceStop(packageName, slot).getOrThrow()
         val dir = runtimeSlotDir(packageName, slot)
-        listOf("cache", "code_cache", "external/cache").forEach { name ->
+        listOf("data/cache", "data/code_cache", "external/cache").forEach { name ->
             File(dir, name).apply { deleteRecursively(); require(mkdirs()) }
         }
     }
@@ -206,9 +207,9 @@ class ShahbounRuntime3Engine {
             runCatching {
                 if (dir.exists()) dir.deleteRecursively()
                 prepareFreshSlot(profile.packageName, profile.slot, dir)
-                RuntimeDiagnostics.log("ENGINE3", "rebuilt legacy profile ${profile.packageName}/${profile.slot}")
+                RuntimeDiagnostics.log("ENGINE7", "rebuilt legacy profile ${profile.packageName}/${profile.slot}")
             }.onFailure {
-                RuntimeDiagnostics.log("ENGINE3", "profile bootstrap skipped ${profile.packageName}/${profile.slot}: ${it.javaClass.simpleName}: ${it.message}")
+                RuntimeDiagnostics.log("ENGINE7", "profile bootstrap skipped ${profile.packageName}/${profile.slot}: ${it.javaClass.simpleName}: ${it.message}")
             }
         }
     }
@@ -218,10 +219,10 @@ class ShahbounRuntime3Engine {
         require(dir.mkdirs()) { "Unable to create clone storage" }
         try {
             createDataDirs(dir)
-            File(dir, "clone.meta").writeText("format=5\nengine=3\npackage=$packageName\nslot=$slot\ncreated=${System.currentTimeMillis()}\n")
+            File(dir, "clone.meta").writeText("format=7\nengine=${RuntimeBuildInfo.ENGINE_VERSION}\nschema=3\npackage=$packageName\nslot=$slot\ncreated=${System.currentTimeMillis()}\n")
             installer.snapshot(packageName, slot, dir)
             val process = RuntimeProcessPool.allocateProcess(packageName, slot)
-            RuntimeDiagnostics.log("ENGINE3", "created $packageName/$slot process=:clone$process")
+            RuntimeDiagnostics.log("ENGINE7", "created $packageName/$slot process=:clone$process")
         } catch (t: Throwable) {
             RuntimeProcessPool.releaseProcess(packageName, slot)
             dir.deleteRecursively()
@@ -230,13 +231,21 @@ class ShahbounRuntime3Engine {
     }
 
     private fun createDataDirs(dir: File) {
-        listOf("data", "device_data", "cache", "files", "databases", "no_backup", "code_cache", "native", "external").forEach {
+        val data = File(dir, "data").apply { require(exists() || mkdirs()) }
+        listOf("files", "cache", "code_cache", "databases", "shared_prefs", "no_backup", "app_webview", "tmp").forEach {
+            val child = File(data, it); require(child.exists() || child.mkdirs()) { "Unable to create data/$it" }
+        }
+        listOf("device_data", "native", "external", "external/cache", "external/media", "external/obb").forEach {
             val child = File(dir, it); require(child.exists() || child.mkdirs()) { "Unable to create $it" }
+        }
+        // Remove obsolete duplicate roots only when they are empty; never delete user data silently.
+        listOf("cache", "files", "databases", "no_backup", "code_cache").forEach { legacy ->
+            File(dir, legacy).takeIf { it.isDirectory && it.listFiles().isNullOrEmpty() }?.delete()
         }
     }
 
     private fun resetEphemeral(dir: File) {
-        listOf("code_cache", "native").forEach { name -> File(dir, name).apply { deleteRecursively(); require(mkdirs()) } }
+        listOf("data/code_cache", "native").forEach { name -> File(dir, name).apply { deleteRecursively(); require(mkdirs()) } }
     }
 
     private fun recoverInterruptedUpdates() {
@@ -255,15 +264,16 @@ class ShahbounRuntime3Engine {
 
     private fun requireCloneProcess(packageName: String, slot: Int) {
         val expected = "${BuildConfig.APPLICATION_ID}:clone${RuntimeProcessPool.processIndex(packageName, slot)}"
-        check(hostProcessName() == expected) { "Runtime 3 process mismatch: actual=${hostProcessName()} expected=$expected" }
+        val actual = hostProcessName()
+        check(actual == expected) { "Runtime process mismatch: actual=$actual expected=$expected" }
     }
 
     private fun requireHostProcess() {
-        check(isHostProcess()) { "Runtime 3 host-only operation attempted from ${hostProcessName()}" }
+        check(isHostProcess()) { "Runtime host-only operation attempted from ${hostProcessName()}" }
     }
 
     private fun isHostProcess(): Boolean = hostProcessName() == BuildConfig.APPLICATION_ID
-    private fun hostProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else BuildConfig.APPLICATION_ID
+    private fun hostProcessName(): String = RuntimeGuestProcessIdentity.hostProcessName()
     private fun prefPrefix(packageName: String, slot: Int) = "clone_${packageName}_${slot}_"
 
     private fun deleteCloneSharedPreferences(packageName: String, slot: Int) {
