@@ -22,19 +22,51 @@ internal object RuntimeIntentSecurity {
 
     fun sign(context: Context, intent: Intent, session: RuntimeSession, purpose: String, component: String): Intent {
         val identity = RuntimeVirtualIdentityRegistry.forSession(session)
-        intent.putExtra(EXTRA_RUNTIME_SESSION, identity.sessionId)
-        intent.putExtra(EXTRA_RUNTIME_AUTH, mac(context, payload(purpose, identity.guestPackage, identity.cloneId, component, identity.sessionId)))
-        return intent
+        return signFields(context, intent, purpose, identity.guestPackage, identity.cloneId, component, identity.sessionId)
     }
+
+    /** Host-side signing path used before a clone RuntimeSession exists. */
+    fun sign(context: Context, intent: Intent, pkg: RuntimePackage, purpose: String, component: String): Intent =
+        signFields(context, intent, purpose, pkg.packageName, pkg.slot, component, RuntimeVirtualIdentityRegistry.sessionId(pkg))
 
     fun verify(context: Context, intent: Intent, session: RuntimeSession, purpose: String, component: String): Boolean {
         val identity = RuntimeVirtualIdentityRegistry.forSession(session)
-        val suppliedSession = intent.getStringExtra(EXTRA_RUNTIME_SESSION) ?: return reject("missing-session", purpose, identity)
-        if (suppliedSession != identity.sessionId) return reject("session-mismatch", purpose, identity)
-        val supplied = intent.getStringExtra(EXTRA_RUNTIME_AUTH) ?: return reject("missing-auth", purpose, identity)
-        val expected = mac(context, payload(purpose, identity.guestPackage, identity.cloneId, component, identity.sessionId))
+        return verifyFields(context, intent, purpose, identity.guestPackage, identity.cloneId, component, identity.sessionId)
+    }
+
+    /** Verification path for control messages that intentionally do not bootstrap a guest session. */
+    fun verify(context: Context, intent: Intent, pkg: RuntimePackage, purpose: String, component: String): Boolean =
+        verifyFields(context, intent, purpose, pkg.packageName, pkg.slot, component, RuntimeVirtualIdentityRegistry.sessionId(pkg))
+
+    private fun signFields(
+        context: Context,
+        intent: Intent,
+        purpose: String,
+        packageName: String,
+        slot: Int,
+        component: String,
+        sessionId: String
+    ): Intent {
+        intent.putExtra(EXTRA_RUNTIME_SESSION, sessionId)
+        intent.putExtra(EXTRA_RUNTIME_AUTH, mac(context, payload(purpose, packageName, slot, component, sessionId)))
+        return intent
+    }
+
+    private fun verifyFields(
+        context: Context,
+        intent: Intent,
+        purpose: String,
+        packageName: String,
+        slot: Int,
+        component: String,
+        sessionId: String
+    ): Boolean {
+        val suppliedSession = intent.getStringExtra(EXTRA_RUNTIME_SESSION) ?: return reject("missing-session", purpose, packageName, slot)
+        if (suppliedSession != sessionId) return reject("session-mismatch", purpose, packageName, slot)
+        val supplied = intent.getStringExtra(EXTRA_RUNTIME_AUTH) ?: return reject("missing-auth", purpose, packageName, slot)
+        val expected = mac(context, payload(purpose, packageName, slot, component, sessionId))
         val ok = MessageDigest.isEqual(supplied.toByteArray(Charsets.US_ASCII), expected.toByteArray(Charsets.US_ASCII))
-        if (!ok) reject("hmac-mismatch", purpose, identity)
+        if (!ok) reject("hmac-mismatch", purpose, packageName, slot)
         return ok
     }
 
@@ -66,8 +98,8 @@ internal object RuntimeIntentSecurity {
         return bytes
     }
 
-    private fun reject(reason: String, purpose: String, identity: RuntimeVirtualIdentity): Boolean {
-        RuntimeDiagnostics.log("SECURITY7", "runtime intent rejected reason=$reason purpose=$purpose guest=${identity.guestPackage}/${identity.cloneId}")
+    private fun reject(reason: String, purpose: String, packageName: String, slot: Int): Boolean {
+        RuntimeDiagnostics.log("SECURITY7", "runtime intent rejected reason=$reason purpose=$purpose guest=$packageName/$slot")
         return false
     }
 }
