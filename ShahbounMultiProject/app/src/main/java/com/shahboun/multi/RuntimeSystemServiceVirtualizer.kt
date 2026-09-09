@@ -100,10 +100,12 @@ internal object RuntimeSystemServiceVirtualizer {
                 key = "binder-call:$serviceName:${method.name}",
                 fallback = {
                     capabilities[serviceName] = Capability(State.FALLBACK, "recursive binder invocation blocked method=${method.name}")
-                    invokeOriginal(original, method, args)
+                    val safe = RuntimeBinderIdentitySanitizer.sanitize(context, session, method, args)
+                    val result = invokeOriginal(original, method, safe)
+                    RuntimeBinderIdentitySanitizer.restoreResult(session, result)
                 }
             ) {
-                val safe = RuntimeBinderIdentitySanitizer.sanitize(context, session, args)
+                val safe = RuntimeBinderIdentitySanitizer.sanitize(context, session, method, args)
                 val result = invokeOriginal(original, method, safe)
                 RuntimeBinderIdentitySanitizer.restoreResult(session, result)
             }
