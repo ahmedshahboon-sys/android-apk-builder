@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 32
-        versionName = "0.7.4-runtime3"
+        versionCode = 33
+        versionName = "0.7.5-runtime3"
         manifestPlaceholders["debugActivityEnabled"] = "true"
     }
 
@@ -68,5 +68,6 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("com.google.android.material:material:1.13.0")
+    implementation("com.google.android.gms:play-services-base:18.10.1")
     implementation(fileTree("libs") { include("*.aar", "*.jar") })
 }

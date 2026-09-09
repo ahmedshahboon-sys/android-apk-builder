@@ -1,8 +1,11 @@
 package com.shahboun.multi
 
+import android.app.Activity
+import android.app.AlertDialog
 import android.app.Application
 import android.app.job.JobScheduler
 import android.os.Build
+import android.os.Bundle
 import android.webkit.WebView
 
 class MultiApplication : Application() {
@@ -16,7 +19,6 @@ class MultiApplication : Application() {
         super.onCreate()
         current = this
 
-        // Nothing outside the core engine is allowed to kill the host UI during Application startup.
         runCatching { RuntimeDiagnostics.initialize(this) }
         runCatching { RuntimeDeepDiagnostics.initialize(this) }
         runCatching { RuntimeDiagnostics.installCrashHandler() }
@@ -26,11 +28,10 @@ class MultiApplication : Application() {
         safeStartup("COMPAT") { RuntimeCompatibility.logProfile() }
         safeStartup("WEBVIEW") { installWebViewIsolation() }
         safeStartup("BARS") { SystemBarsFitter.install(this) }
+        if (processName == packageName) safeStartup("DIAG-PROMPT") { installDiagnosticsPrompt() }
 
         if (processName == packageName) safeStartup("JOB-MIGRATE") { migrateLegacyJobRecords() }
 
-        // Core engine initialization is intentionally tiny (private Runtime 3 storage + factories).
-        // Keep the object available even if a recovery/bootstrap path hits malformed legacy state.
         engine = ShahbounRuntime3Engine()
         val engineResult = engine.initialize(this)
         engineResult
@@ -71,6 +72,40 @@ class MultiApplication : Application() {
         }
     }
 
+    private fun installDiagnosticsPrompt() {
+        if (!RuntimeDiagnostics.hasPersistentIssues()) return
+        val prefs = getSharedPreferences("shahboun_diagnostics_prompt", MODE_PRIVATE)
+        val versionKey = currentVersionCode().toString()
+        if (prefs.getBoolean(versionKey, false)) return
+
+        val callbacks = object : ActivityLifecycleCallbacks {
+            private var handled = false
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+                if (handled || activity !is MainActivity) return
+                handled = true
+                prefs.edit().putBoolean(versionKey, true).apply()
+                activity.runOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                    AlertDialog.Builder(activity)
+                        .setTitle("تقارير تشخيص سابقة")
+                        .setMessage("توجد مشاكل محفوظة من تجارب سابقة. هل تريد حذف التقارير وبدء جلسة تشخيص نظيفة؟")
+                        .setPositiveButton("نعم، ابدأ من جديد") { _, _ -> RuntimeDiagnostics.clear() }
+                        .setNegativeButton("لا، احتفظ بها", null)
+                        .setCancelable(false)
+                        .show()
+                }
+                unregisterActivityLifecycleCallbacks(this)
+            }
+            override fun onActivityStarted(activity: Activity) = Unit
+            override fun onActivityResumed(activity: Activity) = Unit
+            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivityStopped(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) = Unit
+        }
+        registerActivityLifecycleCallbacks(callbacks)
+    }
+
     private inline fun safeStartup(tag: String, block: () -> Unit) {
         runCatching(block).onFailure { error ->
             runCatching { RuntimeDiagnostics.log("STARTUP", "$tag failed but host continues: ${error.javaClass.simpleName}: ${error.message}") }
@@ -96,6 +131,12 @@ class MultiApplication : Application() {
             .onSuccess { RuntimeDiagnostics.log("WEBVIEW", "isolated data directory processIndex=$processIndex process=$process") }
             .onFailure { RuntimeDiagnostics.log("WEBVIEW", "data directory isolation failed processIndex=$processIndex: ${it.stackTraceToString()}") }
     }
+
+    @Suppress("DEPRECATION")
+    private fun currentVersionCode(): Long = runCatching {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+    }.getOrDefault(0L)
 
     private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName
 

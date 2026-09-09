@@ -38,7 +38,7 @@ class DebugActivity : Activity() {
         }
 
         val titleView = TextView(this).apply {
-            text = "التشخيص الذكي"
+            text = "المشاكل المسجلة"
             textSize = 22f
             setTextColor(Color.WHITE)
             typeface = CairoFontManager.typeface(this@DebugActivity, 700)
@@ -49,15 +49,15 @@ class DebugActivity : Activity() {
         root.addView(titleView, LinearLayout.LayoutParams(-1, -2))
 
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        row1.addView(button("فحص الكل") { auditAll() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
+        row1.addView(button("فحص تلقائي") { auditAll() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
         row1.addView(button("تحديث") { showCompact() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(4),0,dp(4),0) })
-        row1.addView(button("نسخ المختصر") { copyCompact() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
+        row1.addView(button("نسخ المشاكل") { copyCompact() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
         root.addView(row1, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
 
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         row2.addView(button("مشاركة") { shareCompact() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(4) })
-        row2.addView(button("تفاصيل") { toggleDetails() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { setMargins(dp(4),0,dp(4),0) })
-        row2.addView(button("مسح") { RuntimeDiagnostics.clear(); auditAll() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(4) })
+        row2.addView(button("السجل الكامل") { toggleDetails() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { setMargins(dp(4),0,dp(4),0) })
+        row2.addView(button("مسح التقارير") { RuntimeDiagnostics.clear(); auditAll() }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginStart = dp(4) })
         root.addView(row2, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
 
         output = TextView(this).apply {
@@ -78,8 +78,6 @@ class DebugActivity : Activity() {
 
         setContentView(root)
         CairoFontManager.prepare(this) { runOnUiThread { CairoFontManager.applyTo(root, this) } }
-
-        // Automatic structural preflight for every clone as soon as diagnostics opens.
         auditAll()
     }
 
@@ -91,72 +89,42 @@ class DebugActivity : Activity() {
     private fun auditAll() {
         val app = application as? MultiApplication ?: return
         val clones = CloneStore(this).list()
-        if (clones.isEmpty()) {
-            lastCompactReport = RuntimeDiagnostics.compactSnapshot() + "\n\nلا توجد نسخ للفحص."
-            lastFullAudit = RuntimeDiagnostics.snapshot()
-            showCompact()
-            return
-        }
-        output.text = "جاري فحص ${clones.size} نسخة تلقائيًا…"
+        output.text = if (clones.isEmpty()) "لا توجد نسخ للفحص." else "جاري فحص ${clones.size} نسخة تلقائيًا…"
         Thread {
-            val reports = clones.map { clone ->
-                clone to runCatching { RuntimeCompatibilityAudit.run(this@DebugActivity, app.engine, clone.packageName, clone.slot) }
+            val reports = clones.map { clone -> clone to runCatching { RuntimeCompatibilityAudit.run(this@DebugActivity, app.engine, clone.packageName, clone.slot) } }
+            val structuralIssues = reports.flatMap { (clone, result) ->
+                result.fold(
+                    onSuccess = { report ->
+                        report.checks.filter {
+                            it.status == CompatibilityCheck.Status.FAIL ||
+                                (it.status == CompatibilityCheck.Status.WARN && it.name != "Runtime live test")
+                        }.map { issue -> Triple(clone, issueCode(issue), issue.detail.replace('\n', ' ').take(180)) }
+                    },
+                    onFailure = { error -> listOf(Triple(clone, "AUDIT-CRASH", "${error.javaClass.simpleName}: ${error.message.orEmpty().take(180)}")) }
+                )
             }
             val compact = buildString {
-                appendLine("=== SHAHBOUN AUTO DIAG ===")
-                appendLine(RuntimeDiagnostics.compactSnapshot())
-                appendLine()
-                appendLine("Apps: ${clones.size}")
-                reports.forEach { (clone, result) ->
-                    result.fold(
-                        onSuccess = { report -> appendCompactClone(clone, report) },
-                        onFailure = { error ->
-                            appendLine("✕ ${clone.packageName} #${clone.slot + 1} • AUDIT-CRASH")
-                            appendLine("  ${error.javaClass.simpleName}: ${error.message.orEmpty().take(160)}")
-                        }
-                    )
+                append(RuntimeDiagnostics.compactSnapshot())
+                if (structuralIssues.isNotEmpty()) {
+                    appendLine(); appendLine(); appendLine("PRECHECK ISSUES: ${structuralIssues.size}")
+                    structuralIssues.forEachIndexed { index, (clone, code, detail) ->
+                        appendLine("${index + 1}) ${clone.packageName} #${clone.slot + 1}")
+                        appendLine(code)
+                        appendLine(detail)
+                        if (index != structuralIssues.lastIndex) appendLine()
+                    }
                 }
-                appendLine()
-                appendLine("LIVE: الأخطاء التي لا تظهر إلا أثناء تشغيل كود التطبيق تحتاج تشغيل النسخة مرة واحدة؛ بعدها تظهر هنا مختصرة تلقائيًا.")
             }.trimEnd()
             val full = buildString {
                 appendLine("=== SHAHBOUN DEEP COMPATIBILITY AUDIT ===")
-                reports.forEach { (clone, result) ->
-                    appendLine(result.fold(onSuccess = { it.render() }, onFailure = { "✕ ${clone.customName}: ${it.stackTraceToString()}" }))
-                }
-                appendLine()
-                append(RuntimeDiagnostics.snapshot())
+                reports.forEach { (clone, result) -> appendLine(result.fold(onSuccess = { it.render() }, onFailure = { "✕ ${clone.customName}: ${it.stackTraceToString()}" })) }
+                appendLine(); append(RuntimeDiagnostics.snapshot())
             }
-            RuntimeDiagnostics.log("AUDIT", "compact auto audit completed clones=${clones.size}")
+            RuntimeDiagnostics.log("AUDIT", "compact issue-only audit completed clones=${clones.size} structuralIssues=${structuralIssues.size}")
             lastCompactReport = compact
             lastFullAudit = full
             runOnUiThread { if (!isFinishing) { fullMode = false; output.text = compact } }
         }.start()
-    }
-
-    private fun StringBuilder.appendCompactClone(clone: CloneProfile, report: CompatibilityReport) {
-        val actionable = report.checks.filter {
-            it.status == CompatibilityCheck.Status.FAIL ||
-                (it.status == CompatibilityCheck.Status.WARN && it.name != "Runtime live test")
-        }
-        val failures = actionable.filter { it.status == CompatibilityCheck.Status.FAIL }
-        val warnings = actionable.filter { it.status == CompatibilityCheck.Status.WARN }
-        val marker = when {
-            failures.isNotEmpty() -> "✕"
-            warnings.isNotEmpty() -> "!"
-            else -> "✓"
-        }
-        val state = when {
-            failures.isNotEmpty() -> "FAIL"
-            warnings.isNotEmpty() -> "WARN"
-            else -> "PRECHECK-OK"
-        }
-        appendLine("$marker ${clone.packageName} #${clone.slot + 1} • $state")
-        actionable.take(3).forEach { issue ->
-            val code = issueCode(issue)
-            appendLine("  $code: ${issue.detail.replace('\n', ' ').take(150)}")
-        }
-        if (actionable.size > 3) appendLine("  +${actionable.size - 3} مشاكل إضافية")
     }
 
     private fun issueCode(issue: CompatibilityCheck): String = when {
@@ -175,7 +143,8 @@ class DebugActivity : Activity() {
 
     private fun showCompact() {
         fullMode = false
-        output.text = if (lastCompactReport.isBlank()) RuntimeDiagnostics.compactSnapshot() else lastCompactReport
+        lastCompactReport = RuntimeDiagnostics.compactSnapshot()
+        output.text = lastCompactReport
     }
 
     private fun toggleDetails() {
@@ -190,17 +159,17 @@ class DebugActivity : Activity() {
     private fun copyCompact() {
         val text = if (lastCompactReport.isBlank()) RuntimeDiagnostics.compactSnapshot() else lastCompactReport
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Shahboun Auto Diag", text))
-        Toast.makeText(this, "تم نسخ التشخيص المختصر", Toast.LENGTH_SHORT).show()
+        clipboard.setPrimaryClip(ClipData.newPlainText("Shahboun Issues", text))
+        Toast.makeText(this, "تم نسخ المشاكل المختصرة", Toast.LENGTH_SHORT).show()
     }
 
     private fun shareCompact() {
         val text = if (lastCompactReport.isBlank()) RuntimeDiagnostics.compactSnapshot() else lastCompactReport
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "Shahboun Auto Diag")
+            putExtra(Intent.EXTRA_SUBJECT, "Shahboun Issues")
             putExtra(Intent.EXTRA_TEXT, text)
         }
-        startActivity(Intent.createChooser(intent, "مشاركة التشخيص المختصر"))
+        startActivity(Intent.createChooser(intent, "مشاركة المشاكل المختصرة"))
     }
 }

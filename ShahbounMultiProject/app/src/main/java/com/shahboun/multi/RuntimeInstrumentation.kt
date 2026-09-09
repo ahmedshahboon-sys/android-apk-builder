@@ -22,9 +22,7 @@ internal object RuntimeActivityBindings {
 
     fun finishClone(packageName: String, slot: Int): Int {
         val targets = synchronized(bindings) { bindings.entries.filter { it.value.packageName == packageName && it.value.slot == slot }.map { it.key } }
-        targets.forEach { activity ->
-            runCatching { activity.runOnUiThread { if (!activity.isFinishing) activity.finishAndRemoveTask() } }
-        }
+        targets.forEach { activity -> runCatching { activity.runOnUiThread { if (!activity.isFinishing) activity.finishAndRemoveTask() } } }
         RuntimeDiagnostics.log("RUNTIME", "finish activities $packageName/$slot count=${targets.size}")
         return targets.size
     }
@@ -42,10 +40,24 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
                 require(session.runtimePackage.ownsActivity(requested)) { "Activity غير مسجلة في Snapshot النسخة" }
                 val resolved = session.runtimePackage.resolveActivity(requested)
                 val incoming = className.orEmpty()
-                require(RuntimeProcessPool.isActivityStubName(incoming) || incoming == resolved || incoming == requested) {
-                    "Launch Activity غير متوقعة: incoming=$incoming expected=$resolved"
-                }
+                require(RuntimeProcessPool.isActivityStubName(incoming) || incoming == resolved || incoming == requested) { "Launch Activity غير متوقعة: incoming=$incoming expected=$resolved" }
                 RuntimeDiagnostics.log("RUNTIME", "newActivity incoming=$incoming requested=$requested resolved=$resolved package=$packageName/$slot loader=${session.classLoader.javaClass.simpleName}")
+                return RuntimeExecutionScope.withSession(session) { base.newActivity(session.classLoader, resolved, intent) }
+            }
+        }
+
+        // Android recreates an Activity after locale/theme/configuration changes using the public
+        // Intent, which no longer contains Shahboun's private launch extras. Recover ownership from
+        // the immutable clone process and instantiate through the guest classloader instead of
+        // silently turning the recreated Activity into a host Activity.
+        val incoming = className.orEmpty()
+        val owner = RuntimeExecutionScope.processOwner()
+        if (owner != null && incoming.isNotBlank()) {
+            val session = RuntimeRegistry.getOrNull(owner.first, owner.second)
+                ?: runCatching { MultiApplication.current?.engine?.sessionFor(owner.first, owner.second) }.getOrNull()
+            if (session != null && session.runtimePackage.ownsActivity(incoming)) {
+                val resolved = session.runtimePackage.resolveActivity(incoming)
+                RuntimeDiagnostics.log("RUNTIME", "newActivity recreate recovered package=${owner.first}/${owner.second} incoming=$incoming resolved=$resolved loader=${session.classLoader.javaClass.simpleName}")
                 return RuntimeExecutionScope.withSession(session) { base.newActivity(session.classLoader, resolved, intent) }
             }
         }

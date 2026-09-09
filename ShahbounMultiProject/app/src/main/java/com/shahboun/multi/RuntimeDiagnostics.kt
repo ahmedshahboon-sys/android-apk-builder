@@ -20,6 +20,7 @@ object RuntimeDiagnostics {
 
     fun initialize(context: Context) {
         appContext = context.applicationContext
+        RuntimeIssueLedger.initialize(appContext)
         sessionGroup = resolveSessionGroup()
         log("SESSION", "group=$sessionGroup process=${processName()} version=${versionLabel()}")
         log("APP", "diagnostics initialized sdk=${Build.VERSION.SDK_INT} android=${Build.VERSION.RELEASE} device=${Build.MANUFACTURER}/${Build.MODEL} process=${processName()} pid=${Process.myPid()} uid=${Process.myUid()} version=${versionLabel()}")
@@ -29,6 +30,7 @@ object RuntimeDiagnostics {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching {
+                RuntimeIssueLedger.recordThrowable(error)
                 log("CRASH", "group=$sessionGroup thread=${thread.name} process=${processName()} pid=${Process.myPid()}\n${error.stackTraceToString()}")
                 log("HEALTH", "fatal=${error.javaClass.name} message=${error.message.orEmpty().take(300)}")
                 RuntimeDeepDiagnostics.captureEmergencySnapshot("uncaught:${error.javaClass.simpleName}")
@@ -39,6 +41,7 @@ object RuntimeDiagnostics {
 
     fun log(tag: String, message: String) {
         if (!::appContext.isInitialized) return
+        runCatching { RuntimeIssueLedger.observe(tag, message) }
         synchronized(lock) {
             val file = logFile()
             if (file.exists() && file.length() > MAX_BYTES) rotate(file)
@@ -64,46 +67,19 @@ object RuntimeDiagnostics {
             appendLine("Process: ${processName()} | pid=${Process.myPid()} | uid=${Process.myUid()}")
             appendLine("Current-session crashes: $crashCount | bridge fallbacks: $fallbackCount")
         }
-        return header + RuntimeDeepDiagnostics.renderReport() + RuntimeReadinessReport.render(raw) + "--- LOG (CURRENT SESSION) ---\n" + raw
+        return header + RuntimeDeepDiagnostics.renderReport() + RuntimeReadinessReport.render(raw) + "--- ISSUE LEDGER ---\n" + RuntimeIssueLedger.renderCompact() + "\n--- LOG (CURRENT SESSION) ---\n" + raw
     }
 
-    fun compactSnapshot(): String {
-        if (!::appContext.isInitialized) return "Diagnostics not initialized"
-        val raw = currentRaw()
-        val crashes = Regex("\\[CRASH]\\s").findAll(raw).count()
-        val fallbacks = Regex("=fallback").findAll(raw).count()
-        val lowMemory = Regex("reasonName=LOW_MEMORY").findAll(raw).count()
-        val anr = Regex("reasonName=ANR").findAll(raw).count()
-        val security = Regex("SecurityException").findAll(raw).count()
-        val activityRouting = Regex("ActivityNotFoundException").findAll(raw).count()
-        val processCollision = Regex("PROCESS COLLISION").findAll(raw).count()
-        val resourceFailures = Regex("resource probe (failed|FAIL)|NotFoundException", RegexOption.IGNORE_CASE).findAll(raw).count()
-        val lastHealth = raw.lineSequence().filter { "[HEALTH]" in it }.lastOrNull()?.substringAfter("[HEALTH] ")?.take(220)
-        val lastCrashProcess = raw.lineSequence().filter { "[CRASH]" in it }.lastOrNull()?.let { line ->
-            Regex("process=([^ ]+)").find(line)?.groupValues?.getOrNull(1)
-        }
-        return buildString {
-            appendLine("SHAHBOUN DEBUG • ${versionLabel()}")
-            appendLine("${Build.MANUFACTURER} ${Build.MODEL} • Android ${Build.VERSION.RELEASE} / SDK ${Build.VERSION.SDK_INT}")
-            appendLine("Session: $sessionGroup")
-            appendLine("Runtime: crashes=$crashes fallback=$fallbacks lowmem=$lowMemory anr=$anr")
-            if (security > 0) appendLine("! IDENTITY/SECURITY: $security")
-            if (activityRouting > 0) appendLine("! ACTIVITY-ROUTE: $activityRouting")
-            if (processCollision > 0) appendLine("! PROCESS-COLLISION: $processCollision")
-            if (resourceFailures > 0) appendLine("! RESOURCES: $resourceFailures")
-            if (lastCrashProcess != null) appendLine("Last crash process: $lastCrashProcess")
-            if (!lastHealth.isNullOrBlank()) appendLine("Last fatal: $lastHealth")
-            if (crashes == 0 && fallbacks == 0 && lowMemory == 0 && anr == 0 && security == 0 && activityRouting == 0 && processCollision == 0 && resourceFailures == 0) {
-                appendLine("✓ لا توجد أخطاء Runtime مسجلة في الجلسة الحالية")
-            }
-        }.trimEnd()
-    }
+    fun compactSnapshot(): String = if (!::appContext.isInitialized) "Diagnostics not initialized" else RuntimeIssueLedger.renderCompact()
+
+    fun hasPersistentIssues(): Boolean = ::appContext.isInitialized && RuntimeIssueLedger.hasIssues()
 
     fun clear() {
         if (!::appContext.isInitialized) return
         synchronized(lock) {
             runCatching { logFile().delete() }
             runCatching { oldLogFile().delete() }
+            runCatching { RuntimeIssueLedger.clear() }
         }
         newSessionGroup(force = true)
         log("SESSION", "group=$sessionGroup process=${processName()} version=${versionLabel()} cleared=true")
