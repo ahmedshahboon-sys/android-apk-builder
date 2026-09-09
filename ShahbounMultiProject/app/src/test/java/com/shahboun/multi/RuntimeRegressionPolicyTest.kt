@@ -1,6 +1,7 @@
 package com.shahboun.multi
 
 import java.io.File
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -59,6 +60,43 @@ class RuntimeRegressionPolicyTest {
             fail("Traversal was accepted")
         } catch (_: IllegalArgumentException) {
             // expected
+        }
+    }
+
+    @Test
+    fun relativeOpenAtStylePathCannotEscapeRoot() {
+        val root = Files.createTempDirectory("shahboun-relative").toFile().canonicalFile
+        val files = File(root, "data/files").apply { mkdirs() }.canonicalFile
+        val valid = RuntimePathPolicy.resolveRelativeWithin(root, files, "nested/profile.db")
+        assertTrue(RuntimePathPolicy.isContained(root, valid))
+        try {
+            RuntimePathPolicy.resolveRelativeWithin(root, files, "../../../outside.db")
+            fail("Relative traversal was accepted")
+        } catch (_: IllegalArgumentException) {
+            // expected
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun existingSymlinkEscapeIsRejected() {
+        val root = Files.createTempDirectory("shahboun-symlink-root").toFile().canonicalFile
+        val outside = Files.createTempDirectory("shahboun-symlink-outside").toFile().canonicalFile
+        val files = File(root, "data/files").apply { mkdirs() }.canonicalFile
+        val link = File(files, "escape")
+        try {
+            val created = runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()); true }.getOrDefault(false)
+            if (!created) return
+            try {
+                RuntimePathPolicy.resolveRelativeWithin(root, files, "escape/secret.db")
+                fail("Symlink escape was accepted")
+            } catch (_: IllegalArgumentException) {
+                // expected
+            }
+        } finally {
+            root.deleteRecursively()
+            outside.deleteRecursively()
         }
     }
 
