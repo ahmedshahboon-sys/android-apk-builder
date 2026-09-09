@@ -36,6 +36,13 @@ object RuntimeIntentRouter {
     fun verifyWrapper(context: Context, session: RuntimeSession, wrapper: Intent, target: String): Boolean =
         RuntimeIntentSecurity.verify(context, wrapper, session, PURPOSE_ACTIVITY, target)
 
+    /**
+     * Pre-bootstrap verifier. Use this before sessionFor()/LoadedApk/Application creation so
+     * untrusted extras can never cause guest code to execute before route authentication succeeds.
+     */
+    fun verifyWrapper(context: Context, pkg: RuntimePackage, wrapper: Intent, target: String): Boolean =
+        RuntimeIntentSecurity.verify(context, wrapper, pkg, PURPOSE_ACTIVITY, target)
+
     fun launchIntent(context: Context, session: RuntimeSession): Intent {
         val pkg = session.runtimePackage
         val original = Intent(Intent.ACTION_MAIN).apply {
