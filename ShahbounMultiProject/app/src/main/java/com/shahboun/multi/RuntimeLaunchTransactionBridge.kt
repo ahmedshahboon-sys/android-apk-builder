@@ -56,7 +56,12 @@ object RuntimeLaunchTransactionBridge {
         }
     }
 
-    private data class Descriptor(val packageName: String, val slot: Int, val activity: String)
+    private data class Descriptor(
+        val packageName: String,
+        val slot: Int,
+        val activity: String,
+        val wrapper: Intent
+    )
 
     private fun patchTransaction(root: Any?) {
         root ?: return
@@ -69,8 +74,17 @@ object RuntimeLaunchTransactionBridge {
             return
         }
 
-        // Pin the guest-visible process name before any guest class, Application constructor or
-        // attachBaseContext code can run. Meta-class applications cache this identity very early.
+        // SECURITY INVARIANT: validate app-private route authentication before pinning identity,
+        // creating a RuntimeSession, patching LoadedApk, loading guest code, providers or Application.
+        val snapshot = app.engine.runtimePackageFor(descriptor.packageName, descriptor.slot)
+        require(snapshot.ownsActivity(descriptor.activity)) {
+            "Launch transaction activity not owned by snapshot: ${descriptor.activity}"
+        }
+        require(RuntimeIntentRouter.verifyWrapper(app, snapshot, descriptor.wrapper, descriptor.activity)) {
+            "Runtime launch transaction authentication failed"
+        }
+
+        // Pin the guest-visible process name only after the route is authenticated.
         RuntimeGuestProcessIdentity.pinPackage(descriptor.packageName, descriptor.slot)
 
         // Bind guest code/resources/Application into Android's own LoadedApk cache before the
@@ -92,8 +106,9 @@ object RuntimeLaunchTransactionBridge {
                 intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1) == descriptor.slot) {
                 intent.component = ComponentName(pkg.packageName, resolvedActivity)
                 intent.`package` = pkg.packageName
-                // Keep runtime descriptor extras until callActivityOnCreate binds the guest context;
-                // RuntimeGuestContext then restores the original public Intent for guest code.
+                // Keep authenticated runtime descriptor extras until callActivityOnCreate binds the
+                // guest context. The HMAC authenticates descriptor fields, not mutable framework
+                // delivery fields such as component/package that Android rewrites locally.
                 intent.putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
                 intent.putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
                 intent.putExtra(EXTRA_RUNTIME_ACTIVITY, descriptor.activity)
@@ -103,7 +118,7 @@ object RuntimeLaunchTransactionBridge {
 
         RuntimeDiagnostics.log(
             "LAUNCH2",
-            "guest launch bound ${pkg.packageName}/${pkg.slot} requested=${descriptor.activity} resolved=$resolvedActivity infos=${infos.size} intents=$routedIntents process=$actualProcess"
+            "guest launch bound ${pkg.packageName}/${pkg.slot} requested=${descriptor.activity} resolved=$resolvedActivity infos=${infos.size} intents=$routedIntents process=$actualProcess auth=prebootstrap"
         )
     }
 
@@ -134,7 +149,7 @@ object RuntimeLaunchTransactionBridge {
             val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return@forEach
             val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
             val activity = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY) ?: return@forEach
-            if (slot >= 0) return Descriptor(packageName, slot, activity)
+            if (slot >= 0) return Descriptor(packageName, slot, activity, intent)
         }
         return null
     }
