@@ -36,12 +36,17 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
             val requested = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY)
             if (!packageName.isNullOrBlank() && slot >= 0 && !requested.isNullOrBlank()) {
                 val app = MultiApplication.current ?: error("Shahboun application runtime غير متاح")
+                val snapshot = app.engine.runtimePackageFor(packageName, slot)
+                require(snapshot.ownsActivity(requested)) { "Activity غير مسجلة في Snapshot النسخة" }
+                require(RuntimeIntentSecurity.verify(app, intent, snapshot, "activity", requested)) {
+                    "Runtime Activity route authentication failed"
+                }
+                // Only authenticated envelopes may create/restore a guest session.
                 val session = app.engine.sessionFor(packageName, slot)
-                require(session.runtimePackage.ownsActivity(requested)) { "Activity غير مسجلة في Snapshot النسخة" }
                 val resolved = session.runtimePackage.resolveActivity(requested)
                 val incoming = className.orEmpty()
                 require(RuntimeProcessPool.isActivityStubName(incoming) || incoming == resolved || incoming == requested) { "Launch Activity غير متوقعة: incoming=$incoming expected=$resolved" }
-                RuntimeDiagnostics.log("RUNTIME", "newActivity incoming=$incoming requested=$requested resolved=$resolved package=$packageName/$slot loader=${session.classLoader.javaClass.simpleName}")
+                RuntimeDiagnostics.log("RUNTIME", "newActivity incoming=$incoming requested=$requested resolved=$resolved package=$packageName/$slot loader=${session.classLoader.javaClass.simpleName} auth=verified")
                 return RuntimeExecutionScope.withSession(session) { base.newActivity(session.classLoader, resolved, intent) }
             }
         }
