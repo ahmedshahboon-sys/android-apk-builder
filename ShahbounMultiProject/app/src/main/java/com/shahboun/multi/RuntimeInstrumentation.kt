@@ -46,10 +46,6 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
             }
         }
 
-        // Android recreates an Activity after locale/theme/configuration changes using the public
-        // Intent, which no longer contains Shahboun's private launch extras. Recover ownership from
-        // the immutable clone process and instantiate through the guest classloader instead of
-        // silently turning the recreated Activity into a host Activity.
         val incoming = className.orEmpty()
         val owner = RuntimeExecutionScope.processOwner()
         if (owner != null && incoming.isNotBlank()) {
@@ -67,6 +63,8 @@ class ShahbounInstrumentation(private val base: Instrumentation) : Instrumentati
     override fun callActivityOnCreate(activity: Activity, icicle: Bundle?) {
         val frameworkSession = RuntimeFrameworkActivityBinder.bind(activity)
         if (frameworkSession == null) RuntimeGuestContext.attachIfNeeded(activity)
+        val session = frameworkSession ?: RuntimeActivityBindings.sessionFor(activity)
+        RuntimeActivityBootstrap.ensure(activity, session)
         RuntimeActivityResourceFix.prepare(activity)
         logLifecycle(activity, "create")
         scoped(activity) { base.callActivityOnCreate(activity, icicle) }
