@@ -14,8 +14,8 @@ android {
         applicationId = "com.shahboun.multi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 46
-        versionName = "1.3.1-runtime7"
+        versionCode = 47
+        versionName = "1.3.2-runtime7"
         manifestPlaceholders["debugActivityEnabled"] = "true"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild {
