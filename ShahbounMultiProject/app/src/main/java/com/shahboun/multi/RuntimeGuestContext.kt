@@ -45,6 +45,7 @@ class RuntimeGuestContext(
 
     init {
         RuntimeNativeRuntime.register(session.runtimePackage.packageName, session.runtimePackage.slot, slotDir)
+        RuntimeWebGmsCompatibility.prepareCloneStorage(baseContext, session, slotDir)
     }
 
     override fun getPackageName(): String {
@@ -147,7 +148,12 @@ class RuntimeGuestContext(
     }
 
     private fun wrapDynamicReceiver(receiver: BroadcastReceiver): BroadcastReceiver = dynamicReceivers.getOrPut(receiver) {
-        object : BroadcastReceiver() { override fun onReceive(context: Context?, intent: Intent?) { RuntimeExecutionScope.withSession(session) { receiver.onReceive(this@RuntimeGuestContext, intent) } } }
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                RuntimeComponentSupervisor.receiver(session)
+                RuntimeExecutionScope.withSession(session) { receiver.onReceive(this@RuntimeGuestContext, intent) }
+            }
+        }
     }
 
     override fun getSystemService(name: String): Any? = when (name) {
@@ -183,6 +189,7 @@ class RuntimeGuestContext(
             val actual = activity.javaClass.name
             val guestActivity = if (!requested.isNullOrBlank()) session.runtimePackage.resolveActivity(requested) else actual
             if (actual != guestActivity && !session.runtimePackage.ownsActivity(actual)) return
+            RuntimeComponentSupervisor.activity(session)
             val slotDir = hostApp.engine.runtimeSlotDir(packageName, slot)
             val originalBase = activity.baseContext
             val guest = RuntimeGuestContext(originalBase, session, slotDir)
