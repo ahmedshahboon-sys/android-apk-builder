@@ -26,7 +26,17 @@ class RuntimeSession(
     private val loaderHostResources: Resources?,
     private val closeables: List<Closeable>
 ) : Closeable {
-    enum class BootstrapState { NEW, ATTACHED, PROVIDERS_READY, APPLICATION_READY, FAILED, CLOSED }
+    enum class BootstrapState {
+        NEW,
+        PREPARING,
+        ATTACHED,
+        PROVIDERS_READY,
+        APPLICATION_READY,
+        RUNNING,
+        TERMINATING,
+        FAILED,
+        CLOSED
+    }
 
     @Volatile var guestApplication: Application? = null
         private set
@@ -37,15 +47,30 @@ class RuntimeSession(
         private set
     @Volatile var componentHost: RuntimeComponentHost? = null
         private set
+    @Volatile private var bootstrapOwnerThreadId: Long = -1L
 
     fun applicationForContext(): Application? = guestApplication ?: attachedApplication
-    fun isApplicationReady(): Boolean = bootstrapState == BootstrapState.APPLICATION_READY && guestApplication != null
+    fun isApplicationReady(): Boolean = bootstrapState in setOf(BootstrapState.APPLICATION_READY, BootstrapState.RUNNING) && guestApplication != null
+    fun isRunning(): Boolean = bootstrapState == BootstrapState.RUNNING
 
     @Synchronized
     fun ensureGuestApplication(base: Context, slotDir: File): Application {
         guestApplication?.let { return it }
-        check(bootstrapState != BootstrapState.CLOSED) { "RuntimeSession مغلقة" }
-        if (bootstrapState == BootstrapState.FAILED) throw IllegalStateException("Guest bootstrap فشل سابقًا", bootstrapFailure)
+        when (bootstrapState) {
+            BootstrapState.CLOSED, BootstrapState.TERMINATING -> error("RuntimeSession غير متاحة أثناء $bootstrapState")
+            BootstrapState.FAILED -> throw IllegalStateException("Guest bootstrap فشل سابقًا", bootstrapFailure)
+            BootstrapState.PREPARING, BootstrapState.ATTACHED, BootstrapState.PROVIDERS_READY, BootstrapState.APPLICATION_READY -> {
+                if (bootstrapOwnerThreadId == Thread.currentThread().id) {
+                    val error = IllegalStateException("Reentrant guest bootstrap detected state=$bootstrapState")
+                    RuntimeDiagnostics.log("BOOT7", "reentrant bootstrap blocked ${runtimePackage.packageName}/${runtimePackage.slot} state=$bootstrapState")
+                    throw error
+                }
+            }
+            else -> Unit
+        }
+
+        bootstrapOwnerThreadId = Thread.currentThread().id
+        transition(BootstrapState.PREPARING)
 
         val appClass = runtimePackage.applicationClass?.let { classLoader.loadClass(it) }
         val app = if (appClass != null) {
@@ -68,30 +93,54 @@ class RuntimeSession(
             }
 
             attachedApplication = app
-            bootstrapState = BootstrapState.ATTACHED
+            transition(BootstrapState.ATTACHED)
             RuntimeDiagnostics.log("RUNTIME", "guest Application attached ${runtimePackage.packageName}/${runtimePackage.slot} attached=$attached class=${app.javaClass.name}")
 
             val components = RuntimeComponentHost(base, this, slotDir)
             componentHost = components
             RuntimeDiagnostics.log("RUNTIME", "initializing guest providers ${runtimePackage.packageName}/${runtimePackage.slot}")
             RuntimeExecutionScope.withSession(this) { components.initializeProviders() }
-            bootstrapState = BootstrapState.PROVIDERS_READY
+            transition(BootstrapState.PROVIDERS_READY)
             RuntimeDiagnostics.log("RUNTIME", "guest providers ready ${runtimePackage.packageName}/${runtimePackage.slot}")
 
             RuntimeDiagnostics.log("RUNTIME", "calling guest Application.onCreate ${runtimePackage.packageName}/${runtimePackage.slot}")
-            RuntimeGuestProcessIdentity.withGuestMainProcess(this) { app.onCreate() }
+            RuntimeExecutionScope.withSession(this) { app.onCreate() }
             RuntimeInstrumentationInstaller.reassert("guest-app:${runtimePackage.packageName}/${runtimePackage.slot}").getOrElse { throw it }
 
             guestApplication = app
-            bootstrapState = BootstrapState.APPLICATION_READY
+            transition(BootstrapState.APPLICATION_READY)
             RuntimeDiagnostics.log("RUNTIME", "guest Application ready ${runtimePackage.packageName}/${runtimePackage.slot} state=$bootstrapState")
+            transition(BootstrapState.RUNNING)
+            RuntimeDiagnostics.log("BOOT7", "bootstrap state=RUNNING ${runtimePackage.packageName}/${runtimePackage.slot}")
             return app
         } catch (error: Throwable) {
             bootstrapFailure = error
-            bootstrapState = BootstrapState.FAILED
+            transition(BootstrapState.FAILED, allowTerminal = true)
             RuntimeDiagnostics.log("RUNTIME", "guest bootstrap failed ${runtimePackage.packageName}/${runtimePackage.slot}: ${error.stackTraceToString()}")
             throw error
+        } finally {
+            bootstrapOwnerThreadId = -1L
         }
+    }
+
+    @Synchronized
+    private fun transition(next: BootstrapState, allowTerminal: Boolean = false) {
+        val current = bootstrapState
+        if (current == next) return
+        val allowed = when (current) {
+            BootstrapState.NEW -> setOf(BootstrapState.PREPARING, BootstrapState.TERMINATING, BootstrapState.CLOSED)
+            BootstrapState.PREPARING -> setOf(BootstrapState.ATTACHED, BootstrapState.FAILED, BootstrapState.TERMINATING)
+            BootstrapState.ATTACHED -> setOf(BootstrapState.PROVIDERS_READY, BootstrapState.FAILED, BootstrapState.TERMINATING)
+            BootstrapState.PROVIDERS_READY -> setOf(BootstrapState.APPLICATION_READY, BootstrapState.FAILED, BootstrapState.TERMINATING)
+            BootstrapState.APPLICATION_READY -> setOf(BootstrapState.RUNNING, BootstrapState.FAILED, BootstrapState.TERMINATING)
+            BootstrapState.RUNNING -> setOf(BootstrapState.TERMINATING, BootstrapState.FAILED)
+            BootstrapState.FAILED -> setOf(BootstrapState.TERMINATING, BootstrapState.CLOSED)
+            BootstrapState.TERMINATING -> setOf(BootstrapState.CLOSED)
+            BootstrapState.CLOSED -> emptySet()
+        }
+        if (!allowTerminal && next !in allowed) error("Invalid bootstrap transition $current -> $next")
+        bootstrapState = next
+        RuntimeDiagnostics.log("BOOT7", "state $current -> $next ${runtimePackage.packageName}/${runtimePackage.slot}")
     }
 
     fun attachLoaderTo(target: Resources): Boolean {
@@ -105,7 +154,13 @@ class RuntimeSession(
     }
 
     override fun close() {
-        bootstrapState = BootstrapState.CLOSED
+        synchronized(this) {
+            if (bootstrapState == BootstrapState.CLOSED) return
+            if (bootstrapState != BootstrapState.TERMINATING) {
+                runCatching { transition(BootstrapState.TERMINATING, allowTerminal = true) }
+                    .onFailure { bootstrapState = BootstrapState.TERMINATING }
+            }
+        }
         runCatching { componentHost?.close() }
         componentHost = null
         guestApplication = null
@@ -115,6 +170,8 @@ class RuntimeSession(
         val host = loaderHostResources
         if (loader != null && host != null) runCatching { host.removeLoaders(loader) }
         closeables.asReversed().forEach { runCatching { it.close() } }
+        synchronized(this) { bootstrapState = BootstrapState.CLOSED }
+        RuntimeDiagnostics.log("BOOT7", "state TERMINATING -> CLOSED ${runtimePackage.packageName}/${runtimePackage.slot}")
     }
 }
 
@@ -178,7 +235,7 @@ class RuntimeSessionFactory(private val context: Context) {
         val apkNativePaths = nativeResult.abi?.let { abi -> allApks.map { "${it.absolutePath}!/lib/$abi" } }.orEmpty()
         val nativeSearchPath = (listOf(nativeDir.absolutePath) + apkNativePaths).distinct().joinToString(File.pathSeparator)
         val loader = GuestDexClassLoader(dexPath, codeCache.absolutePath, nativeDir, nativeSearchPath, platformParent)
-        RuntimeDiagnostics.log("NATIVE", "search-path package=${pkg.packageName} abi=${nativeResult.abi ?: "none"} entries=${1 + apkNativePaths.size}")
+        RuntimeDiagnostics.log("NATIVE", "search-path package=${pkg.packageName} slot=${pkg.slot} abi=${nativeResult.abi ?: "none"} entries=${1 + apkNativePaths.size}")
         RuntimeDiagnostics.log("DEX", "guest-first isolated classloader enabled package=${pkg.packageName} slot=${pkg.slot} parent=${platformParent.javaClass.name}")
 
         val effectivePkg = resolveLauncherTarget(pkg, loader)
@@ -192,11 +249,13 @@ class RuntimeSessionFactory(private val context: Context) {
             splitPublicSourceDirs = splitPaths
             if (Build.VERSION.SDK_INT >= 26) splitNames = effectivePkg.splitNames.toTypedArray()
             dataDir = File(slotDir, "data").absolutePath
+            deviceProtectedDataDir = File(slotDir, "device_data").absolutePath
             nativeLibraryDir = nativeDir.absolutePath
             targetSdkVersion = effectivePkg.targetSdk
             if (Build.VERSION.SDK_INT >= 24) minSdkVersion = effectivePkg.minSdk
             flags = effectivePkg.appFlags
             theme = effectivePkg.appTheme
+            processName = effectivePkg.packageName
         }
         val resources = context.packageManager.getResourcesForApplication(archiveInfo)
         RuntimeDiagnostics.log("RES", "archive resource graph attached package=${effectivePkg.packageName} apks=${allApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets}")
@@ -268,7 +327,9 @@ private object RuntimeCodeSecurity {
         require(apks.isNotEmpty()) { "لا توجد ملفات APK للتشغيل" }
         apks.forEach { apk ->
             require(apk.isFile && apk.length() > 0) { "ملف APK غير صالح: ${apk.name}" }
-            runCatching { Os.chmod(apk.absolutePath, 0b100100100) }.recoverCatching { require(apk.setReadOnly()) { "تعذر حماية ملف APK: ${apk.name}" } }.getOrThrow()
+            runCatching { Os.chmod(apk.absolutePath, 0b100100100) }
+                .recoverCatching { require(apk.setReadOnly()) { "تعذر حماية ملف APK: ${apk.name}" } }
+                .getOrThrow()
             require(apk.canRead()) { "ملف APK غير قابل للقراءة: ${apk.name}" }
             require(!apk.canWrite()) { "ملف APK ما زال قابلاً للكتابة: ${apk.name}" }
         }
