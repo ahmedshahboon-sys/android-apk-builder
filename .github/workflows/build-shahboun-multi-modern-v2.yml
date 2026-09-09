@@ -2,7 +2,7 @@ name: Build Shahboun Multi Runtime
 
 on:
   push:
-    branches: [main, shahboun-multi-runtime-3, shahboun-multi-runtime-7]
+    branches: [main, shahboun-multi-runtime-3, shahboun-multi-runtime-7, runtime7-deep-stabilization-51]
     paths:
       - 'ShahbounMultiProject/**'
       - '.github/workflows/build-shahboun-multi-modern-v2.yml'
@@ -75,6 +75,31 @@ jobs:
             tail -n 350 /tmp/shahboun-build.log > dist/shahboun-build-error.txt
             exit "$RC"
           fi
+      - name: Verify 16KB native and APK alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
+          test -n "$APK" && test -s "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$APK"
+          rm -rf /tmp/shahboun-elf && mkdir -p /tmp/shahboun-elf
+          unzip -q "$APK" 'lib/*/libshahboun_runtime.so' -d /tmp/shahboun-elf
+          python3 - <<'PY'
+          import pathlib, re, subprocess, sys
+          libs = list(pathlib.Path('/tmp/shahboun-elf').rglob('libshahboun_runtime.so'))
+          if not libs:
+              raise SystemExit('libshahboun_runtime.so missing from APK')
+          for lib in libs:
+              text = subprocess.check_output(['readelf','-lW',str(lib)], text=True)
+              aligns = []
+              for line in text.splitlines():
+                  if line.lstrip().startswith('LOAD '):
+                      token = line.split()[-1]
+                      aligns.append(int(token, 16))
+              if not aligns or any(v < 0x4000 for v in aligns):
+                  raise SystemExit(f'16KB ELF alignment failed for {lib}: {aligns}')
+              print(f'16KB ELF alignment OK: {lib} {aligns}')
+          PY
       - name: Verify stable certificate
         shell: bash
         run: |
