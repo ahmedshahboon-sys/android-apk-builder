@@ -5,13 +5,15 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.pm.ProviderInfo
 import android.os.Build
+import java.lang.reflect.InvocationTargetException
 
 /**
  * Installs guest ContentProviders into ActivityThread's local provider registry.
  *
- * This keeps Android's real ApplicationContentResolver and ContentProviderClient path intact while
- * avoiding publication of guest authorities to system_server. The provider is local to the assigned
- * clone process and is instantiated with the guest class loader / LoadedApk already bound by Runtime 3.
+ * Android 16 can reject individual reflective installProvider calls even when the method exists.
+ * A rejected provider must not abort the entire clone launch: record the real underlying cause,
+ * skip only that provider, and let the guest continue so the failing authority can be diagnosed
+ * independently from Activity launch/resources.
  */
 object Runtime3ProviderRegistry {
     fun install(context: Context, session: RuntimeSession): Result<Int> = runCatching {
@@ -32,6 +34,7 @@ object Runtime3ProviderRegistry {
         val pkg = session.runtimePackage
         val guestAppInfo = context.applicationInfo
         var installed = 0
+        var skipped = 0
         pkg.providers.forEach { snapshot ->
             val component = ComponentName(pkg.packageName, snapshot.name)
             val original = runCatching {
@@ -58,25 +61,53 @@ object Runtime3ProviderRegistry {
             }
             val authority = info.authority?.takeIf { it.isNotBlank() }
             if (authority == null) {
-                RuntimeDiagnostics.log("PROVIDER3", "skip ${snapshot.name}: no authority")
+                RuntimeDiagnostics.log("PROVIDER3", "skip ${snapshot.name}: no authority clone=${pkg.packageName}/${pkg.slot}")
                 return@forEach
             }
 
-            val holder = installMethod.invoke(
-                thread,
-                context,
-                null,
-                info,
-                false, // noisy
-                true,  // noReleaseNeeded: local provider lives for clone process lifetime
-                true   // stable
-            ) ?: error("framework refused provider ${snapshot.name} ($authority)")
-            installed++
-            RuntimeDiagnostics.log(
-                "PROVIDER3",
-                "framework-local installed ${pkg.packageName}/${pkg.slot} ${snapshot.name} authority=$authority metadata=${info.metaData?.size() ?: 0} holder=${holder.javaClass.name}"
-            )
+            val attempt = runCatching {
+                installMethod.invoke(
+                    thread,
+                    context,
+                    null,
+                    info,
+                    false,
+                    true,
+                    true
+                ) ?: error("framework refused provider ${snapshot.name} ($authority)")
+            }
+
+            attempt.onSuccess { holder ->
+                installed++
+                RuntimeDiagnostics.log(
+                    "PROVIDER3",
+                    "framework-local installed ${pkg.packageName}/${pkg.slot} ${snapshot.name} authority=$authority metadata=${info.metaData?.size() ?: 0} holder=${holder.javaClass.name}"
+                )
+            }.onFailure { error ->
+                skipped++
+                val root = unwrap(error)
+                RuntimeDiagnostics.log(
+                    "PROVIDER3",
+                    "install rejected clone=${pkg.packageName}/${pkg.slot} provider=${snapshot.name} authority=$authority root=${root.javaClass.name}: ${root.message.orEmpty().replace('\n',' ').take(260)}"
+                )
+                RuntimeIssueLedger.recordThrowable(root, pkg.packageName, pkg.slot)
+            }
         }
+        RuntimeDiagnostics.log("PROVIDER3", "registry result ${pkg.packageName}/${pkg.slot} installed=$installed skipped=$skipped total=${pkg.providers.size}")
         installed
+    }
+
+    private fun unwrap(error: Throwable): Throwable {
+        var current = error
+        val seen = HashSet<Throwable>()
+        while (seen.add(current)) {
+            val next = when (current) {
+                is InvocationTargetException -> current.targetException ?: current.cause
+                else -> current.cause
+            } ?: break
+            if (next === current) break
+            current = next
+        }
+        return current
     }
 }
