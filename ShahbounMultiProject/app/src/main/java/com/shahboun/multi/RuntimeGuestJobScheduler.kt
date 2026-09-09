@@ -1,13 +1,17 @@
 package com.shahboun.multi
 
+import android.app.Application
 import android.app.job.JobInfo
 import android.app.job.JobScheduler
 import android.app.job.JobService
 import android.app.job.JobWorkItem
 import android.content.ComponentName
 import android.content.Context
+import android.content.ContextWrapper
 import android.os.Build
 import android.os.Parcel
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Public-API JobScheduler facade used by guest contexts when Android hides the
@@ -18,9 +22,7 @@ class RuntimeGuestJobScheduler(
     private val hostContext: Context,
     private val session: RuntimeSession,
     private val namespace: String? = null,
-    private val delegate: JobScheduler = (MultiApplication.current ?: hostContext.applicationContext)
-        .getSystemService(JobScheduler::class.java)
-        ?: error("JobScheduler غير متاح")
+    private val delegate: JobScheduler = resolveHostScheduler(hostContext)
 ) : JobScheduler() {
 
     override fun forNamespace(rawNamespace: String): JobScheduler {
@@ -195,5 +197,33 @@ class RuntimeGuestJobScheduler(
     private fun hostJobId(guestId: Int): Int {
         val pkg = session.runtimePackage
         return RuntimeJobSchedulerBridge.hostJobId(pkg.packageName, pkg.slot, namespace, guestId)
+    }
+
+    companion object {
+        /**
+         * Resolve JobScheduler only through a physical host context. This deliberately
+         * unwraps RuntimeGuestContext / ContextWrapper chains before touching
+         * getSystemService(), preventing the guest service lookup from recursively
+         * constructing another RuntimeGuestJobScheduler.
+         */
+        private fun resolveHostScheduler(context: Context): JobScheduler {
+            val app = MultiApplication.current
+            if (app != null) {
+                val physical = app.baseContext ?: app
+                return physical.getSystemService(JobScheduler::class.java)
+                    ?: error("JobScheduler غير متاح")
+            }
+
+            var current: Context = context
+            val seen = Collections.newSetFromMap(IdentityHashMap<Context, Boolean>())
+            while (current is ContextWrapper && current !is Application && seen.add(current)) {
+                val next = current.baseContext
+                if (next === current) break
+                current = next
+            }
+            val physical = current.applicationContext?.takeIf { it !is RuntimeGuestContext } ?: current
+            return physical.getSystemService(JobScheduler::class.java)
+                ?: error("JobScheduler غير متاح")
+        }
     }
 }
