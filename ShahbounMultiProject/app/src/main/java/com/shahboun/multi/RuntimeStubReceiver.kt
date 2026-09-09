@@ -18,21 +18,23 @@ open class RuntimeStubReceiver : BroadcastReceiver() {
         if (slot < 0) return
 
         val app = context.applicationContext as? MultiApplication ?: MultiApplication.current ?: return
+        val pkg = runCatching { app.engine.runtimePackageFor(packageName, slot) }.getOrElse {
+            RuntimeDiagnostics.log("RECEIVER", "snapshot restore failed $packageName/$slot: ${it.message}")
+            return
+        }
+        if (!pkg.ownsReceiver(receiverName) || !RuntimeIntentSecurity.verify(app, intent, pkg, "receiver", receiverName)) {
+            RuntimeDiagnostics.log("SECURITY7", "rejected receiver envelope $packageName/$slot $receiverName")
+            return
+        }
+
         val session = runCatching { app.engine.sessionFor(packageName, slot) }.getOrElse {
             RuntimeDiagnostics.log("RECEIVER", "restore failed $packageName/$slot: ${it.stackTraceToString()}")
             return
         }
-        if (!session.runtimePackage.ownsReceiver(receiverName)) {
-            RuntimeDiagnostics.log("RECEIVER", "rejected restored receiver $packageName/$slot $receiverName")
-            return
-        }
-
         val original = readOriginal(intent) ?: Intent().setComponent(ComponentName(packageName, receiverName))
         original.component = ComponentName(packageName, receiverName)
-        RuntimeExecutionScope.withSession(session) {
-            session.componentHost?.dispatchExplicitReceiver(original)
-        }
-        RuntimeDiagnostics.log("RECEIVER", "restored $packageName/$slot $receiverName process=${if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else packageName}")
+        RuntimeExecutionScope.withSession(session) { session.componentHost?.dispatchExplicitReceiver(original) }
+        RuntimeDiagnostics.log("RECEIVER", "restored $packageName/$slot $receiverName process=${RuntimeGuestProcessIdentity.hostProcessName()} auth=verified")
     }
 
     @Suppress("DEPRECATION")
