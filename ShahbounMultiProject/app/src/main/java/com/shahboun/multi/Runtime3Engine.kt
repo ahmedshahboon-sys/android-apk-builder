@@ -97,7 +97,8 @@ class ShahbounRuntime3Engine {
             putExtra(EXTRA_RUNTIME_ORIGINAL_INTENT, Intent(original))
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        RuntimeDiagnostics.log("ENGINE3", "launch $packageName/$slot process=:clone$processIndex")
+        RuntimeIntentSecurity.sign(appContext, wrapper, pkg, "activity", requested)
+        RuntimeDiagnostics.log("ENGINE3", "launch $packageName/$slot process=:clone$processIndex auth=HMAC")
         appContext.startActivity(wrapper)
     }
 
@@ -146,11 +147,14 @@ class ShahbounRuntime3Engine {
         RuntimeActivityBindings.finishClone(packageName, slot)
         RuntimeJobSchedulerBridge.cancelClone(packageName, slot)
         runCatching {
-            appContext.startService(Intent(appContext, RuntimeProcessPool.serviceStub(packageName, slot)).apply {
+            val pkg = runtimePackageFor(packageName, slot)
+            val stopIntent = Intent(appContext, RuntimeProcessPool.serviceStub(packageName, slot)).apply {
                 action = ACTION_RUNTIME_STOP_CLONE
                 putExtra(EXTRA_RUNTIME_PACKAGE, packageName)
                 putExtra(EXTRA_RUNTIME_SLOT, slot)
-            })
+            }
+            RuntimeIntentSecurity.sign(appContext, stopIntent, pkg, "stop", "runtime")
+            appContext.startService(stopIntent)
         }
         RuntimeRegistry.getOrNull(packageName, slot)?.let { RuntimeExecutionScope.clearProcessSession(it) }
         RuntimeRegistry.remove(packageName, slot)
