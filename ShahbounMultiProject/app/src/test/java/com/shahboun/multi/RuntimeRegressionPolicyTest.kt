@@ -46,6 +46,15 @@ class RuntimeRegressionPolicyTest {
     }
 
     @Test
+    fun physicalProcessAuthorizationIsIndependentFromGuestAlias() {
+        val expected = RuntimeProcessIdentityPolicy.expectedPhysicalProcess("com.shahboun.multi", 10)
+        assertEquals("com.shahboun.multi:clone10", expected)
+        assertTrue(RuntimeProcessIdentityPolicy.isExpectedPhysicalProcess("com.shahboun.multi:clone10", expected))
+        assertFalse(RuntimeProcessIdentityPolicy.isExpectedPhysicalProcess("com.whatsapp.w4b", expected))
+        assertFalse(RuntimeProcessIdentityPolicy.isExpectedPhysicalProcess("com.shahboun.multi:clone1", expected))
+    }
+
+    @Test
     fun intentAuthPayloadBindsCloneComponentAndSession() {
         val a = RuntimeIntentSecurity.payload("activity", "com.test", 0, "com.test.Main", "s1")
         val b = RuntimeIntentSecurity.payload("activity", "com.test", 1, "com.test.Main", "s1")
