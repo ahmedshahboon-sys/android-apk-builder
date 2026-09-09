@@ -23,7 +23,11 @@ open class RuntimeStubReceiver : BroadcastReceiver() {
             return
         }
         if (!session.runtimePackage.ownsReceiver(receiverName)) {
-            RuntimeDiagnostics.log("RECEIVER", "rejected restored receiver $packageName/$slot $receiverName")
+            RuntimeDiagnostics.log("SECURITY7", "receiver rejected unknown component $packageName/$slot $receiverName")
+            return
+        }
+        if (!RuntimeIntentSecurity.verify(context, intent, session, "receiver", receiverName)) {
+            RuntimeDiagnostics.log("SECURITY7", "receiver auth rejected $packageName/$slot $receiverName")
             return
         }
 
@@ -32,7 +36,7 @@ open class RuntimeStubReceiver : BroadcastReceiver() {
         RuntimeExecutionScope.withSession(session) {
             session.componentHost?.dispatchExplicitReceiver(original)
         }
-        RuntimeDiagnostics.log("RECEIVER", "restored $packageName/$slot $receiverName process=${if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else packageName}")
+        RuntimeDiagnostics.log("RECEIVER", "restored $packageName/$slot $receiverName process=${if (Build.VERSION.SDK_INT >= 28) android.app.Application.getProcessName() else packageName} auth=true")
     }
 
     @Suppress("DEPRECATION")
