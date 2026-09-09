@@ -45,11 +45,6 @@ object RuntimeGuestProcessIdentity {
         Runtime3ProcessEnvironment.activate(session, app.engine.runtimeSlotDir(pkg.packageName, pkg.slot))
     }
 
-    /**
-     * Temporarily aliases ActivityThread's process metadata only while guest bootstrap code runs.
-     * The physical process identity is restored in finally, so Android lifecycle/binder bookkeeping
-     * outside the guest bootstrap continues to see the real clone process.
-     */
     fun <T> withGuestMainProcess(session: RuntimeSession, block: () -> T): T {
         pin(session)
         val pkg = session.runtimePackage.packageName
@@ -71,7 +66,7 @@ object RuntimeGuestProcessIdentity {
     ) {
         fun restore() {
             runCatching { processField.set(bound, oldProcess) }
-            if (appInfo != null && appInfoProcessField != null) runCatching { appInfoProcessField.set(appInfo, oldAppInfoProcess) }
+            appInfoProcessField?.let { field -> appInfo?.let { info -> runCatching { field.set(info, oldAppInfoProcess) } } }
             RuntimeDiagnostics.log("IDENTITY", "bootstrap process alias restored physical=${RuntimeGuestProcessIdentity.hostProcessName()}")
         }
     }
@@ -90,8 +85,8 @@ object RuntimeGuestProcessIdentity {
         val appInfoField = RuntimeCompatibility.findField(bound.javaClass, "appInfo")
         val appInfo = appInfoField?.let { runCatching { it.get(bound) }.getOrNull() }
         val appInfoProcessField = appInfo?.let { RuntimeCompatibility.findField(it.javaClass, "processName") }
-        val oldAppInfoProcess = if (appInfo != null && appInfoProcessField != null) runCatching { appInfoProcessField.get(appInfo) }.getOrNull() else null
-        if (appInfo != null && appInfoProcessField != null) runCatching { appInfoProcessField.set(appInfo, packageName) }
+        val oldAppInfoProcess = appInfoProcessField?.let { field -> appInfo?.let { info -> runCatching { field.get(info) }.getOrNull() } }
+        appInfoProcessField?.let { field -> appInfo?.let { info -> runCatching { field.set(info, packageName) } } }
 
         RuntimeDiagnostics.log("IDENTITY", "bootstrap process alias active guest=$packageName physical=$realHostProcessName")
         AliasPatch(bound, processField, oldProcess, appInfo, appInfoProcessField, oldAppInfoProcess)
