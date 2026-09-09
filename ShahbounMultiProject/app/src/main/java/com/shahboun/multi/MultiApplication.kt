@@ -16,6 +16,7 @@ class MultiApplication : Application() {
         private set
 
     override fun onCreate() {
+        RuntimePerformanceProbe.mark("app-start")
         super.onCreate()
         current = this
 
@@ -24,53 +25,51 @@ class MultiApplication : Application() {
         runCatching { RuntimeDiagnostics.installCrashHandler() }
 
         val processName = currentProcessName()
-        safeStartup("APP") { RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=$processName") }
+        safeStartup("APP") { RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=$processName app=${BuildConfig.VERSION_NAME}/${BuildConfig.VERSION_CODE} engine=${RuntimeEngineVersion.ENGINE_VERSION}") }
         safeStartup("COMPAT") { RuntimeCompatibility.logProfile() }
-        safeStartup("NATIVE4") { RuntimeNativeRuntime.initialize() }
+        safeStartup("NATIVE7") { RuntimeNativeRuntime.initialize() }
         safeStartup("WEBVIEW") { installWebViewIsolation() }
-        safeStartup("WEB-GMS4") { RuntimeWebGmsCompatibility.prepareProcess(this, processName) }
+        safeStartup("WEB-GMS7") { RuntimeWebGmsCompatibility.prepareProcess(this, processName) }
         safeStartup("BARS") { SystemBarsFitter.install(this) }
         if (processName == packageName) safeStartup("DIAG-PROMPT") { installDiagnosticsPrompt() }
-
         if (processName == packageName) safeStartup("JOB-MIGRATE") { migrateLegacyJobRecords() }
 
         engine = ShahbounRuntime3Engine()
         val engineResult = engine.initialize(this)
         engineResult
             .onSuccess {
-                safeStartup("ENGINE3") { RuntimeDiagnostics.log("ENGINE3", "initialized: ${engine.name}") }
+                safeStartup("ENGINE7") { RuntimeDiagnostics.log("ENGINE7", "initialized implementation=${engine.name} version=${RuntimeEngineVersion.ENGINE_VERSION}") }
                 if (processName == packageName) safeStartup("LEGACY-CLEAN") { Runtime3LegacyCleaner.cleanup(this) }
             }
             .onFailure {
-                safeStartup("ENGINE3") { RuntimeDiagnostics.log("ENGINE3", "initialize failed without killing host UI: ${it.stackTraceToString()}") }
+                safeStartup("ENGINE7") { RuntimeDiagnostics.log("ENGINE7", "initialize failed without killing host UI: ${it.stackTraceToString()}") }
             }
 
-        if (processName == packageName && engineResult.isSuccess) {
-            safeStartup("UPDATE") { RuntimeUpdateCenter.checkAndNotify(this, engine) }
-        }
+        if (processName == packageName && engineResult.isSuccess) safeStartup("UPDATE") { RuntimeUpdateCenter.checkAndNotify(this, engine) }
 
         safeStartup("BRIDGES") { RuntimeBridgeRegistry.install(this) }
         safeStartup("SYSTEM-EVENTS") { RuntimeSystemEvents.install(this) }
-        safeStartup("MATRIX4") { RuntimeDiagnostics.log("MATRIX4", RuntimeCompatibilityMatrixV4.summary(this)) }
+        safeStartup("GAP-AUDIT7") { RuntimeDiagnostics.log("GAP7", RuntimeGapAudit.render().replace('\n', ' ').take(7000)) }
 
         val launchBridgeReady = runCatching { RuntimeLaunchTransactionBridge.install() }
             .getOrElse { Result.failure(it) }
-            .onFailure { safeStartup("LAUNCH2") { RuntimeDiagnostics.log("LAUNCH2", "pre-attach bridge fallback: ${it.stackTraceToString()}") } }
+            .onFailure { safeStartup("LAUNCH7") { RuntimeDiagnostics.log("LAUNCH7", "pre-attach bridge fallback: ${it.stackTraceToString()}") } }
             .isSuccess
 
         val instrumentationReady = runCatching { RuntimeInstrumentationInstaller.install() }
             .getOrElse { Result.failure(it) }
             .onFailure {
                 runtimeBridgeReady = false
-                safeStartup("RUNTIME") { RuntimeDiagnostics.log("RUNTIME", "instrumentation bridge unavailable: ${it.stackTraceToString()}") }
+                safeStartup("RUNTIME7") { RuntimeDiagnostics.log("RUNTIME7", "instrumentation bridge unavailable: ${it.stackTraceToString()}") }
             }
             .isSuccess
 
         runtimeBridgeReady = engineResult.isSuccess && instrumentationReady && RuntimeBridgeRegistry.isCoreReady() && launchBridgeReady
-        safeStartup("RUNTIME") {
+        RuntimePerformanceProbe.mark("runtime-ready")
+        safeStartup("RUNTIME7") {
             RuntimeDiagnostics.log(
-                "RUNTIME",
-                "startup completed hostAlive=true engine=${engineResult.isSuccess} instrumentation=$instrumentationReady core=${RuntimeBridgeRegistry.isCoreReady()} launch2=$launchBridgeReady native=${RuntimeNativeRuntime.isLoaded()} ready=$runtimeBridgeReady"
+                "RUNTIME7",
+                "startup completed hostAlive=true engine=${engineResult.isSuccess} instrumentation=$instrumentationReady core=${RuntimeBridgeRegistry.isCoreReady()} launch=$launchBridgeReady native=${RuntimeNativeRuntime.isLoaded()} ready=$runtimeBridgeReady app=${BuildConfig.VERSION_NAME} engineVersion=${RuntimeEngineVersion.ENGINE_VERSION}"
             )
         }
     }
@@ -117,13 +116,13 @@ class MultiApplication : Application() {
 
     private fun migrateLegacyJobRecords() {
         val migrationPrefs = getSharedPreferences("shahboun_runtime_migrations", MODE_PRIVATE)
-        val schema = 4
+        val schema = 7
         if (migrationPrefs.getInt("job_runtime_schema", 0) >= schema) return
         runCatching { getSystemService(JobScheduler::class.java)?.cancelAll() }
             .onFailure { RuntimeDiagnostics.log("JOB", "legacy system job cleanup failed: ${it.javaClass.simpleName}: ${it.message}") }
         val cleared = getSharedPreferences("shahboun_runtime_jobs", MODE_PRIVATE).edit().clear().commit()
         migrationPrefs.edit().putInt("job_runtime_schema", schema).commit()
-        RuntimeDiagnostics.log("JOB", "Runtime 4 job migration complete recordsCleared=$cleared")
+        RuntimeDiagnostics.log("JOB", "Runtime7 job migration complete recordsCleared=$cleared")
     }
 
     private fun installWebViewIsolation() {
@@ -144,7 +143,7 @@ class MultiApplication : Application() {
     private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName
 
     fun requireRuntimeBridge() {
-        check(runtimeBridgeReady) { "جسر Runtime 4 غير متاح على هذا الجهاز. افتح «التشخيص» وانسخ السجل." }
+        check(runtimeBridgeReady) { "جسر Shahboun Runtime ${RuntimeEngineVersion.ENGINE_VERSION} غير متاح على هذا الجهاز. افتح «التشخيص» وانسخ السجل." }
     }
 
     companion object {
