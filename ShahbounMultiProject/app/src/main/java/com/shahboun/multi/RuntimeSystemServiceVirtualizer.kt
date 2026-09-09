@@ -88,7 +88,7 @@ internal object RuntimeSystemServiceVirtualizer {
             val safe = RuntimeBinderIdentitySanitizer.sanitize(context, session, args)
             try {
                 val result = method.invoke(original, *(safe ?: emptyArray()))
-                RuntimeBinderResultVirtualizer.restore(session, result)
+                RuntimeBinderResultVirtualizer.restore(session, method.name, result)
             } catch (e: java.lang.reflect.InvocationTargetException) {
                 throw (e.targetException ?: e)
             }
@@ -101,7 +101,7 @@ internal object RuntimeSystemServiceVirtualizer {
         }
         runCatching { field.isAccessible = true; field.set(manager, proxy) }
             .onSuccess {
-                capabilities[serviceName] = Capability(State.PARTIAL, "argument sanitizer + return audit installed field=${field.name}; callbacks/live semantics require validation")
+                capabilities[serviceName] = Capability(State.PARTIAL, "argument sanitizer + method-aware return virtualization installed field=${field.name}; callbacks/live semantics require validation")
                 RuntimeDiagnostics.log("SERVICE7", "$serviceName partial binder-boundary field=${field.name} manager=${manager.javaClass.simpleName}")
             }
             .onFailure {
