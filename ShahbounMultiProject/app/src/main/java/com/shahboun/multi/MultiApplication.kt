@@ -26,6 +26,7 @@ class MultiApplication : Application() {
         val processName = currentProcessName()
         safeStartup("APP") { RuntimeDiagnostics.log("APP", "MultiApplication onCreate process=$processName") }
         safeStartup("COMPAT") { RuntimeCompatibility.logProfile() }
+        safeStartup("NATIVE4") { RuntimeNativeRuntime.initialize() }
         safeStartup("WEBVIEW") { installWebViewIsolation() }
         safeStartup("BARS") { SystemBarsFitter.install(this) }
         if (processName == packageName) safeStartup("DIAG-PROMPT") { installDiagnosticsPrompt() }
@@ -49,6 +50,7 @@ class MultiApplication : Application() {
 
         safeStartup("BRIDGES") { RuntimeBridgeRegistry.install(this) }
         safeStartup("SYSTEM-EVENTS") { RuntimeSystemEvents.install(this) }
+        safeStartup("MATRIX4") { RuntimeDiagnostics.log("MATRIX4", RuntimeCompatibilityMatrixV4.summary(this)) }
 
         val launchBridgeReady = runCatching { RuntimeLaunchTransactionBridge.install() }
             .getOrElse { Result.failure(it) }
@@ -67,7 +69,7 @@ class MultiApplication : Application() {
         safeStartup("RUNTIME") {
             RuntimeDiagnostics.log(
                 "RUNTIME",
-                "startup completed hostAlive=true engine=${engineResult.isSuccess} instrumentation=$instrumentationReady core=${RuntimeBridgeRegistry.isCoreReady()} launch2=$launchBridgeReady ready=$runtimeBridgeReady"
+                "startup completed hostAlive=true engine=${engineResult.isSuccess} instrumentation=$instrumentationReady core=${RuntimeBridgeRegistry.isCoreReady()} launch2=$launchBridgeReady native=${RuntimeNativeRuntime.isLoaded()} ready=$runtimeBridgeReady"
             )
         }
     }
@@ -114,13 +116,13 @@ class MultiApplication : Application() {
 
     private fun migrateLegacyJobRecords() {
         val migrationPrefs = getSharedPreferences("shahboun_runtime_migrations", MODE_PRIVATE)
-        val schema = 3
+        val schema = 4
         if (migrationPrefs.getInt("job_runtime_schema", 0) >= schema) return
         runCatching { getSystemService(JobScheduler::class.java)?.cancelAll() }
             .onFailure { RuntimeDiagnostics.log("JOB", "legacy system job cleanup failed: ${it.javaClass.simpleName}: ${it.message}") }
         val cleared = getSharedPreferences("shahboun_runtime_jobs", MODE_PRIVATE).edit().clear().commit()
         migrationPrefs.edit().putInt("job_runtime_schema", schema).commit()
-        RuntimeDiagnostics.log("JOB", "Runtime 3 job migration complete recordsCleared=$cleared")
+        RuntimeDiagnostics.log("JOB", "Runtime 4 job migration complete recordsCleared=$cleared")
     }
 
     private fun installWebViewIsolation() {
@@ -141,7 +143,7 @@ class MultiApplication : Application() {
     private fun currentProcessName(): String = if (Build.VERSION.SDK_INT >= 28) Application.getProcessName() else packageName
 
     fun requireRuntimeBridge() {
-        check(runtimeBridgeReady) { "جسر Runtime 3 غير متاح على هذا الجهاز. افتح «التشخيص» وانسخ السجل." }
+        check(runtimeBridgeReady) { "جسر Runtime 4 غير متاح على هذا الجهاز. افتح «التشخيص» وانسخ السجل." }
     }
 
     companion object {
