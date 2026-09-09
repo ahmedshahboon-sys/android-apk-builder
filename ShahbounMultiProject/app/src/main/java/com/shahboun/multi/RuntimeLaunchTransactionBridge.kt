@@ -10,14 +10,7 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Engine 2.0 pre-attach Activity virtualization.
- *
- * The Android system validates and schedules a declared Shahboun stub. Once the transaction reaches
- * the assigned clone process, this bridge swaps the local launch record to guest Intent/ActivityInfo
- * and binds a guest LoadedApk before ActivityThread creates ContextImpl or asks Instrumentation for
- * the Activity. The system token/process identity remains the declared host stub identity.
- */
+/** Pre-attach Activity virtualization for Shahboun Runtime 7. */
 object RuntimeLaunchTransactionBridge {
     @Volatile private var installed = false
 
@@ -32,31 +25,25 @@ object RuntimeLaunchTransactionBridge {
         val callbackField = RuntimeCompatibility.findField(Handler::class.java, "mCallback") ?: error("Handler.mCallback غير متاح")
         callbackField.isAccessible = true
         val previous = callbackField.get(handler) as? Handler.Callback
-        if (previous is Callback) {
-            installed = true
-            return@runCatching
-        }
+        if (previous is Callback) { installed = true; return@runCatching }
         callbackField.set(handler, Callback(previous))
         installed = true
-        RuntimeDiagnostics.log("LAUNCH2", "pre-attach transaction bridge installed sdk=${RuntimeCompatibility.profile.sdk}")
+        RuntimeDiagnostics.log("LAUNCH7", "pre-attach transaction bridge installed sdk=${RuntimeCompatibility.profile.sdk}")
     }
 
     private class Callback(private val previous: Handler.Callback?) : Handler.Callback {
         private val handling = AtomicBoolean(false)
-
         override fun handleMessage(msg: Message): Boolean {
             if (!handling.compareAndSet(false, true)) return previous?.handleMessage(msg) ?: false
             return try {
                 runCatching { patchTransaction(msg.obj) }
-                    .onFailure { RuntimeDiagnostics.log("LAUNCH2", "transaction patch fallback: ${it.stackTraceToString()}") }
+                    .onFailure { RuntimeDiagnostics.log("LAUNCH7", "transaction patch rejected/fallback: ${it.stackTraceToString()}") }
                 previous?.handleMessage(msg) ?: false
-            } finally {
-                handling.set(false)
-            }
+            } finally { handling.set(false) }
         }
     }
 
-    private data class Descriptor(val packageName: String, val slot: Int, val activity: String)
+    private data class Descriptor(val packageName: String, val slot: Int, val activity: String, val wrapper: Intent)
 
     private fun patchTransaction(root: Any?) {
         root ?: return
@@ -64,17 +51,19 @@ object RuntimeLaunchTransactionBridge {
         val app = MultiApplication.current ?: return
         val expectedProcess = "${BuildConfig.APPLICATION_ID}:clone${RuntimeProcessPool.processIndex(descriptor.packageName, descriptor.slot)}"
         val actualProcess = RuntimeGuestProcessIdentity.hostProcessName()
-        if (actualProcess != expectedProcess) {
-            RuntimeDiagnostics.log("LAUNCH2", "rejected wrong process ${descriptor.packageName}/${descriptor.slot} actual=$actualProcess expected=$expectedProcess")
-            return
+        require(actualProcess == expectedProcess) {
+            "Runtime launch wrong process ${descriptor.packageName}/${descriptor.slot} actual=$actualProcess expected=$expectedProcess"
         }
 
-        // Pin the guest-visible process name before any guest class, Application constructor or
-        // attachBaseContext code can run. Meta-class applications cache this identity very early.
-        RuntimeGuestProcessIdentity.pinPackage(descriptor.packageName, descriptor.slot)
+        // Authenticate BEFORE sessionFor(): a forged descriptor must never instantiate guest
+        // classes, providers or Application code merely because it can target a private stub.
+        val snapshot = app.engine.runtimePackageFor(descriptor.packageName, descriptor.slot)
+        require(snapshot.ownsActivity(descriptor.activity)) { "Runtime launch targets unowned activity" }
+        require(RuntimeIntentSecurity.verify(app, descriptor.wrapper, snapshot, "activity", descriptor.activity)) {
+            "Runtime Activity route authentication failed"
+        }
 
-        // Bind guest code/resources/Application into Android's own LoadedApk cache before the
-        // transaction executor reaches createBaseContextForActivity().
+        RuntimeGuestProcessIdentity.pinPackage(descriptor.packageName, descriptor.slot)
         val session = app.engine.sessionFor(descriptor.packageName, descriptor.slot)
         RuntimeLoadedApkBridge.bind(app, session).getOrThrow()
         val pkg = session.runtimePackage
@@ -92,8 +81,6 @@ object RuntimeLaunchTransactionBridge {
                 intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1) == descriptor.slot) {
                 intent.component = ComponentName(pkg.packageName, resolvedActivity)
                 intent.`package` = pkg.packageName
-                // Keep runtime descriptor extras until callActivityOnCreate binds the guest context;
-                // RuntimeGuestContext then restores the original public Intent for guest code.
                 intent.putExtra(EXTRA_RUNTIME_PACKAGE, pkg.packageName)
                 intent.putExtra(EXTRA_RUNTIME_SLOT, pkg.slot)
                 intent.putExtra(EXTRA_RUNTIME_ACTIVITY, descriptor.activity)
@@ -102,8 +89,8 @@ object RuntimeLaunchTransactionBridge {
         }
 
         RuntimeDiagnostics.log(
-            "LAUNCH2",
-            "guest launch bound ${pkg.packageName}/${pkg.slot} requested=${descriptor.activity} resolved=$resolvedActivity infos=${infos.size} intents=$routedIntents process=$actualProcess"
+            "LAUNCH7",
+            "guest launch bound ${pkg.packageName}/${pkg.slot} requested=${descriptor.activity} resolved=$resolvedActivity infos=${infos.size} intents=$routedIntents process=$actualProcess auth=verified"
         )
     }
 
@@ -129,12 +116,11 @@ object RuntimeLaunchTransactionBridge {
     }
 
     private fun findDescriptor(root: Any): Descriptor? {
-        val intents = findObjects(root, Intent::class.java)
-        intents.forEach { intent ->
+        findObjects(root, Intent::class.java).forEach { intent ->
             val packageName = intent.getStringExtra(EXTRA_RUNTIME_PACKAGE) ?: return@forEach
             val slot = intent.getIntExtra(EXTRA_RUNTIME_SLOT, -1)
             val activity = intent.getStringExtra(EXTRA_RUNTIME_ACTIVITY) ?: return@forEach
-            if (slot >= 0) return Descriptor(packageName, slot, activity)
+            if (slot >= 0) return Descriptor(packageName, slot, activity, intent)
         }
         return null
     }
@@ -148,10 +134,7 @@ object RuntimeLaunchTransactionBridge {
 
     private fun <T : Any> walk(value: Any?, target: Class<T>, out: MutableList<T>, visited: MutableSet<Any>, depth: Int) {
         if (value == null || depth > 7) return
-        if (target.isInstance(value)) {
-            @Suppress("UNCHECKED_CAST") out += value as T
-            return
-        }
+        if (target.isInstance(value)) { @Suppress("UNCHECKED_CAST") out += value as T; return }
         if (!visited.add(value)) return
         when (value) {
             is Iterable<*> -> { value.forEach { walk(it, target, out, visited, depth + 1) }; return }
@@ -161,8 +144,7 @@ object RuntimeLaunchTransactionBridge {
         if (!(name.startsWith("android.app.servertransaction.") || name.startsWith("android.app.ClientTransaction") || name.startsWith("android.app.ActivityThread"))) return
         RuntimeCompatibility.allFields(value.javaClass).forEach { field ->
             if (Modifier.isStatic(field.modifiers) || field.type.isPrimitive) return@forEach
-            val child = runCatching { field.get(value) }.getOrNull()
-            walk(child, target, out, visited, depth + 1)
+            walk(runCatching { field.get(value) }.getOrNull(), target, out, visited, depth + 1)
         }
     }
 }
