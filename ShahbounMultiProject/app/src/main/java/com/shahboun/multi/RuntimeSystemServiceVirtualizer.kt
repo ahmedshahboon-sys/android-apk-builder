@@ -9,11 +9,11 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Clone-aware identity boundary for Android manager services that keep an AIDL delegate.
- * Guest-facing objects remain normal framework managers; package/attribution arguments are sanitized
- * only when calls cross to system_server.
+ * Installing an identity proxy is only PARTIAL evidence: it does not prove the complete behavior of
+ * the service, callbacks, permissions, or OEM-specific Binder signatures.
  */
 internal object RuntimeSystemServiceVirtualizer {
-    enum class State { FULL, PASSTHROUGH, FAIL }
+    enum class State { FULL, PARTIAL, PASSTHROUGH, FALLBACK, NOT_TESTED, UNSUPPORTED, FAIL }
     data class Capability(val state: State, val detail: String)
 
     private val patched = Collections.synchronizedSet(Collections.newSetFromMap(IdentityHashMap<Any, Boolean>()))
@@ -49,7 +49,7 @@ internal object RuntimeSystemServiceVirtualizer {
         RuntimeRecursionGuard.call(
             key = "system-service:$name",
             fallback = {
-                capabilities.putIfAbsent(name, Capability(State.PASSTHROUGH, "recursion guard fallback"))
+                capabilities[name] = Capability(State.FALLBACK, "recursion guard returned physical manager")
                 manager
             }
         ) {
@@ -60,32 +60,38 @@ internal object RuntimeSystemServiceVirtualizer {
     }
 
     fun snapshot(): Map<String, Capability> = capabilities.toSortedMap()
-
     fun stateFor(name: String): Capability? = capabilities[name]
 
+    fun declaredCoverage(): Map<String, Capability> = names.associateWith { name ->
+        capabilities[name] ?: Capability(State.NOT_TESTED, "manager not requested in this process")
+    }.toSortedMap()
+
     private fun patchManager(context: Context, session: RuntimeSession, manager: Any, serviceName: String) {
-        if (!patched.add(manager)) return
+        if (!patched.add(manager)) {
+            capabilities.putIfAbsent(serviceName, Capability(State.PARTIAL, "manager previously identity-proxied; live behavior not proven"))
+            return
+        }
         val field = findServiceField(manager.javaClass) ?: run {
             capabilities[serviceName] = Capability(State.PASSTHROUGH, "binder field unavailable on ${manager.javaClass.simpleName}")
-            RuntimeDiagnostics.log("SERVICE5", "$serviceName passthrough binder-field-unavailable manager=${manager.javaClass.name}")
+            RuntimeDiagnostics.log("SERVICE6", "$serviceName passthrough binder-field-unavailable manager=${manager.javaClass.name}")
             return
         }
         val original = runCatching { field.isAccessible = true; field.get(manager) }.getOrElse {
             capabilities[serviceName] = Capability(State.FAIL, "binder delegate read failed: ${it.javaClass.simpleName}")
-            RuntimeDiagnostics.log("SERVICE5", "$serviceName failed delegate-read ${it.javaClass.simpleName}: ${it.message}")
+            RuntimeDiagnostics.log("SERVICE6", "$serviceName failed delegate-read ${it.javaClass.simpleName}: ${it.message}")
             return
         } ?: run {
             capabilities[serviceName] = Capability(State.PASSTHROUGH, "binder delegate is null")
             return
         }
         if (Proxy.isProxyClass(original.javaClass)) {
-            capabilities.putIfAbsent(serviceName, Capability(State.FULL, "already proxied"))
+            capabilities[serviceName] = Capability(State.PARTIAL, "already proxied; complete service behavior not live-tested")
             return
         }
         val interfaces = collectInterfaces(original.javaClass)
         if (interfaces.isEmpty()) {
             capabilities[serviceName] = Capability(State.PASSTHROUGH, "service interface unavailable")
-            RuntimeDiagnostics.log("SERVICE5", "$serviceName passthrough service-interface-unavailable ${original.javaClass.name}")
+            RuntimeDiagnostics.log("SERVICE6", "$serviceName passthrough service-interface-unavailable ${original.javaClass.name}")
             return
         }
         val handler = InvocationHandler { _, method, args ->
@@ -99,18 +105,18 @@ internal object RuntimeSystemServiceVirtualizer {
         val loader = interfaces.firstOrNull()?.classLoader ?: original.javaClass.classLoader
         val proxy = runCatching { Proxy.newProxyInstance(loader, interfaces.toTypedArray(), handler) }.getOrElse {
             capabilities[serviceName] = Capability(State.FAIL, "proxy create failed: ${it.javaClass.simpleName}")
-            RuntimeDiagnostics.log("SERVICE5", "$serviceName failed proxy-create ${it.javaClass.simpleName}: ${it.message}")
+            RuntimeDiagnostics.log("SERVICE6", "$serviceName failed proxy-create ${it.javaClass.simpleName}: ${it.message}")
             return
         }
         runCatching { field.isAccessible = true; field.set(manager, proxy) }
             .onSuccess {
-                capabilities[serviceName] = Capability(State.FULL, "binder identity proxy field=${field.name}")
-                RuntimeDiagnostics.log("SERVICE5", "$serviceName full binder-identity field=${field.name} manager=${manager.javaClass.simpleName}")
+                capabilities[serviceName] = Capability(State.PARTIAL, "binder identity proxy installed field=${field.name}; callbacks/live semantics require validation")
+                RuntimeDiagnostics.log("SERVICE6", "$serviceName partial binder-identity field=${field.name} manager=${manager.javaClass.simpleName}")
             }
             .onFailure {
                 patched.remove(manager)
                 capabilities[serviceName] = Capability(State.FAIL, "proxy write failed: ${it.javaClass.simpleName}")
-                RuntimeDiagnostics.log("SERVICE5", "$serviceName failed proxy-write ${it.javaClass.simpleName}: ${it.message}")
+                RuntimeDiagnostics.log("SERVICE6", "$serviceName failed proxy-write ${it.javaClass.simpleName}: ${it.message}")
             }
     }
 

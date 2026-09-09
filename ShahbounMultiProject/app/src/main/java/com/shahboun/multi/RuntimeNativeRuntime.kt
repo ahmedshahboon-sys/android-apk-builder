@@ -13,9 +13,9 @@ internal object RuntimeNativeRuntime {
     fun initialize(): Boolean {
         if (attempted.compareAndSet(false, true)) {
             loaded = runCatching { System.loadLibrary("shahboun_runtime"); true }
-                .onFailure { RuntimeDiagnostics.log("NATIVE5", "load failed: ${it.javaClass.simpleName}: ${it.message}") }
+                .onFailure { RuntimeDiagnostics.log("NATIVE6", "load failed: ${it.javaClass.simpleName}: ${it.message}") }
                 .getOrDefault(false)
-            if (loaded) RuntimeDiagnostics.log("NATIVE5", "Shahboun native runtime ready path-map-v2")
+            if (loaded) RuntimeDiagnostics.log("NATIVE6", "Shahboun native runtime ready path-map-v3 syscall-intercept=false")
         }
         return loaded
     }
@@ -23,8 +23,8 @@ internal object RuntimeNativeRuntime {
     fun register(packageName: String, slot: Int, root: File): Boolean {
         if (!initialize()) return false
         return runCatching { nativeRegisterRoot(packageName, slot, root.canonicalPath) }
-            .onSuccess { ok -> if (ok) RuntimeDiagnostics.log("NATIVE5", "registered root $packageName/$slot root=${root.canonicalPath}") }
-            .onFailure { RuntimeDiagnostics.log("NATIVE5", "register failed $packageName/$slot: ${it.javaClass.simpleName}: ${it.message}") }
+            .onSuccess { ok -> if (ok) RuntimeDiagnostics.log("NATIVE6", "registered root $packageName/$slot root=${root.canonicalPath}") }
+            .onFailure { RuntimeDiagnostics.log("NATIVE6", "register failed $packageName/$slot: ${it.javaClass.simpleName}: ${it.message}") }
             .getOrDefault(false)
     }
 
@@ -55,8 +55,19 @@ internal object RuntimeNativeRuntime {
     }
 
     fun capability(): Capability = if (initialize()) Capability.PATH_MAPPING else Capability.UNAVAILABLE
+
+    /** Deliberately false until third-party native libc calls are actually intercepted and proven. */
     fun hasSyscallInterception(): Boolean = false
+
+    /** General lexical absolute-path check; it is not an authorization decision. */
     fun isSafe(path: File): Boolean = !initialize() || runCatching { nativeIsSafePath(path.absolutePath) }.getOrDefault(false)
+
+    /** Authorization check for paths that must stay inside a registered clone root. */
+    fun isWithinRoot(packageName: String, slot: Int, path: File): Boolean {
+        if (!initialize()) return false
+        return runCatching { nativeIsWithinRoot(packageName, slot, path.canonicalPath) }.getOrDefault(false)
+    }
+
     fun isLoaded(): Boolean = loaded
 
     @JvmStatic private external fun nativeRegisterRoot(packageName: String, slot: Int, rootPath: String): Boolean
@@ -65,4 +76,5 @@ internal object RuntimeNativeRuntime {
     @JvmStatic private external fun nativeReverseMapGuestPath(packageName: String, slot: Int, path: String): String
     @JvmStatic private external fun nativeDescribePolicy(packageName: String, slot: Int): String
     @JvmStatic private external fun nativeIsSafePath(path: String): Boolean
+    @JvmStatic private external fun nativeIsWithinRoot(packageName: String, slot: Int, path: String): Boolean
 }

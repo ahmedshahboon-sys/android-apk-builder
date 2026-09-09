@@ -27,7 +27,8 @@ import java.util.concurrent.ConcurrentHashMap
 class RuntimeGuestContext(
     base: Context,
     private val session: RuntimeSession,
-    private val slotDir: File
+    private val slotDir: File,
+    private val deviceProtected: Boolean = false
 ) : ContextWrapper(base) {
     private val dynamicReceivers = ConcurrentHashMap<BroadcastReceiver, BroadcastReceiver>()
     private val preferenceStores = ConcurrentHashMap<String, SharedPreferences>()
@@ -41,21 +42,21 @@ class RuntimeGuestContext(
         val host = session.componentHost
         if (host != null) RuntimeContentResolverBridge(session, host, baseContext.contentResolver).resolver else baseContext.contentResolver
     }
+    /* Always obtain the real scheduler from the physical base context. Never recurse through this wrapper. */
     private val guestJobScheduler by lazy { RuntimeJobSchedulerBridge.facadeFor(baseContext, session) }
 
     init {
         val registered = RuntimeNativeRuntime.register(session.runtimePackage.packageName, session.runtimePackage.slot, slotDir)
+        if (!deviceProtected) migrateLegacyCredentialStorage()
         RuntimeDiagnostics.log(
-            "CONTEXT5",
-            "guest context init ${session.runtimePackage.packageName}/${session.runtimePackage.slot} nativeRegistered=$registered root=${slotDir.absolutePath}"
+            "CONTEXT6",
+            "guest context init ${session.runtimePackage.packageName}/${session.runtimePackage.slot} nativeRegistered=$registered root=${slotDir.absolutePath} deviceProtected=$deviceProtected"
         )
         RuntimeWebGmsCompatibility.prepareCloneStorage(baseContext, session, slotDir)
     }
 
-    override fun getPackageName(): String {
-        if (RuntimeSystemPackageIdentity.requiresPhysicalPackage()) return baseContext.packageName
-        return session.runtimePackage.packageName
-    }
+    /** Guest code always receives the logical package. Physical identity is handled only at Binder boundaries. */
+    override fun getPackageName(): String = session.runtimePackage.packageName
     override fun getClassLoader(): ClassLoader = session.classLoader
     override fun getResources(): Resources = session.resources
     override fun getAssets() = session.resources.assets
@@ -67,9 +68,9 @@ class RuntimeGuestContext(
     override fun getContentResolver(): ContentResolver = cloneContentResolver
 
     /*
-     * Binder-facing managers are created from the physical Context and sanitize guest arguments at
-     * the service boundary. Keeping op/attribution physical here avoids Android 14-16 AppOps UID
-     * rejection while getPackageName() remains logical for normal guest code.
+     * system_server validates AppOps/attribution against the physical UID. Those values therefore
+     * remain physical here while ordinary guest package identity stays logical. Binder bridges also
+     * sanitize guest package/AttributionSource arguments before crossing the system boundary.
      */
     override fun getOpPackageName(): String = baseContext.opPackageName
     override fun getAttributionTag(): String? = baseContext.attributionTag
@@ -82,17 +83,21 @@ class RuntimeGuestContext(
                 baseContext.packageManager.getApplicationInfo(pkg.packageName, android.content.pm.PackageManager.ApplicationInfoFlags.of(android.content.pm.PackageManager.GET_META_DATA.toLong()))
             } else @Suppress("DEPRECATION") baseContext.packageManager.getApplicationInfo(pkg.packageName, android.content.pm.PackageManager.GET_META_DATA)
         }.getOrNull()
+        val credential = bucket("data")
+        val device = bucket("device_data")
         return (original?.let(::ApplicationInfo) ?: ApplicationInfo()).apply {
             packageName = pkg.packageName
             className = pkg.applicationClass
+            processName = pkg.packageName
             sourceDir = pkg.baseApk.absolutePath
             publicSourceDir = pkg.baseApk.absolutePath
             splitSourceDirs = pkg.splitApks.map { it.absolutePath }.toTypedArray()
             splitPublicSourceDirs = splitSourceDirs
             if (Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
-            dataDir = cloneDir("data").absolutePath
-            deviceProtectedDataDir = cloneDir("device_data").absolutePath
-            nativeLibraryDir = cloneDir("native").absolutePath
+            dataDir = if (deviceProtected) device.absolutePath else credential.absolutePath
+            deviceProtectedDataDir = device.absolutePath
+            credentialProtectedDataDir = credential.absolutePath
+            nativeLibraryDir = bucket("native").absolutePath
             theme = pkg.appTheme
             targetSdkVersion = pkg.targetSdk
             if (Build.VERSION.SDK_INT >= 24) minSdkVersion = pkg.minSdk
@@ -102,48 +107,68 @@ class RuntimeGuestContext(
 
     override fun createPackageContext(packageName: String, flags: Int): Context =
         if (packageName == session.runtimePackage.packageName) this else super.createPackageContext(packageName, flags)
-    override fun createConfigurationContext(overrideConfiguration: Configuration): Context =
-        RuntimeGuestContext(baseContext.createConfigurationContext(overrideConfiguration), session, slotDir)
-    override fun createDeviceProtectedStorageContext(): Context =
-        RuntimeGuestContext(baseContext.createDeviceProtectedStorageContext(), session, slotDir)
 
-    override fun getDataDir(): File = cloneDir("data")
-    override fun getFilesDir(): File = cloneDir("files")
-    override fun getCacheDir(): File = cloneDir("cache")
-    override fun getCodeCacheDir(): File = cloneDir("code_cache")
-    override fun getNoBackupFilesDir(): File = cloneDir("no_backup")
-    override fun getDir(name: String, mode: Int): File = cloneDir("app_${safeName(name)}")
-    override fun openFileInput(name: String): FileInputStream = FileInputStream(File(filesDir, safeName(name)))
+    override fun createConfigurationContext(overrideConfiguration: Configuration): Context =
+        RuntimeGuestContext(baseContext.createConfigurationContext(overrideConfiguration), session, slotDir, deviceProtected)
+
+    override fun createDeviceProtectedStorageContext(): Context =
+        RuntimeGuestContext(baseContext.createDeviceProtectedStorageContext(), session, slotDir, true)
+
+    override fun createCredentialProtectedStorageContext(): Context =
+        RuntimeGuestContext(baseContext.createCredentialProtectedStorageContext(), session, slotDir, false)
+
+    override fun createAttributionContext(attributionTag: String?): Context =
+        RuntimeGuestContext(baseContext.createAttributionContext(attributionTag), session, slotDir, deviceProtected)
+
+    override fun isDeviceProtectedStorage(): Boolean = deviceProtected
+
+    override fun getDataDir(): File = if (deviceProtected) bucket("device_data") else bucket("data")
+    override fun getFilesDir(): File = dataChild("files")
+    override fun getCacheDir(): File = dataChild("cache")
+    override fun getCodeCacheDir(): File = dataChild("code_cache")
+    override fun getNoBackupFilesDir(): File = dataChild("no_backup")
+    override fun getDir(name: String, mode: Int): File = dataChild("app_${RuntimePathPolicy.safeLeaf(name)}")
+
+    override fun openFileInput(name: String): FileInputStream = FileInputStream(File(filesDir, RuntimePathPolicy.safeLeaf(name)))
+
     override fun openFileOutput(name: String, mode: Int): FileOutputStream {
-        val target = File(filesDir, safeName(name))
+        val target = File(filesDir, RuntimePathPolicy.safeLeaf(name))
         target.parentFile?.mkdirs()
         return FileOutputStream(target, mode and Context.MODE_APPEND != 0)
     }
-    override fun deleteFile(name: String): Boolean = File(filesDir, safeName(name)).delete()
-    override fun fileList(): Array<String> = filesDir.list()?.map { it }.orEmpty().toTypedArray()
+
+    override fun deleteFile(name: String): Boolean = File(filesDir, RuntimePathPolicy.safeLeaf(name)).delete()
+    override fun fileList(): Array<String> = filesDir.list().orEmpty()
+
     override fun getExternalFilesDir(type: String?): File {
-        val base = cloneDir("external/files")
-        return if (type.isNullOrBlank()) base else File(base, safeName(type)).apply { mkdirs() }
+        val base = bucket("external/files")
+        return if (type.isNullOrBlank()) base else child(base, RuntimePathPolicy.safeLeaf(type))
     }
     override fun getExternalFilesDirs(type: String?): Array<File> = arrayOf(getExternalFilesDir(type))
-    override fun getExternalCacheDir(): File = cloneDir("external/cache")
+    override fun getExternalCacheDir(): File = bucket("external/cache")
     override fun getExternalCacheDirs(): Array<File> = arrayOf(externalCacheDir)
-    override fun getExternalMediaDirs(): Array<File> = arrayOf(cloneDir("external/media"))
-    override fun getObbDir(): File = cloneDir("external/obb")
+    override fun getExternalMediaDirs(): Array<File> = arrayOf(bucket("external/media"))
+    override fun getObbDir(): File = bucket("external/obb")
     override fun getObbDirs(): Array<File> = arrayOf(obbDir)
-    override fun getDatabasePath(name: String): File = File(cloneDir("databases"), safeName(name))
+
+    override fun getDatabasePath(name: String): File = File(dataChild("databases"), RuntimePathPolicy.safeLeaf(name))
     override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?): SQLiteDatabase {
-        val path = getDatabasePath(name); path.parentFile?.mkdirs(); return SQLiteDatabase.openOrCreateDatabase(path, factory)
+        val path = getDatabasePath(name)
+        path.parentFile?.mkdirs()
+        return SQLiteDatabase.openOrCreateDatabase(path, factory)
     }
     override fun openOrCreateDatabase(name: String, mode: Int, factory: SQLiteDatabase.CursorFactory?, errorHandler: DatabaseErrorHandler?): SQLiteDatabase {
-        val path = getDatabasePath(name); path.parentFile?.mkdirs()
-        return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path.absolutePath, factory, errorHandler) else SQLiteDatabase.openOrCreateDatabase(path, factory)
+        val path = getDatabasePath(name)
+        path.parentFile?.mkdirs()
+        return if (errorHandler != null) SQLiteDatabase.openOrCreateDatabase(path.absolutePath, factory, errorHandler)
+        else SQLiteDatabase.openOrCreateDatabase(path, factory)
     }
     override fun deleteDatabase(name: String): Boolean = SQLiteDatabase.deleteDatabase(getDatabasePath(name))
-    override fun databaseList(): Array<String> = cloneDir("databases").list()?.map { it }.orEmpty().toTypedArray()
+    override fun databaseList(): Array<String> = dataChild("databases").list().orEmpty()
+
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
-        val safe = safeName(name)
-        return preferenceStores.getOrPut(safe) { RuntimeFileSharedPreferences(File(cloneDir("shared_prefs"), "$safe.json")) }
+        val safe = RuntimePathPolicy.safeLeaf(name)
+        return preferenceStores.getOrPut(safe) { RuntimeFileSharedPreferences(File(dataChild("shared_prefs"), "$safe.json")) }
     }
 
     override fun startService(service: Intent): android.content.ComponentName? {
@@ -198,7 +223,7 @@ class RuntimeGuestContext(
         return RuntimeRecursionGuard.call(
             key = key,
             fallback = {
-                RuntimeDiagnostics.log("CONTEXT5", "service recursion fallback ${session.runtimePackage.packageName}/${session.runtimePackage.slot} name=$name")
+                RuntimeDiagnostics.log("CONTEXT6", "service recursion fallback ${session.runtimePackage.packageName}/${session.runtimePackage.slot} name=$name")
                 baseContext.getSystemService(name)
             }
         ) {
@@ -212,19 +237,42 @@ class RuntimeGuestContext(
         }
     }
 
-    private fun cloneDir(relative: String): File {
-        val direct = File(slotDir, relative)
-        val mapped = RuntimeNativeRuntime.map(session.runtimePackage.packageName, session.runtimePackage.slot, direct)
-        if (!mapped.exists()) require(mapped.mkdirs()) { "Unable to create clone directory: $relative" }
-        check(RuntimeNativeRuntime.isSafe(mapped)) { "Unsafe clone path rejected: ${mapped.absolutePath}" }
-        val canonicalRoot = slotDir.canonicalFile
-        val canonicalMapped = mapped.canonicalFile
-        check(canonicalMapped.path == canonicalRoot.path || canonicalMapped.path.startsWith(canonicalRoot.path + File.separator)) {
-            "Clone path escaped slot root: ${canonicalMapped.path}"
+    private fun dataChild(relative: String): File = child(dataDir, relative)
+
+    private fun bucket(relative: String): File {
+        val direct = RuntimePathPolicy.child(slotDir, relative)
+        if (!direct.exists()) require(direct.mkdirs()) { "Unable to create clone directory: $relative" }
+        check(RuntimePathPolicy.isContained(slotDir, direct)) { "Clone path escaped slot root: ${direct.absolutePath}" }
+        check(RuntimeNativeRuntime.isWithinRoot(session.runtimePackage.packageName, session.runtimePackage.slot, direct)) {
+            "Native path policy rejected clone path: ${direct.absolutePath}"
         }
-        return canonicalMapped
+        return direct.canonicalFile
     }
-    private fun safeName(value: String): String = value.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+
+    private fun child(parent: File, relative: String): File {
+        val direct = RuntimePathPolicy.child(parent, relative)
+        if (!direct.exists()) require(direct.mkdirs()) { "Unable to create clone directory: $relative" }
+        check(RuntimePathPolicy.isContained(slotDir, direct)) { "Clone path escaped slot root: ${direct.absolutePath}" }
+        return direct.canonicalFile
+    }
+
+    /** Runtime5 stored a few Context directories at slot root; move only guest data buckets once. */
+    private fun migrateLegacyCredentialStorage() {
+        val data = File(slotDir, "data").apply { mkdirs() }
+        listOf("files", "cache", "no_backup", "databases", "shared_prefs").forEach { name ->
+            val old = File(slotDir, name)
+            val target = File(data, name)
+            if (!old.exists() || target.exists()) return@forEach
+            runCatching {
+                if (!old.renameTo(target)) {
+                    old.copyRecursively(target, overwrite = false)
+                    old.deleteRecursively()
+                }
+            }.onFailure {
+                RuntimeDiagnostics.log("STORAGE6", "legacy migration skipped bucket=$name ${it.javaClass.simpleName}: ${it.message}")
+            }
+        }
+    }
 
     companion object {
         fun attachIfNeeded(activity: Activity) {
@@ -261,24 +309,5 @@ class RuntimeGuestContext(
                 ?: if (resolvedName == pkg.launchActivity && pkg.launchActivityTheme != 0) pkg.launchActivityTheme else pkg.appTheme
             if (themeId != 0) runCatching { activity.setTheme(themeId) }
         }
-    }
-}
-
-private object RuntimeSystemPackageIdentity {
-    private val physicalMarkers = arrayOf(
-        "com.google.android.gms",
-        "com.google.firebase",
-        "com.android.vending",
-        "dynamite_measurement",
-        "dynamite@"
-    )
-
-    fun requiresPhysicalPackage(): Boolean {
-        val trace = Thread.currentThread().stackTrace
-        for (frame in trace) {
-            val text = frame.toString()
-            if (physicalMarkers.any { marker -> text.contains(marker, ignoreCase = true) }) return true
-        }
-        return false
     }
 }

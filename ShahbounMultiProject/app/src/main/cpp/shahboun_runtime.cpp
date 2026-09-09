@@ -31,9 +31,15 @@ jstring utf8ToJstring(JNIEnv* env, const std::string& value) {
     return env->NewStringUTF(value.c_str());
 }
 
+std::string normalizeSeparators(std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    while (path.find("//") != std::string::npos) path.replace(path.find("//"), 2, "/");
+    return path;
+}
+
 std::string normalizeLexical(std::string path) {
     if (path.empty()) return path;
-    std::replace(path.begin(), path.end(), '\\', '/');
+    path = normalizeSeparators(std::move(path));
     const bool absolute = path.front() == '/';
     std::vector<std::string> parts;
     std::string current;
@@ -67,7 +73,7 @@ std::string normalizeLexical(std::string path) {
 bool isAbsoluteSafe(const std::string& raw) {
     if (raw.empty()) return false;
     const auto normalized = normalizeLexical(raw);
-    return !normalized.empty() && normalized.front() == '/' && normalized.find('\0') == std::string::npos;
+    return !normalized.empty() && normalized.front() == '/';
 }
 
 std::string keyFor(const std::string& packageName, jint slot) {
@@ -103,15 +109,13 @@ bool lookupRecord(const std::string& packageName, jint slot, RootRecord* out) {
     return true;
 }
 
-std::string mapGuestPath(const std::string& packageName, jint slot, const std::string& rawPath) {
-    const std::string path = normalizeLexical(rawPath);
-    if (path.empty()) return {};
+struct MappingRule {
+    std::string guest;
+    const char* bucket;
+};
 
-    RootRecord record;
-    if (!lookupRecord(packageName, slot, &record)) return path;
-
-    struct Rule { std::string guest; const char* bucket; };
-    const std::vector<Rule> rules = {
+std::vector<MappingRule> rulesFor(const std::string& packageName) {
+    return {
         {"/data/user/0/" + packageName, "data"},
         {"/data/data/" + packageName, "data"},
         {"/data/user_de/0/" + packageName, "device_data"},
@@ -122,9 +126,21 @@ std::string mapGuestPath(const std::string& packageName, jint slot, const std::s
         {"/storage/emulated/0/Android/obb/" + packageName, "external/obb"},
         {"/sdcard/Android/obb/" + packageName, "external/obb"}
     };
+}
+
+std::string mapGuestPath(const std::string& packageName, jint slot, const std::string& rawPath) {
+    if (rawPath.empty()) return {};
+    RootRecord record;
+    if (!lookupRecord(packageName, slot, &record)) return normalizeLexical(rawPath);
+
+    const std::string raw = normalizeSeparators(rawPath);
+    const std::string path = normalizeLexical(rawPath);
+    const auto rules = rulesFor(packageName);
 
     for (const auto& rule : rules) {
-        if (!startsWithPath(path, rule.guest)) continue;
+        if (!startsWithPath(raw, rule.guest)) continue;
+        // A managed guest path that lexically escapes its logical root is rejected, not passed through.
+        if (!startsWithPath(path, rule.guest)) return {};
         const auto mapped = joinRoot(record.root, rule.bucket, suffixAfter(path, rule.guest));
         if (!isWithinRoot(mapped, record.root)) return {};
         return mapped;
@@ -156,10 +172,18 @@ std::string reverseGuestPath(const std::string& packageName, jint slot, const st
     return path;
 }
 
+bool registeredPathIsContained(const std::string& packageName, jint slot, const std::string& rawPath) {
+    RootRecord record;
+    if (!lookupRecord(packageName, slot, &record)) return false;
+    return isAbsoluteSafe(rawPath) && isWithinRoot(rawPath, record.root);
+}
+
 std::string describePolicy(const std::string& packageName, jint slot) {
     RootRecord record;
     if (!lookupRecord(packageName, slot, &record)) return "UNREGISTERED";
-    return "PATH_MAP_V2 root=" + record.root + " internal=data,device_data external=data,media,obb reverse=true traversal=lexical-contained syscall_intercept=false";
+    return "PATH_MAP_V3 root=" + record.root +
+        " internal=data,device_data external=data,media,obb reverse=true traversal=reject-managed-escape" 
+        " relative_fd=false syscall_intercept=false linker_namespace=false";
 }
 } // namespace
 
@@ -209,7 +233,13 @@ Java_com_shahboun_multi_RuntimeNativeRuntime_nativeIsSafePath(
     return isAbsoluteSafe(jstringToUtf8(env, path)) ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_shahboun_multi_RuntimeNativeRuntime_nativeIsWithinRoot(
+    JNIEnv* env, jclass, jstring packageName, jint slot, jstring path) {
+    return registeredPathIsContained(jstringToUtf8(env, packageName), slot, jstringToUtf8(env, path)) ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*, void*) {
-    __android_log_print(ANDROID_LOG_INFO, TAG, "Shahboun native runtime loaded path-map-v2");
+    __android_log_print(ANDROID_LOG_INFO, TAG, "Shahboun native runtime loaded path-map-v3");
     return JNI_VERSION_1_6;
 }

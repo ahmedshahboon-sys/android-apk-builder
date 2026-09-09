@@ -90,13 +90,13 @@ jobs:
           set -euo pipefail
           APK=$(find ShahbounMultiProject/app/build/outputs/apk/debug -type f -name '*.apk' | head -1)
           test -n "$APK" && test -s "$APK"
-          cp "$APK" ShahbounMulti-Runtime5.apk
-          sha256sum ShahbounMulti-Runtime5.apk > ShahbounMulti-Runtime5.apk.sha256
+          cp "$APK" ShahbounMulti-Runtime6.apk
+          sha256sum ShahbounMulti-Runtime6.apk > ShahbounMulti-Runtime6.apk.sha256
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ShahbounMulti-Runtime5-APK
+          name: ShahbounMulti-Runtime6-APK
           path: |
-            ShahbounMulti-Runtime5.apk
-            ShahbounMulti-Runtime5.apk.sha256
+            ShahbounMulti-Runtime6.apk
+            ShahbounMulti-Runtime6.apk.sha256
           if-no-files-found: error

@@ -13,6 +13,8 @@ object RuntimeExecutionScope {
         ?: RuntimeRegistry.sessionForClassLoader(Thread.currentThread().contextClassLoader)
         ?: processSession
 
+    fun currentIdentity(): RuntimeVirtualIdentity? = current()?.let(RuntimeVirtualIdentityRegistry::forSession)
+
     fun bindProcessSession(session: RuntimeSession) {
         if (!isCloneProcess()) return
         synchronized(this) {
@@ -50,6 +52,11 @@ object RuntimeExecutionScope {
 
     fun processOwner(): Pair<String, Int>? = processSession?.let { it.runtimePackage.packageName to it.runtimePackage.slot }
 
+    /**
+     * Enters one guest execution scope without recursively re-entering RuntimeGuestProcessIdentity.
+     * Runtime5 accidentally made this method and withGuestMainProcess() call each other, which could
+     * overflow the stack before guest callbacks ran. Identity is pinned once, then the callback runs.
+     */
     fun <T> withSession(session: RuntimeSession, block: () -> T): T {
         bindProcessSession(session)
         val previous = local.get()
@@ -57,8 +64,9 @@ object RuntimeExecutionScope {
         val previousLoader = thread.contextClassLoader
         local.set(session)
         thread.contextClassLoader = session.classLoader
+        RuntimeGuestProcessIdentity.ensureGuestAlias(session)
         return try {
-            RuntimeGuestProcessIdentity.withGuestMainProcess(session) { block() }
+            block()
         } finally {
             thread.contextClassLoader = previousLoader
             if (previous == null) local.remove() else local.set(previous)
