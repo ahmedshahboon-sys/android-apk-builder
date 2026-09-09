@@ -15,6 +15,16 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Binds a clone RuntimeSession into Android's own ActivityThread/LoadedApk model before launch.
+ *
+ * Two identities intentionally coexist:
+ *  - logical guest identity: class loader/resources/component/package lookups inside the virtual app;
+ *  - physical Binder identity: the host package that actually owns Process.myUid().
+ *
+ * Android 16 validates ContextImpl/SettingsProvider calls during Activity.attach(), before our
+ * Instrumentation can replace the Activity base context with RuntimeGuestContext.  Therefore the
+ * ApplicationInfo used by the framework must carry the physical host package, while LoadedApk's
+ * logical package name remains the guest.  RuntimeGuestContext exposes the guest package again as
+ * soon as callActivityOnCreate() is reached.
  */
 object RuntimeLoadedApkBridge {
     private val bound = ConcurrentHashMap<String, Any>()
@@ -72,6 +82,8 @@ object RuntimeLoadedApkBridge {
         val binding = bind(context, session).getOrThrow()
         return (original?.let(::ActivityInfo) ?: ActivityInfo()).apply {
             name = resolved
+            // Keep the Activity component logically owned by the guest. Only applicationInfo's
+            // packageName is physical so framework-created ContextImpl objects pass UID checks.
             packageName = pkg.packageName
             processName = currentProcessName()
             applicationInfo = binding.applicationInfo
@@ -105,7 +117,9 @@ object RuntimeLoadedApkBridge {
             ?: Runtime3ProcessMetadata.slotDir(context, pkg.packageName, pkg.slot)
         fun dir(name: String) = File(slotDir, name).apply { if (!exists()) mkdirs() }
         return (original?.let(::ApplicationInfo) ?: ApplicationInfo()).apply {
-            packageName = pkg.packageName
+            // CRITICAL: this ApplicationInfo is consumed by ActivityThread/ContextImpl before guest
+            // context attachment. It must be a package that really owns Process.myUid().
+            packageName = BuildConfig.APPLICATION_ID
             className = pkg.applicationClass
             uid = Process.myUid()
             sourceDir = pkg.baseApk.absolutePath
@@ -216,10 +230,7 @@ object RuntimeLoadedApkBridge {
             writeField(loadedApk, session, arrayOf("mLibDir"), appInfo.nativeLibraryDir)
         }
 
-        // Keep LoadedApk's logical package as the guest. RuntimeGuestContext.getOpPackageName()
-        // and the Binder bridges expose the physical host identity only where Android validates UID.
-        // This preserves framework-level app identity expected by Facebook/Instagram while avoiding
-        // package/UID SecurityException at real system-service boundaries.
+        // Logical identity remains guest for app/framework code that does not cross Binder.
         writeField(loadedApk, session, arrayOf("mPackageName"), pkg.packageName)
         writeField(loadedApk, session, arrayOf("mClassLoader"), session.classLoader)
         writeField(loadedApk, session, arrayOf("mResources"), session.resources)
@@ -228,7 +239,7 @@ object RuntimeLoadedApkBridge {
 
         RuntimeDiagnostics.log(
             "LOADEDAPK",
-            "patched ${pkg.packageName}/${pkg.slot} appInfoPath=${if (appInfoApplied) "framework" else "field-fallback"} frameworkPackage=${pkg.packageName} binderPackage=${BuildConfig.APPLICATION_ID} data=${appInfo.dataDir}"
+            "patched ${pkg.packageName}/${pkg.slot} appInfoPath=${if (appInfoApplied) "framework" else "field-fallback"} logicalPackage=${pkg.packageName} frameworkPackage=${appInfo.packageName} binderPackage=${BuildConfig.APPLICATION_ID} data=${appInfo.dataDir}"
         )
     }
 
