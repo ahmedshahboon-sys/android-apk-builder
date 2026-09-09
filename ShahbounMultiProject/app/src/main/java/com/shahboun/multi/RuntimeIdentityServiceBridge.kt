@@ -15,9 +15,9 @@ object RuntimeIdentityServiceBridge {
 
     fun install(context: Context): Result<Unit> = runCatching {
         val app = context.applicationContext
-        installManager(app.getSystemService(AppOpsManager::class.java), app.packageName, "APPOPS", listOf("IAppOpsService"), listOf("mService"))
-        installManager(AccountManager.get(app), app.packageName, "ACCOUNT", listOf("IAccountManager", "AccountManagerService"), listOf("mService", "sService"))
-        installManager(app.getSystemService(UserManager::class.java), app.packageName, "USER", listOf("IUserManager", "UserManagerService"), listOf("mService"))
+        installManager(app, app.getSystemService(AppOpsManager::class.java), "APPOPS", listOf("IAppOpsService"), listOf("mService"))
+        installManager(app, AccountManager.get(app), "ACCOUNT", listOf("IAccountManager", "AccountManagerService"), listOf("mService", "sService"))
+        installManager(app, app.getSystemService(UserManager::class.java), "USER", listOf("IUserManager", "UserManagerService"), listOf("mService"))
         RuntimeDiagnostics.log("IDENTITY", "AppOps/Account/User identity bridges ready")
     }
 
@@ -31,8 +31,8 @@ object RuntimeIdentityServiceBridge {
     fun accountUsesPublicApi(): Boolean = accountPublicApiOnly
 
     private fun installManager(
+        context: Context,
         manager: Any?,
-        hostPackage: String,
         label: String,
         hints: List<String>,
         candidateNames: List<String>
@@ -66,7 +66,7 @@ object RuntimeIdentityServiceBridge {
             } else RuntimeDiagnostics.log("IDENTITY", "$label binder interfaces unavailable")
             return
         }
-        val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(delegate, hostPackage, label))
+        val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate, label))
         if (!RuntimeCompatibility.write(field, manager, proxy)) {
             if (label == "ACCOUNT") {
                 accountPublicApiOnly = true
@@ -78,23 +78,22 @@ object RuntimeIdentityServiceBridge {
         RuntimeDiagnostics.log("IDENTITY", "$label identity proxy installed field=${field.name} owner=${field.declaringClass.name}")
     }
 
-    private class Handler(private val delegate: Any, private val hostPackage: String, private val label: String) : InvocationHandler {
+    private class Handler(private val context: Context, private val delegate: Any, private val label: String) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
-            if (method.declaringClass == Any::class.java) return invokeDelegate(method, args)
-            val session = RuntimeExecutionScope.current() ?: return invokeDelegate(method, args)
-            val guestPackage = session.runtimePackage.packageName
-            val source = args ?: return invokeDelegate(method, args)
-            var changed = false
-            val routed = Array<Any?>(source.size) { index ->
-                val value = source[index]
-                if (value is String && value == guestPackage) { changed = true; hostPackage } else value
-            }
-            if (changed) RuntimeDiagnostics.log("IDENTITY", "$label ${method.name} $guestPackage/${session.runtimePackage.slot} -> host UID")
-            return invokeDelegate(method, routed)
+            if (method.declaringClass == Any::class.java) return invokeDelegate(method, args, null)
+            val session = RuntimeExecutionScope.current()
+            return invokeDelegate(method, args, session)
         }
 
-        private fun invokeDelegate(method: Method, args: Array<out Any?>?): Any? = try {
-            method.invoke(delegate, *(args ?: emptyArray()))
-        } catch (e: InvocationTargetException) { throw (e.targetException ?: e) }
+        private fun invokeDelegate(method: Method, args: Array<out Any?>?, session: RuntimeSession?): Any? = try {
+            val safe = RuntimeBinderIdentitySanitizer.sanitize(context, session, method, args)
+            if (session != null && safe != null && args != null && safe.indices.any { safe[it] != args[it] }) {
+                RuntimeDiagnostics.log("IDENTITY", "$label ${method.name} ${session.runtimePackage.packageName}/${session.runtimePackage.slot} -> host UID")
+            }
+            val result = method.invoke(delegate, *(safe ?: emptyArray()))
+            RuntimeBinderIdentitySanitizer.restoreResult(session, result)
+        } catch (e: InvocationTargetException) {
+            throw (e.targetException ?: e)
+        }
     }
 }
