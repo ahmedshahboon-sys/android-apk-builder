@@ -20,16 +20,19 @@ object RuntimeActivityResourceFix {
         val resolvedTheme = resolveActivityTheme(activity, session)
         val guestTheme = guestResources.newTheme().apply { if (resolvedTheme != 0) applyStyle(resolvedTheme, true) }
 
-        // Primary Android-16 path: ActivityThread normally copies Application loaders after
-        // Instrumentation.newActivity(). Repeat it here as an OEM-safe fallback.
+        // Build 51 could leave ContextThemeWrapper.mResources pointing at the host graph even
+        // though baseContext had already been replaced with RuntimeGuestContext. Pin the Activity
+        // cache to the one authoritative guest base+split graph before guest onCreate().
+        val frameworkPinned = pinContextThemeWrapper(activity, guestResources, guestTheme, resolvedTheme)
+
+        // Runtime 7.1.1 intentionally does not add a duplicate ResourcesLoader. These calls are
+        // retained as compatibility no-ops when the session has no loader.
         val activityLoader = session.attachLoaderTo(activity.resources)
         val baseLoader = session.attachLoaderTo(activity.baseContext.resources)
 
-        // Only use private-cache pinning when the framework resource still cannot resolve the
-        // guest layout. Each field is optional and independent; Samsung may remove/rename fields.
-        var frameworkPinned = false
+        // If a known probe still cannot resolve, repair typed private caches as a last-resort OEM
+        // fallback. This is not the primary resource path.
         if (!canLoadProbe(activity.resources, pkg.packageName)) {
-            frameworkPinned = pinContextThemeWrapper(activity, guestResources, guestTheme, resolvedTheme)
             pinTypedFields(activity, Resources::class.java, guestResources)
             pinTypedFields(activity, Resources.Theme::class.java, guestTheme)
         }
@@ -46,13 +49,21 @@ object RuntimeActivityResourceFix {
             setOptionalFrameworkField(ContextThemeWrapper::class.java, activity, "mInflater", inflater)
         }
 
-        RuntimeDiagnostics.log("RES", "activity graph prepared ${pkg.packageName}/${pkg.slot} loaderActivity=$activityLoader loaderBase=$baseLoader fallback=$frameworkPinned theme=0x${resolvedTheme.toString(16)}")
+        val themeResolvable = if (resolvedTheme == 0) true else runCatching {
+            val value = TypedValue()
+            guestResources.getValue(resolvedTheme, value, true)
+            true
+        }.getOrDefault(false)
+        RuntimeDiagnostics.log(
+            "RES",
+            "activity graph prepared ${pkg.packageName}/${pkg.slot} authoritativeGuest=true loaderActivity=$activityLoader loaderBase=$baseLoader pinned=$frameworkPinned theme=0x${resolvedTheme.toString(16)} themeResolvable=$themeResolvable"
+        )
         logGraph("session", session.resources, pkg.packageName, pkg.slot)
         logGraph("activity", activity.resources, pkg.packageName, pkg.slot)
         logGraph("base", activity.baseContext.resources, pkg.packageName, pkg.slot)
         runCatching { logGraph("inflater", LayoutInflater.from(activity).context.resources, pkg.packageName, pkg.slot) }
 
-        if (pkg.packageName == "com.whatsapp") {
+        if (pkg.packageName == "com.whatsapp" || pkg.packageName == "com.whatsapp.w4b") {
             probeResource("session", session.resources, pkg.packageName, pkg.slot)
             probeResource("activity", activity.resources, pkg.packageName, pkg.slot)
             probeResource("base", activity.baseContext.resources, pkg.packageName, pkg.slot)
@@ -61,7 +72,7 @@ object RuntimeActivityResourceFix {
     }
 
     private fun canLoadProbe(resources: Resources, packageName: String): Boolean {
-        if (packageName != "com.whatsapp") return true
+        if (packageName != "com.whatsapp" && packageName != "com.whatsapp.w4b") return true
         return runCatching { resources.getLayout(WHATSAPP_LAYOUT_PROBE).close(); true }.getOrDefault(false)
     }
 
@@ -72,7 +83,7 @@ object RuntimeActivityResourceFix {
         changed = setOptionalFrameworkIntField(ContextThemeWrapper::class.java, activity, "mThemeResource", themeResId) || changed
         changed = setOptionalFrameworkIntField(ContextThemeWrapper::class.java, activity, "mThemeResId", themeResId) || changed
         setOptionalFrameworkField(ContextThemeWrapper::class.java, activity, "mInflater", null)
-        RuntimeDiagnostics.log("RES", "ContextThemeWrapper optional pin ${activity.javaClass.name} changed=$changed")
+        RuntimeDiagnostics.log("RES", "ContextThemeWrapper guest pin ${activity.javaClass.name} changed=$changed")
         return changed
     }
 
