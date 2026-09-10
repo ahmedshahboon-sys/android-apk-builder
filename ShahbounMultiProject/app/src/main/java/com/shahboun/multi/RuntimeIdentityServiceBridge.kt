@@ -12,20 +12,26 @@ import java.lang.reflect.Proxy
 /** Binder-facing identity rewrite for Android system services. */
 object RuntimeIdentityServiceBridge {
     @Volatile private var accountPublicApiOnly = false
+    @Volatile private var physicalAccountManager: AccountManager? = null
+    @Volatile private var physicalContext: Context? = null
 
     fun install(context: Context): Result<Unit> = runCatching {
-        val app = context.applicationContext
+        val app = context.applicationContext ?: context
+        physicalContext = app
+        val account = AccountManager.get(app)
+        physicalAccountManager = account
         installManager(app, app.getSystemService(AppOpsManager::class.java), "APPOPS", listOf("IAppOpsService"), listOf("mService"))
-        installManager(app, AccountManager.get(app), "ACCOUNT", listOf("IAccountManager", "AccountManagerService"), listOf("mService", "sService"))
+        installManager(app, account, "ACCOUNT", listOf("IAccountManager", "AccountManagerService"), listOf("mService", "sService"))
         installManager(app, app.getSystemService(UserManager::class.java), "USER", listOf("IUserManager", "UserManagerService"), listOf("mService"))
         RuntimeDiagnostics.log("IDENTITY", "AppOps/Account/User identity bridges ready")
     }
 
     fun accountManagerFor(context: Context, session: RuntimeSession): AccountManager {
-        if (accountPublicApiOnly) {
-            RuntimeDiagnostics.log("IDENTITY", "ACCOUNT public-api service ${session.runtimePackage.packageName}/${session.runtimePackage.slot}")
+        physicalAccountManager?.let { return it }
+        val stable = physicalContext ?: MultiApplication.current ?: runCatching { context.applicationContext }.getOrNull() ?: context
+        return synchronized(this) {
+            physicalAccountManager ?: AccountManager.get(stable).also { physicalAccountManager = it; physicalContext = stable }
         }
-        return AccountManager.get(context.applicationContext)
     }
 
     fun accountUsesPublicApi(): Boolean = accountPublicApiOnly
@@ -66,7 +72,7 @@ object RuntimeIdentityServiceBridge {
             } else RuntimeDiagnostics.log("IDENTITY", "$label binder interfaces unavailable")
             return
         }
-        val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context.applicationContext, delegate, label))
+        val proxy = Proxy.newProxyInstance(interfaces.first().classLoader, interfaces, Handler(context, delegate, label))
         if (!RuntimeCompatibility.write(field, manager, proxy)) {
             if (label == "ACCOUNT") {
                 accountPublicApiOnly = true
