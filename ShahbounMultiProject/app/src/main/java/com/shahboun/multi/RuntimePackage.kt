@@ -84,8 +84,17 @@ class RuntimePackageInstaller(private val context: Context) {
         val normalizedSplitNames = originalSplitPaths.indices.map { index ->
             originalSplitNames.getOrNull(index)?.takeIf { it.isNotBlank() } ?: "split_$index"
         }
+        // Preserve Android's original split APK basename. Some dynamic-feature/native loaders use
+        // the source path name (for example split_<feature>.apk / split_config.<abi>.apk) in
+        // addition to ApplicationInfo.splitNames. Build 51 renamed every split to split-N.apk,
+        // which erased that signal for feature loaders such as modern native stacks.
+        val usedFileNames = HashSet<String>()
         val splits = originalSplitPaths.mapIndexed { index, source ->
-            File(apkDir, "split-$index.apk").also { copyVerified(File(source), it) }
+            val originalName = File(source).name
+            val safeName = originalName.takeIf {
+                it.matches(Regex("[A-Za-z0-9._+-]+\\.apk")) && it != "base.apk" && usedFileNames.add(it)
+            } ?: "split-$index.apk".also { usedFileNames.add(it) }
+            File(apkDir, safeName).also { copyVerified(File(source), it) }
         }
 
         val packageFlags = PackageManager.GET_PROVIDERS or PackageManager.GET_ACTIVITIES or PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS or PackageManager.GET_META_DATA
@@ -112,7 +121,7 @@ class RuntimePackageInstaller(private val context: Context) {
         val digest = sha256(base)
         val splitDigests = splits.map(::sha256)
         File(slotDir, "runtime.meta").writeText(buildString {
-            appendLine("format=11")
+            appendLine("format=12")
             appendLine("package=$packageName")
             appendLine("slot=$slot")
             appendLine("launchActivity=$resolvedLaunch")
@@ -121,6 +130,7 @@ class RuntimePackageInstaller(private val context: Context) {
             appendLine("versionCode=$versionCode")
             appendLine("sha256=$digest")
             appendLine("splitCount=${splits.size}")
+            splits.forEachIndexed { index, split -> appendLine("splitFile.$index=${split.name}") }
             splitDigests.forEachIndexed { index, hash -> appendLine("splitSha256.$index=$hash") }
             normalizedSplitNames.forEachIndexed { index, name -> appendLine("splitName.$index=$name") }
             appendLine("appTheme=${appInfo.theme}")
@@ -134,6 +144,10 @@ class RuntimePackageInstaller(private val context: Context) {
             writeComponents("receiver", receivers)
         })
 
+        RuntimeDiagnostics.log(
+            "SNAPSHOT7",
+            "preserved split filenames $packageName/$slot ${splits.joinToString { it.name }}"
+        )
         return RuntimePackage(packageName, slot, base, splits, normalizedSplitNames, resolvedLaunch, launchAlias, applicationClass,
             versionCode, digest, splitDigests, appInfo.theme, launchActivityTheme, appInfo.targetSdkVersion,
             if (Build.VERSION.SDK_INT >= 24) appInfo.minSdkVersion else 1, appInfo.flags, providers, activities, services, receivers)
@@ -150,12 +164,21 @@ class RuntimePackageInstaller(private val context: Context) {
         val apkDir = File(slotDir, "apk")
         val base = File(apkDir, "base.apk")
         require(base.isFile) { "APK النسخة مفقود" }
-        val splits = apkDir.listFiles().orEmpty().filter { it.name.startsWith("split-") && it.extension == "apk" }
-            .sortedBy { it.name.substringAfter("split-").substringBefore('.').toIntOrNull() ?: Int.MAX_VALUE }
+        val expectedSplitCount = values["splitCount"]?.toIntOrNull() ?: 0
+        val metadataSplits = (0 until expectedSplitCount).mapNotNull { index ->
+            val name = values["splitFile.$index"] ?: return@mapNotNull null
+            require(name.matches(Regex("[A-Za-z0-9._+-]+\\.apk")) && name != "base.apk") { "اسم Split APK غير صالح" }
+            File(apkDir, name)
+        }
+        val splits = if (metadataSplits.size == expectedSplitCount) metadataSplits else {
+            // Backward-compatible reader for format <= 11 snapshots.
+            apkDir.listFiles().orEmpty().filter { it.name.startsWith("split-") && it.extension == "apk" }
+                .sortedBy { it.name.substringAfter("split-").substringBefore('.').toIntOrNull() ?: Int.MAX_VALUE }
+        }
         val expected = values["sha256"] ?: error("بصمة APK مفقودة")
         require(sha256(base) == expected) { "فشل تحقق سلامة APK الخاص بالنسخة" }
-        val expectedSplitCount = values["splitCount"]?.toIntOrNull() ?: 0
         require(splits.size == expectedSplitCount) { "عدد ملفات Split APK لا يطابق بيانات النسخة" }
+        splits.forEach { require(it.isFile && it.canonicalFile.parentFile == apkDir.canonicalFile) { "Split APK غير موجود أو خارج الجذر" } }
         val splitDigests = splits.mapIndexed { index, split ->
             val expectedSplit = values["splitSha256.$index"]
             val actual = sha256(split)
