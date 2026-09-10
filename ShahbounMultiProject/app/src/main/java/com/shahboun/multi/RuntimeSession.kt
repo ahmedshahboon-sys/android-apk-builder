@@ -7,9 +7,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.content.res.loader.ResourcesLoader
-import android.content.res.loader.ResourcesProvider
 import android.os.Build
-import android.os.ParcelFileDescriptor
 import android.system.Os
 import dalvik.system.DexClassLoader
 import java.io.Closeable
@@ -39,6 +37,11 @@ class RuntimeSession(
     @Volatile var componentHost: RuntimeComponentHost? = null
         private set
 
+    /**
+     * During Application.attach/attachBaseContext Android libraries are already allowed to ask the
+     * supplied Context for applicationContext. Publish the pending guest Application before attach
+     * so that call never falls back to RuntimeGuestContext (which is not an Application).
+     */
     fun applicationForContext(): Application? = guestApplication ?: attachedApplication
     fun isApplicationReady(): Boolean = bootstrapState == BootstrapState.RUNNING && guestApplication != null
 
@@ -55,6 +58,11 @@ class RuntimeSession(
             require(Application::class.java.isAssignableFrom(appClass)) { "Application class غير صالح" }
             appClass.getDeclaredConstructor().newInstance() as Application
         } else Application()
+
+        // This assignment deliberately precedes RuntimeGuestContext/Application.attach. Several
+        // modern libraries call context.applicationContext from attachBaseContext and require an
+        // actual Application instance at that point.
+        attachedApplication = app
 
         try {
             val guestContext = RuntimeGuestContext(base, this, slotDir)
@@ -73,8 +81,8 @@ class RuntimeSession(
                 baseField.set(app, guestContext)
             }
 
-            attachedApplication = app
             bootstrapState = BootstrapState.ATTACHED
+            check(applicationForContext() === app) { "Guest Application publication lost during attach" }
             RuntimeProcessApplicationBridge.bind(this)
             RuntimeDiagnostics.log(
                 "RUNTIME",
@@ -99,6 +107,8 @@ class RuntimeSession(
             RuntimeDiagnostics.log("RUNTIME", "guest Application ready ${runtimePackage.packageName}/${runtimePackage.slot} state=$bootstrapState")
             return app
         } catch (error: Throwable) {
+            guestApplication = null
+            attachedApplication = null
             bootstrapFailure = error
             bootstrapState = BootstrapState.FAILED
             RuntimeDiagnostics.log("RUNTIME", "guest bootstrap failed ${runtimePackage.packageName}/${runtimePackage.slot}: ${error.stackTraceToString()}")
@@ -106,6 +116,11 @@ class RuntimeSession(
         }
     }
 
+    /**
+     * Build 51 used both PackageManager.getResourcesForApplication(splitSourceDirs) and a second
+     * ResourcesLoader containing those exact APKs. On Android 16 this can create duplicate package
+     * tables and resource-ID mismatches. Runtime 7.1.1 uses one authoritative archive graph only.
+     */
     fun attachLoaderTo(target: Resources): Boolean {
         val loader = resourcesLoader ?: return false
         return runCatching {
@@ -223,7 +238,6 @@ class RuntimeSessionFactory(private val context: Context) {
         )
 
         val effectivePkg = resolveLauncherTarget(pkg, loader)
-        val closeables = mutableListOf<Closeable>()
         val splitPaths = effectivePkg.splitApks.map { it.absolutePath }.toTypedArray()
         val deviceDir = File(slotDir, "device_data").apply { require(exists() || mkdirs()) }
         val archiveInfo = ApplicationInfo().apply {
@@ -242,39 +256,14 @@ class RuntimeSessionFactory(private val context: Context) {
             flags = effectivePkg.appFlags or ApplicationInfo.FLAG_HAS_CODE
             theme = effectivePkg.appTheme
         }
+
+        // One resource graph only. getResourcesForApplication already consumes base + splitSourceDirs.
+        // Re-adding the same APKs via ResourcesLoader changes package-table precedence on Android 16.
         val resources = context.packageManager.getResourcesForApplication(archiveInfo)
         RuntimeDiagnostics.log(
             "RES",
-            "archive resource graph attached package=${effectivePkg.packageName} apks=${allApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets}"
+            "authoritative archive resource graph package=${effectivePkg.packageName} base=${effectivePkg.baseApk.name} splits=${effectivePkg.splitApks.size} splitNames=${effectivePkg.splitNames.joinToString()} assets=${resources.assets} duplicateLoader=false"
         )
-
-        var runtimeResourcesLoader: ResourcesLoader? = null
-        var loaderHostResources: Resources? = null
-        if (Build.VERSION.SDK_INT >= 30) {
-            runCatching {
-                val resLoader = ResourcesLoader()
-                allApks.forEach { apk ->
-                    val provider = ParcelFileDescriptor.open(apk, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                        ResourcesProvider.loadFromApk(pfd)
-                    }
-                    resLoader.addProvider(provider)
-                    closeables += provider
-                }
-                // Session-local only: never mutate host Application.resources with guest archives.
-                resources.addLoaders(resLoader)
-                runtimeResourcesLoader = resLoader
-                loaderHostResources = resources
-                RuntimeDiagnostics.log(
-                    "RES",
-                    "session loader installed ${effectivePkg.packageName}/${effectivePkg.slot} providers=${allApks.size}"
-                )
-            }.onFailure {
-                RuntimeDiagnostics.log(
-                    "RES",
-                    "session loader fallback ${effectivePkg.packageName}/${effectivePkg.slot}: ${it.javaClass.simpleName}: ${it.message}"
-                )
-            }
-        }
 
         val launcher = loader.loadClass(effectivePkg.launchActivity)
         require(android.app.Activity::class.java.isAssignableFrom(launcher)) {
@@ -289,9 +278,9 @@ class RuntimeSessionFactory(private val context: Context) {
             effectivePkg,
             loader,
             resources,
-            runtimeResourcesLoader,
-            loaderHostResources,
-            closeables
+            null,
+            null,
+            emptyList()
         )
     }
 
