@@ -78,7 +78,6 @@ class RuntimeGuestContext(
             packageName = pkg.packageName
             className = pkg.applicationClass
             processName = pkg.packageName
-            // App-facing self UID must still correspond to the Linux identity backing Binder calls.
             uid = Process.myUid()
             sourceDir = pkg.baseApk.absolutePath
             publicSourceDir = pkg.baseApk.absolutePath
@@ -86,7 +85,6 @@ class RuntimeGuestContext(
             splitPublicSourceDirs = splitSourceDirs
             if (Build.VERSION.SDK_INT >= 26) splitNames = pkg.splitNames.toTypedArray()
             dataDir = if (deviceProtected) device.absolutePath else credential.absolutePath
-            if (Build.VERSION.SDK_INT >= 24) credentialProtectedDataDir = credential.absolutePath
             deviceProtectedDataDir = device.absolutePath
             nativeLibraryDir = bucket("native").absolutePath
             theme = pkg.appTheme
@@ -104,9 +102,6 @@ class RuntimeGuestContext(
 
     override fun createDeviceProtectedStorageContext(): Context =
         RuntimeGuestContext(baseContext.createDeviceProtectedStorageContext(), session, slotDir, true)
-
-    override fun createCredentialProtectedStorageContext(): Context =
-        RuntimeGuestContext(baseContext.createCredentialProtectedStorageContext(), session, slotDir, false)
 
     override fun createAttributionContext(attributionTag: String?): Context =
         RuntimeGuestContext(baseContext.createAttributionContext(attributionTag), session, slotDir, deviceProtected)
