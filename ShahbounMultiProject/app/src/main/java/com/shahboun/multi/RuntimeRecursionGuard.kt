@@ -7,10 +7,12 @@ internal object RuntimeRecursionGuard {
     private val active = ThreadLocal.withInitial { LinkedHashSet<String>() }
     private val reported = ConcurrentHashMap.newKeySet<String>()
 
-    fun <T> call(key: String, fallback: () -> T, block: () -> T): T {
+    fun <T> call(key: String, fallback: () -> T, block: () -> T): T = call(key, true, fallback, block)
+
+    private fun <T> call(key: String, report: Boolean, fallback: () -> T, block: () -> T): T {
         val set = active.get()
         if (!set.add(key)) {
-            if (reported.add(key)) {
+            if (report && reported.add(key)) {
                 RuntimeDiagnostics.log("GUARD5", "recursive runtime path blocked key=$key")
             }
             return fallback()
@@ -27,8 +29,8 @@ internal object RuntimeRecursionGuard {
 
     fun selfTest(): Boolean {
         var fallbackHit = false
-        val result = call("self-test", fallback = { -1 }) {
-            call("self-test", fallback = { fallbackHit = true; 7 }) { 99 }
+        val result = call("self-test", false, fallback = { -1 }) {
+            call("self-test", false, fallback = { fallbackHit = true; 7 }) { 99 }
         }
         return fallbackHit && result == 7 && !isActive("self-test")
     }
